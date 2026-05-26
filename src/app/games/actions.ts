@@ -1,0 +1,2538 @@
+"use server";
+
+import { auth } from "@clerk/nextjs/server";
+import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
+import { setReadyAction, startGameAction } from "@/app/lobby/actions";
+import {
+  canPlaceDeadlineBid,
+  DEADLINE_BID_STEP,
+  getDeadlineAuctionCount,
+  getFirstDeadlineBidClubId,
+  getNextDeadlineBidClubId,
+} from "@/lib/lobby/deadline";
+import { DRAFT_PLAYER_SELECT } from "@/lib/lobby/draft";
+import { createDraftRound, getSquadCounts, allDraftSquadsComplete } from "@/lib/lobby/draft-server";
+import { canUpgradeFacility, type UpgradeAction } from "@/lib/lobby/investments";
+import { calculateLineupPower } from "@/lib/lobby/lineup-power";
+import { getNextLobbyPhase, getSettingsForNextPhase, isInvestmentPhase } from "@/lib/lobby/phases";
+import {
+  buildSeasonFixtures,
+  getMatchPointsMode,
+  getRequiredCpuCount,
+  getSeasonMode,
+  getTargetLeagueSize,
+  resolveFixture,
+  type FixtureSideInput,
+  type SeasonParticipant,
+  type TacticalZone,
+} from "@/lib/lobby/season";
+import {
+  canBuyScoutedPlayer,
+  canDrawScoutingPlayer,
+  canResolveScoutedPlayer,
+  canSellClubPlayer,
+  getClubScoutingCapacity,
+  getNextPendingScoutingClubId,
+  isOffseasonPhase,
+  isScoutingPileKey,
+} from "@/lib/lobby/scouting";
+import {
+  canTrainOwnedPlayer,
+  getTrainingStatus,
+  parseTrainingEvent,
+  resolveTrainingAttempt,
+  type TrainingEventMetadata,
+} from "@/lib/lobby/training";
+import { createSupabaseServiceClient } from "@/lib/supabase/server";
+import type { DraftPickSnapshot, DraftPlayerRow, LobbyClub, LobbyGame, LobbyPhase, ScoutingDrawSnapshot } from "@/lib/lobby/types";
+
+export async function setReadyFromDashboardAction(formData: FormData) {
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const ready = String(formData.get("ready") || "") === "true";
+
+  if (gameId && roomCode) {
+    await setReadyAction(gameId, ready);
+    revalidatePath(`/games/${roomCode}`);
+  }
+
+  redirect(`/games/${roomCode}`);
+}
+
+export async function startGameFromDashboardAction(formData: FormData) {
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+
+  if (gameId && roomCode) {
+    await startGameAction(gameId);
+    revalidatePath(`/games/${roomCode}`);
+  }
+
+  redirect(`/games/${roomCode}`);
+}
+
+export async function upgradeInvestmentAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const clubId = String(formData.get("club_id") || "");
+  const action = String(formData.get("action") || "") as UpgradeAction;
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !clubId || !isUpgradeAction(action) || !supabase) {
+    redirect(`/games/${roomCode}?view=grounds`);
+  }
+
+  const [{ data: game, error: gameError }, { data: club, error: clubError }] = await Promise.all([
+    supabase
+      .from("games")
+      .select("id, room_code, phase, settings")
+      .eq("id", gameId)
+      .single<{ id: string; phase: LobbyPhase; room_code: string; settings: { seasonNumber?: number } }>(),
+    supabase
+      .from("clubs")
+      .select("id, game_id, clerk_user_id, money, training_level, scouting_level, stadium_level")
+      .eq("id", clubId)
+      .eq("game_id", gameId)
+      .single<{
+        id: string;
+        game_id: string;
+        clerk_user_id: string;
+        money: number;
+        training_level: number;
+        scouting_level: number;
+        stadium_level: number;
+      }>(),
+  ]);
+
+  if (gameError) {
+    throw gameError;
+  }
+
+  if (clubError) {
+    throw clubError;
+  }
+
+  if (club.clerk_user_id !== userId) {
+    throw new Error("Du kannst nur deinen eigenen Club ausbauen.");
+  }
+
+  if (!isInvestmentPhase(game.phase)) {
+    redirect(`/games/${roomCode}?view=grounds`);
+  }
+
+  const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
+  const { data: investments, error: investmentsError } = await supabase
+    .from("investments")
+    .select("action")
+    .eq("club_id", clubId)
+    .eq("season_number", seasonNumber)
+    .returns<Array<{ action: string }>>();
+
+  if (investmentsError) {
+    throw investmentsError;
+  }
+
+  const currentLevel = getClubFacilityLevel(club, action);
+  const check = canUpgradeFacility({
+    action,
+    actionsThisSeason: (investments ?? []).map((investment) => investment.action),
+    currentLevel,
+    money: Number(club.money),
+  });
+
+  if (!check.ok) {
+    redirect(`/games/${roomCode}?view=grounds`);
+  }
+
+  const { error: investmentError } = await supabase.from("investments").insert({
+    action,
+    club_id: clubId,
+    cost: check.cost,
+    game_id: gameId,
+    season_number: seasonNumber,
+  });
+
+  if (investmentError) {
+    throw investmentError;
+  }
+
+  const nextLevelColumn = `${action}_level`;
+  const { error: updateClubError } = await supabase
+    .from("clubs")
+    .update({
+      [nextLevelColumn]: currentLevel + 1,
+      money: Number(club.money) - check.cost,
+    })
+    .eq("id", clubId)
+    .eq("clerk_user_id", userId);
+
+  if (updateClubError) {
+    throw updateClubError;
+  }
+
+  const { error: saveError } = await supabase
+    .from("games")
+    .update({
+      last_saved_at: new Date().toISOString(),
+      last_saved_by_clerk_user_id: userId,
+      save_status: "active",
+    })
+    .eq("id", gameId);
+
+  if (saveError) {
+    throw saveError;
+  }
+
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=grounds`);
+}
+
+export async function makeDraftPickAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const submittedClubId = String(formData.get("club_id") || "");
+  const playerId = String(formData.get("player_id") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !submittedClubId || !playerId || !supabase) {
+    redirect(`/games/${roomCode}?view=draft`);
+  }
+
+  const [{ data: game, error: gameError }, { data: clubs, error: clubsError }] = await Promise.all([
+    supabase
+      .from("games")
+      .select("id, room_code, phase, host_clerk_user_id, current_turn_club_id, settings")
+      .eq("id", gameId)
+      .single<LobbyGame>(),
+    supabase
+      .from("clubs")
+      .select("id, game_id, clerk_user_id, club_name, manager_name, money, points, is_ready, created_at")
+      .eq("game_id", gameId)
+      .order("created_at", { ascending: true })
+      .returns<LobbyClub[]>(),
+  ]);
+
+  if (gameError) {
+    throw gameError;
+  }
+
+  if (clubsError) {
+    throw clubsError;
+  }
+
+  if (game.phase !== "draft") {
+    redirect(`/games/${roomCode}?view=draft`);
+  }
+
+  const ownClub = (clubs ?? []).find((club) => club.clerk_user_id === userId);
+
+  if (!ownClub || ownClub.id !== submittedClubId) {
+    throw new Error("Du kannst nur fuer deinen eigenen Club draften.");
+  }
+
+  const { data: rounds, error: roundsError } = await supabase
+    .from("draft_rounds")
+    .select("id, game_id, round_index, board_player_ids, pick_order_club_ids, picks, completed")
+    .eq("game_id", gameId)
+    .eq("completed", false)
+    .order("round_index", { ascending: false })
+    .limit(1)
+    .returns<
+      Array<{
+        id: string;
+        game_id: string;
+        round_index: number;
+        board_player_ids: string[];
+        pick_order_club_ids: string[];
+        picks: DraftPickSnapshot[];
+        completed: boolean;
+      }>
+    >();
+
+  if (roundsError) {
+    throw roundsError;
+  }
+
+  const draftRound = rounds?.[0];
+
+  if (!draftRound) {
+    throw new Error("Kein aktives Draftboard gefunden.");
+  }
+
+  const picks = Array.isArray(draftRound.picks) ? draftRound.picks : [];
+  const currentClubId = draftRound.pick_order_club_ids[picks.length];
+  const alreadyPicked = picks.some((pick) => pick.playerId === playerId);
+
+  if (currentClubId !== ownClub.id || game.current_turn_club_id !== ownClub.id) {
+    throw new Error("Du bist aktuell nicht am Zug.");
+  }
+
+  if (!draftRound.board_player_ids.includes(playerId) || alreadyPicked) {
+    throw new Error("Dieser Spieler ist nicht mehr verfuegbar.");
+  }
+
+  const [{ data: player, error: playerError }, squadCounts] = await Promise.all([
+    supabase.from("players").select("id, base_stars").eq("id", playerId).single<{ id: string; base_stars: number }>(),
+    getSquadCounts(
+      supabase,
+      (clubs ?? []).map((club) => club.id),
+    ),
+  ]);
+
+  if (playerError) {
+    throw playerError;
+  }
+
+  if (Number(player.base_stars) > Number(game.settings?.max_draft_stars ?? 5)) {
+    throw new Error("Dieser Spieler ueberschreitet das Sternlimit fuer diesen Draft.");
+  }
+
+  if ((squadCounts.get(ownClub.id) ?? 0) >= 16) {
+    throw new Error("Dein Draftkader ist bereits voll.");
+  }
+
+  const { error: insertError } = await supabase.from("club_players").insert({
+    club_id: ownClub.id,
+    player_id: playerId,
+    current_stars: player.base_stars,
+    current_zone: "bench",
+  });
+
+  if (insertError) {
+    throw insertError;
+  }
+
+  const nextPicks: DraftPickSnapshot[] = [
+    ...picks,
+    {
+      pickIndex: picks.length,
+      clubId: ownClub.id,
+      playerId,
+      pickedAt: new Date().toISOString(),
+    },
+  ];
+  const roundComplete = nextPicks.length >= draftRound.board_player_ids.length;
+
+  const { error: updateRoundError } = await supabase
+    .from("draft_rounds")
+    .update({ picks: nextPicks, completed: roundComplete })
+    .eq("id", draftRound.id);
+
+  if (updateRoundError) {
+    throw updateRoundError;
+  }
+
+  const nextSquadCounts = new Map(squadCounts);
+  nextSquadCounts.set(ownClub.id, (nextSquadCounts.get(ownClub.id) ?? 0) + 1);
+
+  if (roundComplete) {
+    const clubIds = (clubs ?? []).map((club) => club.id);
+
+    if (allDraftSquadsComplete(nextSquadCounts, clubIds)) {
+      const { error: clearTurnError } = await supabase.from("games").update({ current_turn_club_id: null }).eq("id", gameId);
+
+      if (clearTurnError) {
+        throw clearTurnError;
+      }
+    } else {
+      await createDraftRound({
+        supabase,
+        game,
+        clubs: clubs ?? [],
+        roundIndex: draftRound.round_index + 1,
+      });
+    }
+  } else {
+    const nextClubId = draftRound.pick_order_club_ids[nextPicks.length] ?? null;
+    const { error: turnError } = await supabase.from("games").update({ current_turn_club_id: nextClubId }).eq("id", gameId);
+
+    if (turnError) {
+      throw turnError;
+    }
+  }
+
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=draft`);
+}
+
+export async function trainPlayerAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const clubPlayerId = String(formData.get("club_player_id") || "");
+  const allowTestMode = String(formData.get("allow_test_mode") || "") === "true";
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !clubPlayerId || !supabase) {
+    redirect(`/games/${roomCode}?view=training`);
+  }
+
+  const [{ data: game, error: gameError }, { data: ownedPlayer, error: ownedPlayerError }] = await Promise.all([
+    supabase
+      .from("games")
+      .select("id, room_code, phase, host_clerk_user_id, settings")
+      .eq("id", gameId)
+      .single<LobbyGame>(),
+    supabase
+      .from("club_players")
+      .select(
+        `id, club_id, player_id, current_stars, injured,
+        club:clubs(id, game_id, clerk_user_id, training_level),
+        player:players(id, skill_max)`,
+      )
+      .eq("id", clubPlayerId)
+      .single<{
+        id: string;
+        club_id: string;
+        player_id: string;
+        current_stars: number | string;
+        injured: boolean;
+        club: {
+          id: string;
+          game_id: string;
+          clerk_user_id: string;
+          training_level: number;
+        };
+        player: {
+          id: string;
+          skill_max: number | string | null;
+        };
+      }>(),
+  ]);
+
+  if (gameError) {
+    throw gameError;
+  }
+
+  if (ownedPlayerError) {
+    throw ownedPlayerError;
+  }
+
+  if (ownedPlayer.club.game_id !== gameId || ownedPlayer.club.clerk_user_id !== userId) {
+    throw new Error("Du kannst nur Spieler aus deinem eigenen Club trainieren.");
+  }
+
+  const isHostTestMode = allowTestMode && game.host_clerk_user_id === userId;
+  if (game.phase !== "offseason_training" && !isHostTestMode) {
+    redirect(`/games/${roomCode}?view=training`);
+  }
+
+  const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
+  const { data: transactionRows, error: transactionsError } = await supabase
+    .from("transactions")
+    .select("id, created_at, metadata")
+    .eq("game_id", gameId)
+    .eq("club_id", ownedPlayer.club_id)
+    .eq("reason", "training")
+    .returns<Array<{ id: string; created_at: string; metadata: unknown }>>();
+
+  if (transactionsError) {
+    throw transactionsError;
+  }
+
+  const trainingEvents = (transactionRows ?? [])
+    .map(parseTrainingEvent)
+    .filter((event): event is NonNullable<ReturnType<typeof parseTrainingEvent>> => Boolean(event))
+    .filter((event) => event.season_number === seasonNumber && event.game_phase === game.phase);
+  const trainingStatus = getTrainingStatus({
+    events: trainingEvents,
+    trainingLevel: ownedPlayer.club.training_level,
+  });
+  const currentStars = Math.trunc(Number(ownedPlayer.current_stars));
+  const skillMax = Math.trunc(Number(ownedPlayer.player.skill_max ?? currentStars));
+  const eligibility = canTrainOwnedPlayer({
+    alreadyTrained: trainingEvents.some((event) => event.club_player_id === ownedPlayer.id),
+    attemptsUsed: trainingStatus.attempts_used,
+    capacityPlayers: trainingStatus.capacity_players,
+    currentStars,
+    injured: ownedPlayer.injured,
+    skillMax,
+  });
+
+  if (!eligibility.ok) {
+    redirect(`/games/${roomCode}?view=training`);
+  }
+
+  const diceRoll = Math.floor(Math.random() * 6) + 1;
+  const resolution = resolveTrainingAttempt({
+    currentStars,
+    diceRoll,
+    guaranteedBonusAvailable: trainingStatus.guaranteed_bonus_available,
+    skillMax,
+    trainingLevel: ownedPlayer.club.training_level,
+  });
+  const metadata: TrainingEventMetadata = {
+    after_stars: resolution.afterStars,
+    before_stars: resolution.beforeStars,
+    club_player_id: ownedPlayer.id,
+    dice_roll: resolution.diceRoll,
+    game_phase: game.phase,
+    guaranteed_bonus_used: resolution.guaranteedBonusUsed,
+    player_id: ownedPlayer.player_id,
+    season_number: seasonNumber,
+    success: resolution.success,
+    training_level: ownedPlayer.club.training_level,
+  };
+
+  const { error: updatePlayerError } = await supabase
+    .from("club_players")
+    .update({ current_stars: resolution.afterStars })
+    .eq("id", ownedPlayer.id)
+    .eq("club_id", ownedPlayer.club_id);
+
+  if (updatePlayerError) {
+    throw updatePlayerError;
+  }
+
+  const { error: insertTransactionError } = await supabase.from("transactions").insert({
+    amount: 0,
+    club_id: ownedPlayer.club_id,
+    game_id: gameId,
+    metadata,
+    reason: "training",
+  });
+
+  if (insertTransactionError) {
+    throw insertTransactionError;
+  }
+
+  const { error: saveError } = await supabase
+    .from("games")
+    .update({
+      last_saved_at: new Date().toISOString(),
+      last_saved_by_clerk_user_id: userId,
+      save_status: "active",
+    })
+    .eq("id", gameId);
+
+  if (saveError) {
+    throw saveError;
+  }
+
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=training`);
+}
+
+export async function drawScoutingPlayerAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const clubId = String(formData.get("club_id") || "");
+  const pileKey = String(formData.get("pile_key") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !clubId || !isScoutingPileKey(pileKey) || !supabase) {
+    redirect(`/games/${roomCode}?view=scouting`);
+  }
+
+  const { game, ownClub, clubs } = await getGameClubContext(supabase, gameId, userId);
+  if (game.phase !== "offseason_scouting" || ownClub.id !== clubId) {
+    redirect(`/games/${roomCode}?view=scouting`);
+  }
+
+  const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
+  const draws = await getScoutingDraws(supabase, gameId, seasonNumber);
+  const ownDraws = draws.filter((draw) => draw.club_id === ownClub.id);
+  const capacity = getClubScoutingCapacity(ownClub);
+  const drawCheck = canDrawScoutingPlayer({
+    currentTurnClubId: game.current_turn_club_id,
+    drawnCount: ownDraws.length,
+    ownClubId: ownClub.id,
+    scoutingCapacity: capacity,
+  });
+
+  if (!drawCheck.ok) {
+    redirect(`/games/${roomCode}?view=scouting`);
+  }
+
+  const selectedPlayer = await pickAvailableScoutingPlayer({
+    clubs,
+    draws,
+    gameId,
+    seasonNumber,
+    supabase,
+  });
+
+  if (!selectedPlayer) {
+    throw new Error("Kein verfuegbarer Spieler fuer Scouting gefunden.");
+  }
+
+  const { error: insertError } = await supabase.from("scouting_draws").insert({
+    club_id: ownClub.id,
+    draw_index: ownDraws.length,
+    game_id: gameId,
+    pile_key: pileKey,
+    player_id: selectedPlayer.id,
+    season_number: seasonNumber,
+    status: "drawn",
+  });
+
+  if (insertError) {
+    throw insertError;
+  }
+
+  await touchGameSave(supabase, gameId, userId);
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=scouting`);
+}
+
+export async function buyScoutedPlayerAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const drawId = String(formData.get("draw_id") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !drawId || !supabase) {
+    redirect(`/games/${roomCode}?view=scouting`);
+  }
+
+  const { game, ownClub } = await getGameClubContext(supabase, gameId, userId);
+  if (game.phase !== "offseason_scouting") {
+    redirect(`/games/${roomCode}?view=scouting`);
+  }
+
+  const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
+  const [draws, squadCount] = await Promise.all([
+    getScoutingDraws(supabase, gameId, seasonNumber),
+    getClubSquadCount(supabase, ownClub.id),
+  ]);
+  const draw = draws.find((item) => item.id === drawId);
+
+  if (!draw || draw.club_id !== ownClub.id || draw.status !== "drawn") {
+    redirect(`/games/${roomCode}?view=scouting`);
+  }
+
+  const ownDraws = draws.filter((item) => item.club_id === ownClub.id);
+  const capacity = getClubScoutingCapacity(ownClub);
+  const price = Number(draw.player.scouting_price ?? 0);
+  const buyCheck = canBuyScoutedPlayer({
+    currentTurnClubId: game.current_turn_club_id,
+    drawnCount: ownDraws.length,
+    money: Number(ownClub.money),
+    ownClubId: ownClub.id,
+    playerPrice: price,
+    scoutingCapacity: capacity,
+    squadSize: squadCount,
+  });
+
+  if (!buyCheck.ok) {
+    redirect(`/games/${roomCode}?view=scouting`);
+  }
+
+  await assertPlayerNotOwnedInGame(supabase, gameId, draw.player_id);
+
+  const { error: insertClubPlayerError } = await supabase.from("club_players").insert({
+    club_id: ownClub.id,
+    current_stars: draw.player.base_stars,
+    current_zone: "bench",
+    player_id: draw.player_id,
+  });
+
+  if (insertClubPlayerError) {
+    throw insertClubPlayerError;
+  }
+
+  const { error: clubError } = await supabase
+    .from("clubs")
+    .update({ money: Number(ownClub.money) - price })
+    .eq("id", ownClub.id)
+    .eq("clerk_user_id", userId);
+
+  if (clubError) {
+    throw clubError;
+  }
+
+  const now = new Date().toISOString();
+  const { error: drawError } = await supabase
+    .from("scouting_draws")
+    .update({ resolved_at: now, status: "bought" })
+    .eq("id", draw.id)
+    .eq("club_id", ownClub.id)
+    .eq("status", "drawn");
+
+  if (drawError) {
+    throw drawError;
+  }
+
+  const { error: transactionError } = await supabase.from("transactions").insert({
+    amount: -price,
+    club_id: ownClub.id,
+    game_id: gameId,
+    metadata: {
+      draw_id: draw.id,
+      player_id: draw.player_id,
+      season_number: seasonNumber,
+    },
+    reason: "scouting_purchase",
+  });
+
+  if (transactionError) {
+    throw transactionError;
+  }
+
+  await touchGameSave(supabase, gameId, userId);
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=scouting`);
+}
+
+export async function passScoutedPlayerAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const drawId = String(formData.get("draw_id") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !drawId || !supabase) {
+    redirect(`/games/${roomCode}?view=scouting`);
+  }
+
+  const { game, ownClub } = await getGameClubContext(supabase, gameId, userId);
+  if (game.phase !== "offseason_scouting") {
+    redirect(`/games/${roomCode}?view=scouting`);
+  }
+
+  const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
+  const draws = await getScoutingDraws(supabase, gameId, seasonNumber);
+  const draw = draws.find((item) => item.id === drawId);
+  const ownDraws = draws.filter((item) => item.club_id === ownClub.id);
+  const resolveCheck = canResolveScoutedPlayer({
+    currentTurnClubId: game.current_turn_club_id,
+    drawnCount: ownDraws.length,
+    ownClubId: ownClub.id,
+    scoutingCapacity: getClubScoutingCapacity(ownClub),
+  });
+
+  if (!draw || draw.club_id !== ownClub.id || draw.status !== "drawn" || !resolveCheck.ok) {
+    redirect(`/games/${roomCode}?view=scouting`);
+  }
+
+  const { error } = await supabase
+    .from("scouting_draws")
+    .update({ resolved_at: new Date().toISOString(), status: "passed" })
+    .eq("id", draw.id)
+    .eq("club_id", ownClub.id)
+    .eq("status", "drawn");
+
+  if (error) {
+    throw error;
+  }
+
+  await touchGameSave(supabase, gameId, userId);
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=scouting`);
+}
+
+export async function syncScoutingTurnAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !supabase) {
+    redirect(`/games/${roomCode}?view=scouting`);
+  }
+
+  const { game, clubs } = await getGameClubContext(supabase, gameId, userId);
+
+  if (game.phase !== "offseason_scouting" || game.host_clerk_user_id !== userId) {
+    redirect(`/games/${roomCode}?view=scouting`);
+  }
+
+  const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
+  const draws = await getScoutingDraws(supabase, gameId, seasonNumber);
+  const nextClubId = getNextPendingScoutingClubId(clubs, draws);
+
+  const { error } = await supabase.from("games").update({ current_turn_club_id: nextClubId }).eq("id", gameId);
+
+  if (error) {
+    throw error;
+  }
+
+  await touchGameSave(supabase, gameId, userId);
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=scouting`);
+}
+
+export async function finishScoutingTurnAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !supabase) {
+    redirect(`/games/${roomCode}?view=scouting`);
+  }
+
+  const { game, ownClub, clubs } = await getGameClubContext(supabase, gameId, userId);
+  if (game.phase !== "offseason_scouting" || game.current_turn_club_id !== ownClub.id) {
+    redirect(`/games/${roomCode}?view=scouting`);
+  }
+
+  const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
+  const draws = await getScoutingDraws(supabase, gameId, seasonNumber);
+  const ownDraws = draws.filter((draw) => draw.club_id === ownClub.id);
+  const capacity = getClubScoutingCapacity(ownClub);
+  const unresolvedOwnDraws = ownDraws.filter((draw) => draw.status === "drawn");
+
+  if (ownDraws.length < capacity || unresolvedOwnDraws.length > 0) {
+    redirect(`/games/${roomCode}?view=scouting`);
+  }
+
+  const nextClubId = getNextPendingScoutingClubId(
+    clubs.filter((club) => club.id !== ownClub.id),
+    draws,
+  );
+
+  const { error } = await supabase.from("games").update({ current_turn_club_id: nextClubId }).eq("id", gameId);
+
+  if (error) {
+    throw error;
+  }
+
+  await touchGameSave(supabase, gameId, userId);
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=scouting`);
+}
+
+export async function sellClubPlayerAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const clubPlayerId = String(formData.get("club_player_id") || "");
+  const returnView = String(formData.get("return_view") || "scouting");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !clubPlayerId || !supabase) {
+    redirect(`/games/${roomCode}?view=${returnView}`);
+  }
+
+  const [{ game, ownClub }, { data: ownedPlayer, error: ownedPlayerError }] = await Promise.all([
+    getGameClubContext(supabase, gameId, userId),
+    supabase
+      .from("club_players")
+      .select("id, club_id, player_id, player:players(id, scouting_price)")
+      .eq("id", clubPlayerId)
+      .single<{
+        id: string;
+        club_id: string;
+        player_id: string;
+        player: { id: string; scouting_price: number | string | null };
+      }>(),
+  ]);
+
+  if (ownedPlayerError) {
+    throw ownedPlayerError;
+  }
+
+  if (ownedPlayer.club_id !== ownClub.id || !isOffseasonPhase(game.phase)) {
+    redirect(`/games/${roomCode}?view=${returnView}`);
+  }
+
+  const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
+  const salesCount = await getPlayerSaleCount(supabase, gameId, ownClub.id, seasonNumber);
+  const saleCheck = canSellClubPlayer({ isOffseason: true, salesCount });
+
+  if (!saleCheck.ok) {
+    redirect(`/games/${roomCode}?view=${returnView}`);
+  }
+
+  const saleValue = Number(ownedPlayer.player.scouting_price ?? 0);
+  const { error: deleteError } = await supabase.from("club_players").delete().eq("id", ownedPlayer.id).eq("club_id", ownClub.id);
+
+  if (deleteError) {
+    throw deleteError;
+  }
+
+  const { error: clubError } = await supabase
+    .from("clubs")
+    .update({ money: Number(ownClub.money) + saleValue })
+    .eq("id", ownClub.id)
+    .eq("clerk_user_id", userId);
+
+  if (clubError) {
+    throw clubError;
+  }
+
+  const { error: transactionError } = await supabase.from("transactions").insert({
+    amount: saleValue,
+    club_id: ownClub.id,
+    game_id: gameId,
+    metadata: {
+      club_player_id: ownedPlayer.id,
+      player_id: ownedPlayer.player_id,
+      season_number: seasonNumber,
+    },
+    reason: "player_sale",
+  });
+
+  if (transactionError) {
+    throw transactionError;
+  }
+
+  await touchGameSave(supabase, gameId, userId);
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=${returnView}`);
+}
+
+export async function initializeDeadlineDayAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !supabase) {
+    redirect(`/games/${roomCode}?view=deadline`);
+  }
+
+  const { game, clubs } = await getGameClubContext(supabase, gameId, userId);
+  if (game.phase !== "deadline_day" || game.host_clerk_user_id !== userId) {
+    redirect(`/games/${roomCode}?view=deadline`);
+  }
+
+  const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
+  const existingAuctions = await getDeadlineAuctions(supabase, gameId, seasonNumber);
+  if (existingAuctions.length > 0) {
+    redirect(`/games/${roomCode}?view=deadline`);
+  }
+
+  const auctionCount = getDeadlineAuctionCount(clubs.length);
+  const players = await pickDeadlinePlayers({ count: auctionCount, gameId, seasonNumber, supabase });
+  const bidOrderClubIds = clubs.map((club) => club.id);
+  const firstClubId = getFirstDeadlineBidClubId(clubs);
+
+  if (players.length < auctionCount || !firstClubId) {
+    throw new Error("Nicht genug verfuegbare Spieler fuer den Deadline Day gefunden.");
+  }
+
+  const now = new Date().toISOString();
+  const { error } = await supabase.from("auctions").insert(
+    players.map((player, index) => ({
+      auction_index: index,
+      bid_order_club_ids: bidOrderClubIds,
+      current_amount: 0,
+      current_bid_club_id: index === 0 ? firstClubId : null,
+      game_id: gameId,
+      minimum_bid: Number(player.minimum_bid ?? 0),
+      passed_club_ids: [],
+      player_id: player.id,
+      season_number: seasonNumber,
+      status: index === 0 ? "open" : "scheduled",
+      turn_started_at: index === 0 ? now : null,
+    })),
+  );
+
+  if (error) {
+    throw error;
+  }
+
+  await touchGameSave(supabase, gameId, userId);
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=deadline`);
+}
+
+export async function placeDeadlineBidAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const auctionId = String(formData.get("auction_id") || "");
+  const amountMillions = Number(formData.get("amount_millions") || 0);
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !auctionId || !supabase) {
+    redirect(`/games/${roomCode}?view=deadline`);
+  }
+
+  const { game, ownClub } = await getGameClubContext(supabase, gameId, userId);
+  if (game.phase !== "deadline_day") {
+    redirect(`/games/${roomCode}?view=deadline`);
+  }
+
+  const [auction, squadCount] = await Promise.all([
+    getDeadlineAuction(supabase, auctionId),
+    getClubSquadCount(supabase, ownClub.id),
+  ]);
+
+  if (!auction || auction.game_id !== gameId || auction.status !== "open") {
+    redirect(`/games/${roomCode}?view=deadline`);
+  }
+
+  const bidCheck = canPlaceDeadlineBid({
+    amount: amountMillions * DEADLINE_BID_STEP,
+    currentAmount: Number(auction.current_amount ?? 0),
+    currentBidClubId: auction.current_bid_club_id,
+    minimumBid: Number(auction.minimum_bid ?? 0),
+    ownClubId: ownClub.id,
+    ownMoney: Number(ownClub.money),
+    squadSize: squadCount,
+  });
+
+  if (!bidCheck.ok) {
+    redirect(`/games/${roomCode}?view=deadline`);
+  }
+
+  const nextClubId = getNextDeadlineBidClubId({
+    bidOrderClubIds: auction.bid_order_club_ids,
+    currentClubId: ownClub.id,
+    highestBidClubId: ownClub.id,
+    passedClubIds: auction.passed_club_ids,
+  });
+
+  const { error: bidError } = await supabase.from("bids").upsert(
+    {
+      amount: bidCheck.normalizedAmount,
+      auction_id: auction.id,
+      club_id: ownClub.id,
+      locked: true,
+    },
+    { onConflict: "auction_id,club_id" },
+  );
+
+  if (bidError) {
+    throw bidError;
+  }
+
+  const { error: auctionError } = await supabase
+    .from("auctions")
+    .update({
+      current_amount: bidCheck.normalizedAmount,
+      current_bid_club_id: nextClubId,
+      status: nextClubId ? "open" : "resolving",
+      turn_started_at: nextClubId ? new Date().toISOString() : null,
+      winning_club_id: ownClub.id,
+    })
+    .eq("id", auction.id);
+
+  if (auctionError) {
+    throw auctionError;
+  }
+
+  if (!nextClubId) {
+    await resolveDeadlineAuction(supabase, auction.id, gameId, userId);
+  } else {
+    await touchGameSave(supabase, gameId, userId);
+  }
+
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=deadline`);
+}
+
+export async function passDeadlineBidAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const auctionId = String(formData.get("auction_id") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !auctionId || !supabase) {
+    redirect(`/games/${roomCode}?view=deadline`);
+  }
+
+  const { game, ownClub } = await getGameClubContext(supabase, gameId, userId);
+  const auction = await getDeadlineAuction(supabase, auctionId);
+
+  if (!auction || game.phase !== "deadline_day" || auction.game_id !== gameId || auction.status !== "open" || auction.current_bid_club_id !== ownClub.id) {
+    redirect(`/games/${roomCode}?view=deadline`);
+  }
+
+  const passedClubIds = [...new Set([...auction.passed_club_ids, ownClub.id])];
+  const highestBidClubId = auction.winning_club_id ?? null;
+  const nextClubId = getNextDeadlineBidClubId({
+    bidOrderClubIds: auction.bid_order_club_ids,
+    currentClubId: ownClub.id,
+    highestBidClubId,
+    passedClubIds,
+  });
+
+  const { error: bidError } = await supabase.from("bids").upsert(
+    {
+      amount: 0,
+      auction_id: auction.id,
+      club_id: ownClub.id,
+      locked: true,
+    },
+    { onConflict: "auction_id,club_id" },
+  );
+
+  if (bidError) {
+    throw bidError;
+  }
+
+  if (!highestBidClubId && !nextClubId) {
+    await markDeadlineAuctionPassed(supabase, auction.id, passedClubIds);
+    await openNextDeadlineAuction(supabase, gameId, Number(game.settings?.seasonNumber ?? 1));
+    await touchGameSave(supabase, gameId, userId);
+  } else if (!nextClubId) {
+    const { error } = await supabase
+      .from("auctions")
+      .update({ current_bid_club_id: null, passed_club_ids: passedClubIds, status: "resolving", turn_started_at: null })
+      .eq("id", auction.id);
+
+    if (error) {
+      throw error;
+    }
+
+    await resolveDeadlineAuction(supabase, auction.id, gameId, userId);
+  } else {
+    const { error } = await supabase
+      .from("auctions")
+      .update({
+        current_bid_club_id: nextClubId,
+        passed_club_ids: passedClubIds,
+        turn_started_at: new Date().toISOString(),
+      })
+      .eq("id", auction.id);
+
+    if (error) {
+      throw error;
+    }
+
+    await touchGameSave(supabase, gameId, userId);
+  }
+
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=deadline`);
+}
+
+export async function resolveDeadlineAuctionAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const auctionId = String(formData.get("auction_id") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !auctionId || !supabase) {
+    redirect(`/games/${roomCode}?view=deadline`);
+  }
+
+  const { game } = await getGameClubContext(supabase, gameId, userId);
+  if (game.phase !== "deadline_day" || game.host_clerk_user_id !== userId) {
+    redirect(`/games/${roomCode}?view=deadline`);
+  }
+
+  await resolveDeadlineAuction(supabase, auctionId, gameId, userId);
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=deadline`);
+}
+
+export async function saveLineupAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const lineupPayload = String(formData.get("lineup_payload") || "[]");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !supabase) {
+    redirect(`/games/${roomCode}?view=lineup`);
+  }
+
+  const { ownClub } = await getGameClubContext(supabase, gameId, userId);
+  const submitted = parseLineupPayload(lineupPayload);
+  const { data: ownedRows, error: ownedError } = await supabase
+    .from("club_players")
+    .select("id")
+    .eq("club_id", ownClub.id)
+    .returns<Array<{ id: string }>>();
+
+  if (ownedError) {
+    throw ownedError;
+  }
+
+  const submittedById = new Map(submitted.map((item) => [item.club_player_id, item]));
+
+  const updateResults = await Promise.all(
+    (ownedRows ?? []).map((row) => {
+      const item = submittedById.get(row.id);
+
+      return supabase
+        .from("club_players")
+        .update({
+          current_zone: item?.zone ?? "bench",
+          lineup_slot: item?.slot ?? null,
+        })
+        .eq("id", row.id)
+        .eq("club_id", ownClub.id);
+    }),
+  );
+  const updateError = updateResults.find((result) => result.error)?.error;
+
+  if (updateError) {
+    throw updateError;
+  }
+
+  await touchGameSave(supabase, gameId, userId);
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=lineup`);
+}
+
+export async function lockFixtureLineupAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const fixtureId = String(formData.get("fixture_id") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !fixtureId || !supabase) {
+    redirect(`/games/${roomCode}?view=matchday`);
+  }
+
+  const { game, ownClub } = await getGameClubContext(supabase, gameId, userId);
+  if (game.phase !== "prematch" && game.phase !== "match") {
+    redirect(`/games/${roomCode}?view=matchday`);
+  }
+
+  const fixture = await getFixtureForAction(supabase, fixtureId, gameId);
+  const side = await getHumanFixtureSide(supabase, fixture, ownClub.id);
+
+  if (!side) {
+    throw new Error("Du kannst nur deine eigenen Fixtures locken.");
+  }
+
+  const { error } = await supabase
+    .from("fixtures")
+    .update(side === "home" ? { home_lineup_locked: true } : { away_lineup_locked: true })
+    .eq("id", fixtureId)
+    .eq("game_id", gameId);
+
+  if (error) {
+    throw error;
+  }
+
+  await touchGameSave(supabase, gameId, userId);
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=matchday`);
+}
+
+export async function resolveFixtureAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const fixtureId = String(formData.get("fixture_id") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !fixtureId || !supabase) {
+    redirect(`/games/${roomCode}?view=matchday`);
+  }
+
+  const { game, ownClub } = await getGameClubContext(supabase, gameId, userId);
+  if (game.phase !== "prematch" && game.phase !== "match") {
+    redirect(`/games/${roomCode}?view=matchday`);
+  }
+
+  const fixture = await getFixtureForAction(supabase, fixtureId, gameId);
+  const participants = await getFixtureParticipants(supabase, fixture);
+  const homeHuman = participants.home.kind === "human";
+  const awayHuman = participants.away.kind === "human";
+  const ownSide = await getHumanFixtureSide(supabase, fixture, ownClub.id);
+  const canResolveCpuFixture = ownSide && (!homeHuman || !awayHuman);
+  const canResolveCpuOnlyFixture = !homeHuman && !awayHuman && game.host_clerk_user_id === userId;
+  const canResolvePvpFixture = homeHuman && awayHuman && game.host_clerk_user_id === userId;
+
+  if (!canResolveCpuFixture && !canResolveCpuOnlyFixture && !canResolvePvpFixture) {
+    throw new Error("Dieses Match darfst du aktuell nicht aufloesen.");
+  }
+
+  if ((homeHuman && !fixture.home_lineup_locked) || (awayHuman && !fixture.away_lineup_locked)) {
+    redirect(`/games/${roomCode}?view=matchday`);
+  }
+
+  await resolveFixtureServer({
+    fixture,
+    game,
+    participants,
+    supabase,
+    userId,
+  });
+
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=matchday`);
+}
+
+export async function initializeSeasonScheduleAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !supabase) {
+    redirect(`/games/${roomCode}?view=matchday`);
+  }
+
+  const { data: game, error: gameError } = await supabase
+    .from("games")
+    .select("id, phase, host_clerk_user_id, settings")
+    .eq("id", gameId)
+    .maybeSingle<{ id: string; phase: LobbyPhase; host_clerk_user_id: string; settings: LobbyGame["settings"] }>();
+
+  if (gameError) {
+    throw gameError;
+  }
+
+  if (!game || game.host_clerk_user_id !== userId || (game.phase !== "prematch" && game.phase !== "match")) {
+    redirect(`/games/${roomCode}?view=matchday`);
+  }
+
+  await ensureSeasonSchedule(supabase, gameId, game.settings);
+  await touchGameSave(supabase, gameId, userId);
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=matchday`);
+}
+
+export async function setPhaseDoneAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const done = String(formData.get("done") || "") === "true";
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !supabase) {
+    redirect(`/games/${roomCode}`);
+  }
+
+  const { error } = await supabase
+    .from("game_members")
+    .update({
+      phase_done: done,
+      phase_done_at: done ? new Date().toISOString() : null,
+    })
+    .eq("game_id", gameId)
+    .eq("clerk_user_id", userId);
+
+  if (error) {
+    throw error;
+  }
+
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}`);
+}
+
+export async function advancePhaseAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !supabase) {
+    redirect(`/games/${roomCode}`);
+  }
+
+  const [{ data: game, error: gameError }, { data: members, error: membersError }] = await Promise.all([
+    supabase
+      .from("games")
+      .select("id, phase, host_clerk_user_id, settings")
+      .eq("id", gameId)
+      .maybeSingle<{ id: string; phase: LobbyPhase; host_clerk_user_id: string; settings: LobbyGame["settings"] }>(),
+    supabase
+      .from("game_members")
+      .select("phase_done")
+      .eq("game_id", gameId)
+      .returns<Array<{ phase_done: boolean }>>(),
+  ]);
+
+  if (gameError) {
+    throw gameError;
+  }
+
+  if (membersError) {
+    throw membersError;
+  }
+
+  if (!game || game.host_clerk_user_id !== userId) {
+    redirect(`/games/${roomCode}`);
+  }
+
+  if (!members?.length || members.some((member) => !member.phase_done)) {
+    redirect(`/games/${roomCode}`);
+  }
+
+  if (game.phase === "deadline_day") {
+    const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
+    const deadlineComplete = await areDeadlineAuctionsComplete(supabase, gameId, seasonNumber);
+
+    if (!deadlineComplete) {
+      redirect(`/games/${roomCode}?view=deadline`);
+    }
+  }
+
+  if (game.phase === "match") {
+    const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
+    const seasonComplete = await areSeasonFixturesComplete(supabase, gameId, seasonNumber);
+
+    if (!seasonComplete) {
+      redirect(`/games/${roomCode}?view=matchday`);
+    }
+  }
+
+  const nextPhase = getNextLobbyPhase(game.phase);
+  const now = new Date().toISOString();
+  const nextTurnClubId = nextPhase === "offseason_scouting" ? await getFirstClubId(supabase, gameId) : null;
+  const nextSettings = getSettingsForNextPhase(game.settings, game.phase, nextPhase);
+
+  if (nextPhase === "prematch") {
+    await ensureSeasonSchedule(supabase, gameId, nextSettings);
+  }
+
+  const { error: updateGameError } = await supabase
+    .from("games")
+    .update({
+      current_turn_club_id: nextTurnClubId,
+      phase: nextPhase,
+      settings: nextSettings,
+      last_saved_at: now,
+      last_saved_by_clerk_user_id: userId,
+      save_status: nextPhase === "completed" ? "completed" : "active",
+      save_version: (await getNextSaveVersion(supabase, gameId)) + 1,
+    })
+    .eq("id", gameId);
+
+  if (updateGameError) {
+    throw updateGameError;
+  }
+
+  const { error: resetError } = await supabase
+    .from("game_members")
+    .update({ phase_done: false, phase_done_at: null })
+    .eq("game_id", gameId);
+
+  if (resetError) {
+    throw resetError;
+  }
+
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}`);
+}
+
+export async function deleteGameAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !supabase) {
+    redirect("/lobby");
+  }
+
+  const { data: game, error: gameError } = await supabase
+    .from("games")
+    .select("id, host_clerk_user_id")
+    .eq("id", gameId)
+    .maybeSingle<{ id: string; host_clerk_user_id: string }>();
+
+  if (gameError) {
+    throw gameError;
+  }
+
+  if (!game || game.host_clerk_user_id !== userId) {
+    redirect("/lobby");
+  }
+
+  const { error } = await supabase.from("games").delete().eq("id", gameId);
+
+  if (error) {
+    throw error;
+  }
+
+  revalidatePath("/lobby");
+  redirect("/lobby");
+}
+
+function isUpgradeAction(value: string): value is UpgradeAction {
+  return value === "training" || value === "scouting" || value === "stadium";
+}
+
+function getClubFacilityLevel(
+  club: {
+    scouting_level: number;
+    stadium_level: number;
+    training_level: number;
+  },
+  action: UpgradeAction,
+) {
+  if (action === "scouting") {
+    return club.scouting_level;
+  }
+
+  if (action === "stadium") {
+    return club.stadium_level;
+  }
+
+  return club.training_level;
+}
+
+async function getNextSaveVersion(supabase: NonNullable<ReturnType<typeof createSupabaseServiceClient>>, gameId: string) {
+  const { data, error } = await supabase
+    .from("games")
+    .select("save_version")
+    .eq("id", gameId)
+    .single<{ save_version: number }>();
+
+  if (error) {
+    throw error;
+  }
+
+  return data.save_version ?? 1;
+}
+
+type SupabaseServiceClient = NonNullable<ReturnType<typeof createSupabaseServiceClient>>;
+
+type FixtureActionRow = {
+  away_cpu_lineup_id?: string | null;
+  away_lineup_locked: boolean;
+  away_participant_id: string;
+  game_id: string;
+  home_cpu_lineup_id?: string | null;
+  home_lineup_locked: boolean;
+  home_participant_id: string;
+  id: string;
+  matchday: number;
+  season_number: number;
+  status: "completed" | "scheduled";
+};
+
+type FixtureParticipantRow = {
+  club_id?: string | null;
+  cpu_team_id?: string | null;
+  display_name: string;
+  id: string;
+  kind: "cpu" | "human";
+};
+
+type CpuLineupRow = {
+  att_stars: number | string;
+  def_stars: number | string;
+  display_name: string;
+  id: string;
+  mid_stars: number | string;
+};
+
+async function ensureSeasonSchedule(supabase: SupabaseServiceClient, gameId: string, settings: LobbyGame["settings"]) {
+  const seasonNumber = Number(settings?.seasonNumber ?? 1);
+  const { count, error: existingError } = await supabase
+    .from("season_participants")
+    .select("id", { count: "exact", head: true })
+    .eq("game_id", gameId)
+    .eq("season_number", seasonNumber);
+
+  if (existingError) {
+    throw existingError;
+  }
+
+  if ((count ?? 0) > 0) {
+    return;
+  }
+
+  const targetLeagueSize = getTargetLeagueSize(settings);
+  const [{ data: clubs, error: clubsError }, { data: cpuTeams, error: cpuError }] = await Promise.all([
+    supabase
+      .from("clubs")
+      .select("id, club_name, created_at")
+      .eq("game_id", gameId)
+      .order("created_at", { ascending: true })
+      .returns<Array<{ id: string; club_name: string; created_at: string }>>(),
+    supabase
+      .from("cpu_teams")
+      .select("id, display_name")
+      .eq("active", true)
+      .order("display_name", { ascending: true })
+      .limit(Math.max(0, targetLeagueSize))
+      .returns<Array<{ id: string; display_name: string }>>(),
+  ]);
+
+  if (clubsError) {
+    throw clubsError;
+  }
+
+  if (cpuError) {
+    throw cpuError;
+  }
+
+  const requiredCpu = getRequiredCpuCount(clubs?.length ?? 0, targetLeagueSize);
+  if ((cpuTeams?.length ?? 0) < requiredCpu) {
+    throw new Error(`Zu wenige aktive CPU-Teams. Benoetigt: ${requiredCpu}.`);
+  }
+
+  const participantRows = [
+    ...(clubs ?? []).map((club) => ({
+      club_id: club.id,
+      cpu_team_id: null,
+      display_name: club.club_name,
+      game_id: gameId,
+      kind: "human",
+      season_number: seasonNumber,
+    })),
+    ...(cpuTeams ?? []).slice(0, requiredCpu).map((team) => ({
+      club_id: null,
+      cpu_team_id: team.id,
+      display_name: team.display_name,
+      game_id: gameId,
+      kind: "cpu",
+      season_number: seasonNumber,
+    })),
+  ];
+
+  const { data: participants, error: participantsError } = await supabase
+    .from("season_participants")
+    .insert(participantRows)
+    .select("id, kind, club_id, cpu_team_id, display_name")
+    .returns<FixtureParticipantRow[]>();
+
+  if (participantsError) {
+    throw participantsError;
+  }
+
+  const participantInputs: SeasonParticipant[] = (participants ?? []).map((participant) => ({
+    club_id: participant.club_id,
+    cpu_team_id: participant.cpu_team_id,
+    id: participant.id,
+    kind: participant.kind,
+    name: participant.display_name,
+  }));
+  const fixtures = buildSeasonFixtures(participantInputs, getSeasonMode(settings));
+  const cpuLineupsByTeamId = await getCpuLineupsByTeamId(supabase, participants ?? []);
+  const pickCpuLineupId = (teamId: string) => {
+    const options = cpuLineupsByTeamId.get(teamId) ?? [];
+    return options[Math.floor(Math.random() * options.length)]?.id ?? null;
+  };
+
+  for (const participant of participants ?? []) {
+    if (participant.cpu_team_id && (cpuLineupsByTeamId.get(participant.cpu_team_id)?.length ?? 0) === 0) {
+      throw new Error(`CPU-Team ${participant.display_name} hat keine CPU-Aufstellungen.`);
+    }
+  }
+
+  const fixtureRows = fixtures.map((fixture) => {
+    const home = participants?.find((participant) => participant.id === fixture.home_participant_id);
+    const away = participants?.find((participant) => participant.id === fixture.away_participant_id);
+
+    return {
+      away_cpu_lineup_id: away?.cpu_team_id ? pickCpuLineupId(away.cpu_team_id) : null,
+      away_lineup_locked: away?.kind === "cpu",
+      away_participant_id: fixture.away_participant_id,
+      game_id: gameId,
+      home_cpu_lineup_id: home?.cpu_team_id ? pickCpuLineupId(home.cpu_team_id) : null,
+      home_lineup_locked: home?.kind === "cpu",
+      home_participant_id: fixture.home_participant_id,
+      matchday: fixture.matchday,
+      season_number: seasonNumber,
+    };
+  });
+
+  const [{ error: fixtureError }, { error: standingsError }] = await Promise.all([
+    supabase.from("fixtures").insert(fixtureRows),
+    supabase.from("season_standings").insert(
+      (participants ?? []).map((participant, index) => ({
+        game_id: gameId,
+        participant_id: participant.id,
+        rank: index + 1,
+        season_number: seasonNumber,
+      })),
+    ),
+  ]);
+
+  if (fixtureError) {
+    throw fixtureError;
+  }
+
+  if (standingsError) {
+    throw standingsError;
+  }
+}
+
+async function getCpuLineupsByTeamId(supabase: SupabaseServiceClient, participants: FixtureParticipantRow[]) {
+  const cpuTeamIds = [...new Set(participants.flatMap((participant) => (participant.cpu_team_id ? [participant.cpu_team_id] : [])))];
+  const result = new Map<string, CpuLineupRow[]>();
+
+  if (cpuTeamIds.length === 0) {
+    return result;
+  }
+
+  const { data, error } = await supabase
+    .from("cpu_lineups")
+    .select("id, cpu_team_id, display_name, def_stars, mid_stars, att_stars")
+    .in("cpu_team_id", cpuTeamIds)
+    .returns<Array<CpuLineupRow & { cpu_team_id: string }>>();
+
+  if (error) {
+    throw error;
+  }
+
+  for (const teamId of cpuTeamIds) {
+    const options = (data ?? []).filter((lineup) => lineup.cpu_team_id === teamId);
+    result.set(teamId, options);
+  }
+
+  return result;
+}
+
+async function getFixtureForAction(supabase: SupabaseServiceClient, fixtureId: string, gameId: string) {
+  const { data, error } = await supabase
+    .from("fixtures")
+    .select("id, game_id, season_number, matchday, home_participant_id, away_participant_id, home_cpu_lineup_id, away_cpu_lineup_id, home_lineup_locked, away_lineup_locked, status")
+    .eq("id", fixtureId)
+    .eq("game_id", gameId)
+    .maybeSingle<FixtureActionRow>();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data || data.status === "completed") {
+    throw new Error("Fixture nicht gefunden oder bereits abgeschlossen.");
+  }
+
+  return data;
+}
+
+async function getFixtureParticipants(supabase: SupabaseServiceClient, fixture: FixtureActionRow) {
+  const { data, error } = await supabase
+    .from("season_participants")
+    .select("id, kind, club_id, cpu_team_id, display_name")
+    .in("id", [fixture.home_participant_id, fixture.away_participant_id])
+    .returns<FixtureParticipantRow[]>();
+
+  if (error) {
+    throw error;
+  }
+
+  const home = data?.find((participant) => participant.id === fixture.home_participant_id);
+  const away = data?.find((participant) => participant.id === fixture.away_participant_id);
+
+  if (!home || !away) {
+    throw new Error("Fixture-Teilnehmer fehlen.");
+  }
+
+  return { away, home };
+}
+
+async function getHumanFixtureSide(supabase: SupabaseServiceClient, fixture: FixtureActionRow, clubId: string) {
+  const participants = await getFixtureParticipants(supabase, fixture);
+  if (participants.home.club_id === clubId) {
+    return "home" as const;
+  }
+
+  if (participants.away.club_id === clubId) {
+    return "away" as const;
+  }
+
+  return null;
+}
+
+async function resolveFixtureServer(params: {
+  fixture: FixtureActionRow;
+  game: LobbyGame;
+  participants: { away: FixtureParticipantRow; home: FixtureParticipantRow };
+  supabase: SupabaseServiceClient;
+  userId: string;
+}) {
+  const { fixture, game, participants, supabase, userId } = params;
+  const [homeSide, awaySide] = await Promise.all([
+    buildFixtureSide(supabase, participants.home, fixture.home_cpu_lineup_id),
+    buildFixtureSide(supabase, participants.away, fixture.away_cpu_lineup_id),
+  ]);
+  const resolution = resolveFixture({
+    away: awaySide,
+    diceRolls: Array.from({ length: 6 }, () => [rollDie(), rollDie()] as [number, number]),
+    home: homeSide,
+    matchPointsMode: getMatchPointsMode(game.settings),
+  });
+
+  for (const event of resolution.events) {
+    if (event.event_type === "injury") {
+      await supabase
+        .from("club_players")
+        .update({ injured: true })
+        .eq("id", event.player_id)
+        .eq("club_id", event.club_id);
+    }
+
+    if (event.event_type === "game_changer" && event.club_id) {
+      await assignRandomGameChanger(supabase, event.club_id);
+    }
+  }
+
+  const { error: fixtureError } = await supabase
+    .from("fixtures")
+    .update({
+      away_score: resolution.away_match_points,
+      away_third_points: resolution.away_third_points,
+      completed_at: new Date().toISOString(),
+      home_score: resolution.home_match_points,
+      home_third_points: resolution.home_third_points,
+      result: resolution,
+      status: "completed",
+    })
+    .eq("id", fixture.id);
+
+  if (fixtureError) {
+    throw fixtureError;
+  }
+
+  await rebuildSeasonStandings(supabase, fixture.game_id, fixture.season_number);
+  await touchGameSave(supabase, fixture.game_id, userId);
+}
+
+async function buildFixtureSide(supabase: SupabaseServiceClient, participant: FixtureParticipantRow, cpuLineupId?: string | null): Promise<FixtureSideInput> {
+  if (participant.kind === "cpu") {
+    const { data, error } = await supabase
+      .from("cpu_lineups")
+      .select("id, display_name, def_stars, mid_stars, att_stars")
+      .eq("id", cpuLineupId)
+      .single<CpuLineupRow>();
+
+    if (error) {
+      throw error;
+    }
+
+    return {
+      canReceiveEvents: false,
+      clubId: null,
+      lineup: { ATT: [], DEF: [], GK: [], MID: [] },
+      participantId: participant.id,
+      powers: {
+        ATT: Number(data.att_stars),
+        DEF: Number(data.def_stars),
+        MID: Number(data.mid_stars),
+      },
+    };
+  }
+
+  if (!participant.club_id) {
+    throw new Error("Human participant without club.");
+  }
+
+  const { data, error } = await supabase
+    .from("club_players")
+    .select("id, current_stars, current_zone, lineup_slot, player:players(chemistry_left, chemistry_right)")
+    .eq("club_id", participant.club_id)
+    .neq("current_zone", "bench")
+    .eq("injured", false)
+    .order("lineup_slot", { ascending: true })
+    .returns<
+      Array<{
+        current_stars: number | string;
+        current_zone: string;
+        id: string;
+        lineup_slot: number | null;
+        player: { chemistry_left?: boolean | null; chemistry_right?: boolean | null };
+      }>
+    >();
+
+  if (error) {
+    throw error;
+  }
+
+  const lineup = {
+    ATT: getZoneIds(data ?? [], "ATT"),
+    DEF: getZoneIds(data ?? [], "DEF"),
+    GK: getZoneIds(data ?? [], "GK"),
+    MID: getZoneIds(data ?? [], "MID"),
+  };
+  const powers = calculateLineupPower(
+    (data ?? []).map((player) => ({
+      chemistry_left: player.player?.chemistry_left,
+      chemistry_right: player.player?.chemistry_right,
+      current_stars: player.current_stars,
+      current_zone: player.current_zone,
+      lineup_slot: player.lineup_slot,
+    })),
+  );
+
+  return {
+    canReceiveEvents: true,
+    clubId: participant.club_id,
+    lineup,
+    participantId: participant.id,
+    powers: {
+      ATT: powers.ATT.total,
+      DEF: powers.DEF.total,
+      MID: powers.MID.total,
+    },
+  };
+}
+
+function getZoneIds(players: Array<{ current_zone: string; id: string; lineup_slot: number | null }>, zone: TacticalZone | "GK") {
+  return players
+    .filter((player) => player.current_zone === zone)
+    .sort((a, b) => Number(a.lineup_slot ?? 999) - Number(b.lineup_slot ?? 999))
+    .map((player) => player.id);
+}
+
+async function assignRandomGameChanger(supabase: SupabaseServiceClient, clubId: string) {
+  const { data: cards, error } = await supabase
+    .from("game_changer_cards")
+    .select("id")
+    .limit(20)
+    .returns<Array<{ id: string }>>();
+
+  if (error || !cards?.length) {
+    return;
+  }
+
+  const card = cards[Math.floor(Math.random() * cards.length)];
+  await supabase.from("club_game_changers").insert({
+    club_id: clubId,
+    game_changer_card_id: card.id,
+  });
+}
+
+async function rebuildSeasonStandings(supabase: SupabaseServiceClient, gameId: string, seasonNumber: number) {
+  const [{ data: fixtures, error: fixturesError }, { data: participants, error: participantsError }] = await Promise.all([
+    supabase
+      .from("fixtures")
+      .select("home_participant_id, away_participant_id, home_score, away_score, home_third_points, away_third_points, status")
+      .eq("game_id", gameId)
+      .eq("season_number", seasonNumber)
+      .returns<
+        Array<{
+          away_participant_id: string;
+          away_score: number | null;
+          away_third_points: number | string | null;
+          home_participant_id: string;
+          home_score: number | null;
+          home_third_points: number | string | null;
+          status: string;
+        }>
+      >(),
+    supabase
+      .from("season_participants")
+      .select("id, kind, club_id")
+      .eq("game_id", gameId)
+      .eq("season_number", seasonNumber)
+      .returns<Array<{ club_id?: string | null; id: string; kind: string }>>(),
+  ]);
+
+  if (fixturesError) {
+    throw fixturesError;
+  }
+
+  if (participantsError) {
+    throw participantsError;
+  }
+
+  const rows = new Map(
+    (participants ?? []).map((participant) => [
+      participant.id,
+      {
+        draws: 0,
+        fixture_points_against: 0,
+        fixture_points_for: 0,
+        game_id: gameId,
+        losses: 0,
+        match_points: 0,
+        participant_id: participant.id,
+        played: 0,
+        rank: 1,
+        season_number: seasonNumber,
+        third_points_against: 0,
+        third_points_for: 0,
+        wins: 0,
+      },
+    ]),
+  );
+
+  for (const fixture of fixtures ?? []) {
+    if (fixture.status !== "completed") {
+      continue;
+    }
+
+    const home = rows.get(fixture.home_participant_id);
+    const away = rows.get(fixture.away_participant_id);
+    if (!home || !away) {
+      continue;
+    }
+
+    const homeScore = Number(fixture.home_score ?? 0);
+    const awayScore = Number(fixture.away_score ?? 0);
+    const homeThirds = Number(fixture.home_third_points ?? 0);
+    const awayThirds = Number(fixture.away_third_points ?? 0);
+
+    home.played += 1;
+    away.played += 1;
+    home.match_points += homeScore;
+    away.match_points += awayScore;
+    home.third_points_for += homeThirds;
+    home.third_points_against += awayThirds;
+    away.third_points_for += awayThirds;
+    away.third_points_against += homeThirds;
+    home.fixture_points_for += homeScore;
+    home.fixture_points_against += awayScore;
+    away.fixture_points_for += awayScore;
+    away.fixture_points_against += homeScore;
+
+    if (homeScore === awayScore) {
+      home.draws += 1;
+      away.draws += 1;
+    } else if (homeScore > awayScore) {
+      home.wins += 1;
+      away.losses += 1;
+    } else {
+      away.wins += 1;
+      home.losses += 1;
+    }
+  }
+
+  const sorted = [...rows.values()].sort((a, b) => {
+    const pointsDiff = b.match_points - a.match_points;
+    if (pointsDiff !== 0) return pointsDiff;
+    const thirdDiff = b.third_points_for - b.third_points_against - (a.third_points_for - a.third_points_against);
+    if (thirdDiff !== 0) return thirdDiff;
+    return b.third_points_for - a.third_points_for;
+  });
+
+  const upsertRows = sorted.map((row, index) => ({ ...row, rank: index + 1, updated_at: new Date().toISOString() }));
+  const { error } = await supabase.from("season_standings").upsert(upsertRows);
+
+  if (error) {
+    throw error;
+  }
+
+  await updateHumanClubRanks(supabase, participants ?? [], upsertRows);
+}
+
+async function updateHumanClubRanks(
+  supabase: SupabaseServiceClient,
+  participants: Array<{ club_id?: string | null; id: string; kind: string }>,
+  standings: Array<{ participant_id: string; rank: number }>,
+) {
+  for (const standing of standings) {
+    const participant = participants.find((item) => item.id === standing.participant_id);
+    if (!participant?.club_id || participant.kind !== "human") {
+      continue;
+    }
+
+    await supabase.from("clubs").update({ season_rank: standing.rank }).eq("id", participant.club_id);
+  }
+}
+
+async function areSeasonFixturesComplete(supabase: SupabaseServiceClient, gameId: string, seasonNumber: number) {
+  const { data, error } = await supabase
+    .from("fixtures")
+    .select("status")
+    .eq("game_id", gameId)
+    .eq("season_number", seasonNumber)
+    .returns<Array<{ status: string }>>();
+
+  if (error) {
+    throw error;
+  }
+
+  return Boolean(data?.length) && data.every((fixture) => fixture.status === "completed");
+}
+
+function rollDie() {
+  return Math.floor(Math.random() * 6) + 1;
+}
+
+type SubmittedLineupItem = {
+  club_player_id: string;
+  slot: number;
+  zone: "ATT" | "DEF" | "GK" | "MID";
+};
+
+function parseLineupPayload(value: string): SubmittedLineupItem[] {
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return [];
+  }
+
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+
+  const usedClubPlayerIds = new Set<string>();
+  const validZones = new Set(["ATT", "DEF", "GK", "MID"]);
+  const items: SubmittedLineupItem[] = [];
+
+  for (const item of parsed) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+
+    const clubPlayerId = "club_player_id" in item ? String(item.club_player_id) : "";
+    const zone = "zone" in item ? String(item.zone) : "";
+    const slot = "slot" in item ? Number(item.slot) : Number.NaN;
+
+    if (!clubPlayerId || clubPlayerId.startsWith("default-") || usedClubPlayerIds.has(clubPlayerId)) {
+      continue;
+    }
+
+    if (!validZones.has(zone) || !Number.isInteger(slot) || slot < 1 || slot > 11) {
+      continue;
+    }
+
+    usedClubPlayerIds.add(clubPlayerId);
+    items.push({
+      club_player_id: clubPlayerId,
+      slot,
+      zone: zone as SubmittedLineupItem["zone"],
+    });
+  }
+
+  return items;
+}
+
+type DeadlineAuctionActionRow = {
+  auction_index: number;
+  bid_order_club_ids: string[];
+  current_amount: number | string;
+  current_bid_club_id?: string | null;
+  game_id: string;
+  id: string;
+  minimum_bid: number | string;
+  passed_club_ids: string[];
+  player_id: string;
+  season_number: number;
+  status: "scheduled" | "open" | "resolving" | "resolved" | "passed";
+  turn_started_at?: string | null;
+  winning_club_id?: string | null;
+};
+
+async function getGameClubContext(supabase: SupabaseServiceClient, gameId: string, userId: string) {
+  const [{ data: game, error: gameError }, { data: clubs, error: clubsError }] = await Promise.all([
+    supabase
+      .from("games")
+      .select("id, room_code, phase, host_clerk_user_id, current_turn_club_id, settings")
+      .eq("id", gameId)
+      .single<LobbyGame>(),
+    supabase
+      .from("clubs")
+      .select(
+        "id, game_id, clerk_user_id, club_name, manager_name, money, points, is_ready, created_at, scouting_level, training_level, stadium_level, season_rank, status",
+      )
+      .eq("game_id", gameId)
+      .order("created_at", { ascending: true })
+      .returns<LobbyClub[]>(),
+  ]);
+
+  if (gameError) {
+    throw gameError;
+  }
+
+  if (clubsError) {
+    throw clubsError;
+  }
+
+  const ownClub = (clubs ?? []).find((club) => club.clerk_user_id === userId);
+
+  if (!ownClub) {
+    throw new Error("Du bist in diesem Spielstand keinem Club zugeordnet.");
+  }
+
+  return { clubs: clubs ?? [], game, ownClub };
+}
+
+async function getScoutingDraws(supabase: SupabaseServiceClient, gameId: string, seasonNumber: number) {
+  const { data, error } = await supabase
+    .from("scouting_draws")
+    .select(`id, game_id, club_id, season_number, pile_key, draw_index, player_id, status, created_at, resolved_at, player:players(${DRAFT_PLAYER_SELECT})`)
+    .eq("game_id", gameId)
+    .eq("season_number", seasonNumber)
+    .order("draw_index", { ascending: true })
+    .returns<ScoutingDrawSnapshot[]>();
+
+  if (error) {
+    throw error;
+  }
+
+  return data ?? [];
+}
+
+async function pickAvailableScoutingPlayer(params: {
+  clubs: LobbyClub[];
+  draws: ScoutingDrawSnapshot[];
+  gameId: string;
+  seasonNumber: number;
+  supabase: SupabaseServiceClient;
+}) {
+  const { clubs, draws, supabase } = params;
+  const clubIds = clubs.map((club) => club.id);
+  const openPlayerIds = new Set(draws.filter((draw) => draw.status === "drawn").map((draw) => draw.player_id));
+  const ownedPlayerIds = new Set<string>();
+
+  if (clubIds.length > 0) {
+    const { data: ownedRows, error: ownedError } = await supabase
+      .from("club_players")
+      .select("player_id")
+      .in("club_id", clubIds)
+      .returns<Array<{ player_id: string }>>();
+
+    if (ownedError) {
+      throw ownedError;
+    }
+
+    for (const row of ownedRows ?? []) {
+      ownedPlayerIds.add(row.player_id);
+    }
+  }
+
+  const { data: players, error: playersError } = await supabase
+    .from("players")
+    .select(DRAFT_PLAYER_SELECT)
+    .returns<DraftPlayerRow[]>();
+
+  if (playersError) {
+    throw playersError;
+  }
+
+  const available = (players ?? []).filter((player) => !openPlayerIds.has(player.id) && !ownedPlayerIds.has(player.id));
+
+  if (available.length === 0) {
+    return null;
+  }
+
+  return available[Math.floor(Math.random() * available.length)];
+}
+
+async function assertPlayerNotOwnedInGame(supabase: SupabaseServiceClient, gameId: string, playerId: string) {
+  const { data: clubs, error: clubsError } = await supabase
+    .from("clubs")
+    .select("id")
+    .eq("game_id", gameId)
+    .returns<Array<{ id: string }>>();
+
+  if (clubsError) {
+    throw clubsError;
+  }
+
+  const clubIds = (clubs ?? []).map((club) => club.id);
+
+  if (clubIds.length === 0) {
+    return;
+  }
+
+  const { data, error } = await supabase
+    .from("club_players")
+    .select("id")
+    .in("club_id", clubIds)
+    .eq("player_id", playerId)
+    .maybeSingle<{ id: string }>();
+
+  if (error) {
+    throw error;
+  }
+
+  if (data) {
+    throw new Error("Dieser Spieler ist in diesem Spielstand bereits vergeben.");
+  }
+}
+
+async function getClubSquadCount(supabase: SupabaseServiceClient, clubId: string) {
+  const { count, error } = await supabase
+    .from("club_players")
+    .select("id", { count: "exact", head: true })
+    .eq("club_id", clubId);
+
+  if (error) {
+    throw error;
+  }
+
+  return count ?? 0;
+}
+
+async function getPlayerSaleCount(supabase: SupabaseServiceClient, gameId: string, clubId: string, seasonNumber: number) {
+  const { count, error } = await supabase
+    .from("transactions")
+    .select("id", { count: "exact", head: true })
+    .eq("game_id", gameId)
+    .eq("club_id", clubId)
+    .eq("reason", "player_sale")
+    .contains("metadata", { season_number: seasonNumber });
+
+  if (error) {
+    throw error;
+  }
+
+  return count ?? 0;
+}
+
+async function getDeadlineAuctions(supabase: SupabaseServiceClient, gameId: string, seasonNumber: number) {
+  const { data, error } = await supabase
+    .from("auctions")
+    .select("id, game_id, player_id, status, minimum_bid, winning_club_id, season_number, auction_index, current_bid_club_id, current_amount, turn_started_at, passed_club_ids, bid_order_club_ids")
+    .eq("game_id", gameId)
+    .eq("season_number", seasonNumber)
+    .order("auction_index", { ascending: true })
+    .returns<DeadlineAuctionActionRow[]>();
+
+  if (error) {
+    throw error;
+  }
+
+  return data ?? [];
+}
+
+async function getDeadlineAuction(supabase: SupabaseServiceClient, auctionId: string) {
+  const { data, error } = await supabase
+    .from("auctions")
+    .select("id, game_id, player_id, status, minimum_bid, winning_club_id, season_number, auction_index, current_bid_club_id, current_amount, turn_started_at, passed_club_ids, bid_order_club_ids")
+    .eq("id", auctionId)
+    .maybeSingle<DeadlineAuctionActionRow>();
+
+  if (error) {
+    throw error;
+  }
+
+  return data;
+}
+
+async function areDeadlineAuctionsComplete(supabase: SupabaseServiceClient, gameId: string, seasonNumber: number) {
+  const { data, error } = await supabase
+    .from("auctions")
+    .select("status")
+    .eq("game_id", gameId)
+    .eq("season_number", seasonNumber)
+    .returns<Array<{ status: string }>>();
+
+  if (error) {
+    throw error;
+  }
+
+  return Boolean(data?.length) && data.every((auction) => auction.status === "resolved" || auction.status === "passed");
+}
+
+async function pickDeadlinePlayers(params: {
+  count: number;
+  gameId: string;
+  seasonNumber: number;
+  supabase: SupabaseServiceClient;
+}) {
+  const { count, gameId, seasonNumber, supabase } = params;
+  const [{ data: clubs, error: clubsError }, { data: auctionRows, error: auctionError }, { data: players, error: playersError }] = await Promise.all([
+    supabase.from("clubs").select("id").eq("game_id", gameId).returns<Array<{ id: string }>>(),
+    supabase
+      .from("auctions")
+      .select("player_id")
+      .eq("game_id", gameId)
+      .eq("season_number", seasonNumber)
+      .returns<Array<{ player_id: string }>>(),
+    supabase.from("players").select(DRAFT_PLAYER_SELECT).returns<DraftPlayerRow[]>(),
+  ]);
+
+  if (clubsError) {
+    throw clubsError;
+  }
+
+  if (auctionError) {
+    throw auctionError;
+  }
+
+  if (playersError) {
+    throw playersError;
+  }
+
+  const clubIds = (clubs ?? []).map((club) => club.id);
+  const ownedPlayerIds = new Set<string>();
+  const auctionPlayerIds = new Set((auctionRows ?? []).map((row) => row.player_id));
+
+  if (clubIds.length > 0) {
+    const { data: ownedRows, error: ownedError } = await supabase
+      .from("club_players")
+      .select("player_id")
+      .in("club_id", clubIds)
+      .returns<Array<{ player_id: string }>>();
+
+    if (ownedError) {
+      throw ownedError;
+    }
+
+    for (const row of ownedRows ?? []) {
+      ownedPlayerIds.add(row.player_id);
+    }
+  }
+
+  const available = (players ?? []).filter((player) => !ownedPlayerIds.has(player.id) && !auctionPlayerIds.has(player.id));
+  return shuffle(available).slice(0, count);
+}
+
+async function resolveDeadlineAuction(supabase: SupabaseServiceClient, auctionId: string, gameId: string, userId: string) {
+  const auction = await getDeadlineAuction(supabase, auctionId);
+
+  if (!auction || auction.game_id !== gameId) {
+    return;
+  }
+
+  if (!auction.winning_club_id || Number(auction.current_amount ?? 0) <= 0) {
+    await markDeadlineAuctionPassed(supabase, auction.id, auction.passed_club_ids ?? []);
+    await openNextDeadlineAuction(supabase, gameId, Number(auction.season_number ?? 1));
+    await touchGameSave(supabase, gameId, userId);
+    return;
+  }
+
+  const [{ data: club, error: clubError }, squadCount] = await Promise.all([
+    supabase.from("clubs").select("id, money").eq("id", auction.winning_club_id).single<{ id: string; money: number | string }>(),
+    getClubSquadCount(supabase, auction.winning_club_id),
+  ]);
+
+  if (clubError) {
+    throw clubError;
+  }
+
+  const winningAmount = Number(auction.current_amount ?? 0);
+  if (Number(club.money) < winningAmount || squadCount >= 23) {
+    await markDeadlineAuctionPassed(supabase, auction.id, auction.passed_club_ids ?? []);
+    await openNextDeadlineAuction(supabase, gameId, Number(auction.season_number ?? 1));
+    await touchGameSave(supabase, gameId, userId);
+    return;
+  }
+
+  const { data: player, error: playerError } = await supabase
+    .from("players")
+    .select("id, base_stars")
+    .eq("id", auction.player_id)
+    .single<{ id: string; base_stars: number | string }>();
+
+  if (playerError) {
+    throw playerError;
+  }
+
+  const { error: insertPlayerError } = await supabase.from("club_players").insert({
+    club_id: auction.winning_club_id,
+    current_stars: player.base_stars,
+    current_zone: "bench",
+    player_id: auction.player_id,
+  });
+
+  if (insertPlayerError) {
+    throw insertPlayerError;
+  }
+
+  const { error: clubUpdateError } = await supabase
+    .from("clubs")
+    .update({ money: Number(club.money) - winningAmount })
+    .eq("id", auction.winning_club_id);
+
+  if (clubUpdateError) {
+    throw clubUpdateError;
+  }
+
+  const { error: auctionError } = await supabase
+    .from("auctions")
+    .update({
+      current_bid_club_id: null,
+      resolved_at: new Date().toISOString(),
+      status: "resolved",
+      turn_started_at: null,
+    })
+    .eq("id", auction.id);
+
+  if (auctionError) {
+    throw auctionError;
+  }
+
+  const { error: transactionError } = await supabase.from("transactions").insert({
+    amount: -winningAmount,
+    club_id: auction.winning_club_id,
+    game_id: gameId,
+    metadata: {
+      auction_id: auction.id,
+      player_id: auction.player_id,
+      season_number: auction.season_number,
+    },
+    reason: "deadline_purchase",
+  });
+
+  if (transactionError) {
+    throw transactionError;
+  }
+
+  await openNextDeadlineAuction(supabase, gameId, Number(auction.season_number ?? 1));
+  await touchGameSave(supabase, gameId, userId);
+}
+
+async function markDeadlineAuctionPassed(supabase: SupabaseServiceClient, auctionId: string, passedClubIds: string[]) {
+  const { error } = await supabase
+    .from("auctions")
+    .update({
+      current_bid_club_id: null,
+      passed_club_ids: passedClubIds,
+      resolved_at: new Date().toISOString(),
+      status: "passed",
+      turn_started_at: null,
+    })
+    .eq("id", auctionId);
+
+  if (error) {
+    throw error;
+  }
+}
+
+async function openNextDeadlineAuction(supabase: SupabaseServiceClient, gameId: string, seasonNumber: number) {
+  const { data: nextAuction, error: nextError } = await supabase
+    .from("auctions")
+    .select("id, bid_order_club_ids")
+    .eq("game_id", gameId)
+    .eq("season_number", seasonNumber)
+    .eq("status", "scheduled")
+    .order("auction_index", { ascending: true })
+    .limit(1)
+    .maybeSingle<{ id: string; bid_order_club_ids: string[] | null }>();
+
+  if (nextError) {
+    throw nextError;
+  }
+
+  if (!nextAuction) {
+    return;
+  }
+
+  const firstClubId = nextAuction.bid_order_club_ids?.[0] ?? null;
+  const { error } = await supabase
+    .from("auctions")
+    .update({
+      current_bid_club_id: firstClubId,
+      status: "open",
+      turn_started_at: firstClubId ? new Date().toISOString() : null,
+    })
+    .eq("id", nextAuction.id);
+
+  if (error) {
+    throw error;
+  }
+}
+
+function shuffle<T>(items: T[]) {
+  const copy = [...items];
+
+  for (let index = copy.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [copy[index], copy[swapIndex]] = [copy[swapIndex], copy[index]];
+  }
+
+  return copy;
+}
+
+async function getFirstClubId(supabase: SupabaseServiceClient, gameId: string) {
+  const { data, error } = await supabase
+    .from("clubs")
+    .select("id")
+    .eq("game_id", gameId)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle<{ id: string }>();
+
+  if (error) {
+    throw error;
+  }
+
+  return data?.id ?? null;
+}
+
+async function touchGameSave(supabase: SupabaseServiceClient, gameId: string, userId: string) {
+  const { error } = await supabase
+    .from("games")
+    .update({
+      last_saved_at: new Date().toISOString(),
+      last_saved_by_clerk_user_id: userId,
+      save_status: "active",
+    })
+    .eq("id", gameId);
+
+  if (error) {
+    throw error;
+  }
+}

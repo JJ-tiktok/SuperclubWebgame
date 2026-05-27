@@ -2303,6 +2303,7 @@ function MatchdayView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub:
 
   const matchdayFixtures = season.fixtures.filter((fixture) => fixture.matchday === season.current_matchday);
   const completedCount = matchdayFixtures.filter((fixture) => fixture.status === "completed").length;
+  const ownStanding = ownClub ? season.standings.find((s) => s.participant.club_id === ownClub.id) ?? null : null;
 
   // Find own club's most recently completed fixture across all matchdays
   const ownLastFixture = ownClub
@@ -2366,6 +2367,33 @@ function MatchdayView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub:
           <Metric detail="Saisonmodus" icon={ListOrdered} label="Format" value={snapshot.game.settings.season_mode === "double_round_robin" ? "Hin/Rueck" : "5 Spiele"} />
           <Metric detail="Tabellenpunkte" icon={Trophy} label="Punkte" value={snapshot.game.settings.match_points_mode === "classic_6_2_0" ? "6/2/0" : "3/1/0"} />
         </div>
+
+        {ownStanding ? (
+          <div className="mt-3 rounded-md border border-zinc-800 bg-zinc-900/60 p-3">
+            <p className="mb-2 text-xs font-medium uppercase text-zinc-500">Meine Saisonbilanz</p>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-1 sm:grid-cols-4">
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-xl font-black text-zinc-50">{ownStanding.match_points}</span>
+                <span className="text-xs text-zinc-400">Punkte</span>
+              </div>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-xl font-black text-zinc-50">{ownStanding.played}</span>
+                <span className="text-xs text-zinc-400">gespielt</span>
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-sm font-semibold text-emerald-400">{ownStanding.wins}S</span>
+                <span className="text-sm font-semibold text-zinc-400">{ownStanding.draws}U</span>
+                <span className="text-sm font-semibold text-rose-400">{ownStanding.losses}N</span>
+              </div>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-sm font-semibold text-zinc-200">{ownStanding.third_points_for}</span>
+                <span className="text-xs text-zinc-500">:</span>
+                <span className="text-sm font-semibold text-zinc-200">{ownStanding.third_points_against}</span>
+                <span className="text-xs text-zinc-400">Drittelpunkte</span>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </Panel>
 
       {pinnedOwnFixture ? (

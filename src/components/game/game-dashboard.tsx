@@ -2496,12 +2496,54 @@ function FixtureCard({
                 ))}
               </div>
               {result.events.length > 0 ? (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {result.events.map((event, index) => (
-                    <Badge key={`${event.event_type}-${index}`} tone={event.event_type === "injury" ? "red" : "blue"}>
-                      {event.event_type === "injury" ? "Verletzung" : "Game-Changer"} Wurf {event.dice.join("+")} {event.zone}
-                    </Badge>
-                  ))}
+                <div className="mt-3 space-y-2">
+                  <p className="text-xs font-medium uppercase text-zinc-500">Ereignisse</p>
+                  {result.events.map((event, index) => {
+                    const eventClubName =
+                      home.club_id === event.club_id
+                        ? home.display_name
+                        : away.club_id === event.club_id
+                          ? away.display_name
+                          : "Unbekannt";
+                    const ownSquad = snapshot.club_overview?.squad ?? [];
+                    const injuredPlayer =
+                      event.event_type === "injury"
+                        ? ownSquad.find((p) => p.id === event.player_id)?.player.display_name ?? null
+                        : null;
+                    const zoneLabel = event.zone === "ATT" ? "Angriff" : event.zone === "MID" ? "Mittelfeld" : event.zone === "DEF" ? "Abwehr" : event.zone;
+
+                    return (
+                      <div
+                        className={`flex items-start gap-3 rounded-md border p-2 text-xs ${event.event_type === "injury" ? "border-rose-800/60 bg-rose-950/30" : "border-violet-800/60 bg-violet-950/30"}`}
+                        key={`${event.event_type}-${index}`}
+                      >
+                        <span className="mt-0.5 text-base leading-none">
+                          {event.event_type === "injury" ? "🚑" : "🎯"}
+                        </span>
+                        <div>
+                          <p className={`font-semibold ${event.event_type === "injury" ? "text-rose-200" : "text-violet-200"}`}>
+                            {event.event_type === "injury" ? "Verletzung" : "Game Changer"}
+                            {" "}
+                            <span className="font-normal text-zinc-400">— {eventClubName}</span>
+                          </p>
+                          <p className="mt-0.5 text-zinc-400">
+                            {event.event_type === "injury" ? (
+                              <>
+                                {injuredPlayer ? (
+                                  <span className="font-medium text-rose-300">{injuredPlayer}</span>
+                                ) : (
+                                  <span>Spieler verletzt</span>
+                                )}{" "}
+                                in Zone {zoneLabel} · Wurf {event.dice.join("+")}
+                              </>
+                            ) : (
+                              <>Zone {zoneLabel} · Wurf {event.dice.join("+")}</>
+                            )}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               ) : null}
             </div>
@@ -3385,11 +3427,25 @@ function parseFixtureResult(value: Record<string, unknown> | null | undefined) {
   }
 
   return value as {
-    events: Array<{
-      dice: [number, number];
-      event_type: "game_changer" | "injury";
-      zone: string;
-    }>;
+    events: Array<
+      | {
+          club_id?: string | null;
+          dice: [number, number];
+          event_type: "game_changer";
+          participant_id: string;
+          third_index: number;
+          zone: string;
+        }
+      | {
+          club_id?: string | null;
+          dice: [number, number];
+          event_type: "injury";
+          participant_id: string;
+          player_id: string;
+          third_index: number;
+          zone: string;
+        }
+    >;
     thirds: Array<{
       away: {
         dice: [number, number];

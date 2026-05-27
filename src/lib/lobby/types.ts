@@ -59,6 +59,7 @@ export type LobbyClub = {
   points: number;
   season_rank?: number;
   status?: string;
+  attractiveness_stars?: number;
   stadium_level?: number;
   scouting_level?: number;
   training_level?: number;
@@ -328,6 +329,17 @@ export type SeasonStandingSnapshot = {
   wins: number;
 };
 
+export type ManagerStandingSnapshot = {
+  attractiveness_stars: number;
+  club_id: string;
+  club_name: string;
+  rank: number;
+  season_match_points: number;
+  season_score: number;
+  squad_stars: number;
+  status: string;
+};
+
 export type SeasonFixtureSnapshot = {
   away_cpu_lineup?: {
     att_stars: number;
@@ -365,6 +377,7 @@ export type SeasonFixtureSnapshot = {
 export type SeasonSnapshot = {
   current_matchday: number;
   fixtures: SeasonFixtureSnapshot[];
+  manager_standings: ManagerStandingSnapshot[];
   setup_error?: string;
   standings: SeasonStandingSnapshot[];
 };

@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { getTotalSkillValue, type PlayerCardData, type PlayerCardPosition } from "@/types/player-card";
 
 type LineupCard = PlayerCardData & {
+  injured?: boolean;
   lockedDefault?: boolean;
   sourceZone?: string;
   lineupSlot?: number | null;
@@ -132,7 +133,7 @@ export function GameLineupBoard({ cards, gameId, roomCode }: { cards: LineupCard
     const board = boardRef.current;
     const slot = slotById.get(fromSlotId);
     const player = cardById.get(playerId);
-    if (!board || !slot || player?.lockedDefault) {
+    if (!board || !slot || player?.lockedDefault || player?.injured) {
       return;
     }
 
@@ -155,7 +156,7 @@ export function GameLineupBoard({ cards, gameId, roomCode }: { cards: LineupCard
   function startBenchDrag(event: PointerEvent<HTMLDivElement>, playerId: string) {
     const board = boardRef.current;
     const player = cardById.get(playerId);
-    if (!board || player?.lockedDefault) {
+    if (!board || player?.lockedDefault || player?.injured) {
       return;
     }
 
@@ -320,10 +321,10 @@ export function GameLineupBoard({ cards, gameId, roomCode }: { cards: LineupCard
               >
                 {player && !isDragged ? (
                   <div
-                    className={cn(player.lockedDefault ? "cursor-default" : "cursor-grab active:cursor-grabbing")}
+                    className={cn(player.lockedDefault || player.injured ? "cursor-default" : "cursor-grab active:cursor-grabbing")}
                     onPointerDown={(event) => startDrag(event, slot.id, player.id)}
                   >
-                    <PlayerCard player={player} selected={player.lockedDefault} variant="lineup" />
+                    <LineupPlayerCard player={player} selected={player.lockedDefault} variant="lineup" />
                   </div>
                 ) : (
                   <span>{slot.label}</span>
@@ -356,11 +357,11 @@ export function GameLineupBoard({ cards, gameId, roomCode }: { cards: LineupCard
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
             {benchCards.map((player) => (
               <div
-                className="cursor-grab touch-none active:cursor-grabbing"
+                className={cn("touch-none", player.injured ? "cursor-not-allowed" : "cursor-grab active:cursor-grabbing")}
                 key={player.id}
                 onPointerDown={(event) => startBenchDrag(event, player.id)}
               >
-                <PlayerCard player={player} variant="draft" />
+                <LineupPlayerCard player={player} variant="draft" />
               </div>
             ))}
           </div>
@@ -576,7 +577,7 @@ function getLineupSummary(assignments: Record<string, string>, cardById: Map<str
 
   for (const slot of formationSlots) {
     const card = cardById.get(assignments[slot.id] ?? "");
-    if (!card) {
+    if (!card || !canUseSlot(card, slot)) {
       continue;
     }
 
@@ -642,6 +643,10 @@ function assignCard(
 ) {
   const slots = slotIdsByZone[zone] ?? [];
 
+  if (card.injured) {
+    return;
+  }
+
   for (const slotId of slots) {
     if (assignments[slotId] || !card.positions.includes(zone)) {
       continue;
@@ -681,7 +686,30 @@ function DraggedCard({ drag, player }: { drag: DragState; player: LineupCard | u
       className="pointer-events-none absolute z-30 w-[92px] scale-105 opacity-95 shadow-2xl"
       style={{ left: `${drag.x}%`, top: `${drag.y}%`, transform: "translate(-50%, -50%)" }}
     >
-      <PlayerCard player={player} variant="lineup" />
+      <LineupPlayerCard player={player} variant="lineup" />
+    </div>
+  );
+}
+
+function LineupPlayerCard({
+  player,
+  selected,
+  variant,
+}: {
+  player: LineupCard;
+  selected?: boolean;
+  variant: "draft" | "lineup";
+}) {
+  return (
+    <div className={cn("relative", player.injured ? "opacity-55 grayscale" : "")}>
+      <PlayerCard disabled={player.injured} player={player} selected={selected} variant={variant} />
+      {player.injured ? (
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-md bg-black/45">
+          <span className="rounded bg-rose-500 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-white shadow-lg">
+            Verletzt
+          </span>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -690,7 +718,7 @@ function getLineupPayload(assignments: Record<string, string>, cardById: Map<str
   return formationSlots.flatMap((slot, index) => {
     const card = cardById.get(assignments[slot.id] ?? "");
 
-    if (!card || card.lockedDefault) {
+    if (!card || card.lockedDefault || card.injured) {
       return [];
     }
 
@@ -742,7 +770,7 @@ function getFormationCounts(assignments: Record<string, string>, playerById: Map
 }
 
 function canUseSlot(player: LineupCard, slot: FormationSlot) {
-  return player.positions.includes(slot.zone);
+  return !player.injured && player.positions.includes(slot.zone);
 }
 
 function clamp(value: number, min: number, max: number) {

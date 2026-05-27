@@ -686,6 +686,10 @@ function TrainingView({
   const trainingEnabled = snapshot.game.phase === "offseason_training" || (isHost && testMode);
   const trainedClubPlayerIds = new Set(overview.training.events.map((event) => event.club_player_id));
   const latestEvents = [...overview.training.events].slice(0, 8);
+  const diceCounts = [1, 2, 3, 4, 5, 6].map((roll) => ({
+    count: overview.training.events.filter((event) => event.dice_roll === roll).length,
+    roll,
+  }));
 
   return (
     <div className="space-y-4">
@@ -817,6 +821,20 @@ function TrainingView({
                 );
               })
             )}
+          </div>
+          <div className="mt-4 rounded-md border border-zinc-800 bg-zinc-900/70 p-3">
+            <p className="text-xs font-medium uppercase text-zinc-500">Wuerfelverteilung</p>
+            <div className="mt-3 grid grid-cols-6 gap-2">
+              {diceCounts.map((item) => (
+                <div className="rounded-md border border-zinc-800 bg-zinc-950/70 p-2 text-center" key={item.roll}>
+                  <p className="text-sm font-black text-zinc-50">{item.roll}</p>
+                  <p className="mt-1 text-[11px] text-zinc-500">{item.count}x</p>
+                </div>
+              ))}
+            </div>
+            <p className="mt-3 text-xs leading-relaxed text-zinc-500">
+              Jeder Wurf hat 16,7 Prozent. Fortschritt entsteht nur, wenn der Wurf ueber dem aktuellen Sternwert liegt und weder Skill-Max noch Trainingscap blockieren.
+            </p>
           </div>
         </Panel>
       </div>
@@ -1939,9 +1957,9 @@ function FixtureCard({
               <div className="mt-2 grid gap-2 md:grid-cols-3">
                 {result.thirds.map((third) => (
                   <div className="rounded-md border border-zinc-800 bg-zinc-950/70 p-3" key={third.index}>
-                    <p className="text-xs font-semibold text-zinc-200">Drittel {third.index}</p>
+                    <p className="text-xs font-semibold text-zinc-200">Drittel {third.index}: {getThirdLabel(third.label)}</p>
                     <p className="mt-1 text-xs text-zinc-400">
-                      Heim {third.home.total} ({third.home.zone_stars}+{third.home.dice.join("+")}) - Auswaerts {third.away.total} ({third.away.zone_stars}+{third.away.dice.join("+")})
+                      Heim {third.home.total} ({third.home.zone_stars} Zone inkl. Links + {third.home.dice.join("+")}) - Auswaerts {third.away.total} ({third.away.zone_stars} Zone inkl. Links + {third.away.dice.join("+")})
                     </p>
                   </div>
                 ))}
@@ -2065,15 +2083,56 @@ function TableView({ snapshot }: { snapshot: LobbySnapshot }) {
   }
 
   return (
-    <Panel className="border-[var(--club-border)] bg-zinc-950/85">
-      <PanelHeader>
-        <div>
-          <PanelTitle>Tabelle</PanelTitle>
-          <PanelDescription>Human- und CPU-Teams in der aktuellen Saison.</PanelDescription>
+    <div className="space-y-4">
+      <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+        <PanelHeader>
+          <div>
+            <PanelTitle>Managerwertung</PanelTitle>
+            <PanelDescription>Kernwertung: Kadersterne plus erspielte Saisonpunkte.</PanelDescription>
+          </div>
+          <Crown size={18} className="text-[var(--club-color)]" aria-hidden />
+        </PanelHeader>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[720px] text-left text-sm">
+            <thead className="border-b border-zinc-800 text-xs uppercase text-zinc-500">
+              <tr>
+                <th className="py-2 pr-3">#</th>
+                <th className="py-2 pr-3">Club</th>
+                <th className="py-2 pr-3">Kader</th>
+                <th className="py-2 pr-3">Saisonpkt</th>
+                <th className="py-2 pr-3">Score</th>
+                <th className="py-2 pr-3">Status</th>
+                <th className="py-2 pr-3">Attraktivitaet</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-900">
+              {season.manager_standings.map((standing) => (
+                <tr className="text-zinc-300" key={standing.club_id}>
+                  <td className="py-3 pr-3 font-semibold text-zinc-50">{standing.rank}</td>
+                  <td className="py-3 pr-3 font-semibold text-zinc-50">{standing.club_name}</td>
+                  <td className="py-3 pr-3">{formatStars(standing.squad_stars)}</td>
+                  <td className="py-3 pr-3">{standing.season_match_points}</td>
+                  <td className="py-3 pr-3 text-base font-bold text-zinc-50">{standing.season_score}</td>
+                  <td className="py-3 pr-3">
+                    <Badge tone="blue">{getClubStatusLabel(standing.status)}</Badge>
+                  </td>
+                  <td className="py-3 pr-3">{standing.attractiveness_stars} Sterne</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
-        <Trophy size={18} className="text-[var(--club-color)]" aria-hidden />
-      </PanelHeader>
-      <div className="overflow-x-auto">
+      </Panel>
+
+      <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+        <PanelHeader>
+          <div>
+            <PanelTitle>Liga-Tabelle</PanelTitle>
+            <PanelDescription>Kosmetische Saisonansicht mit Human- und CPU-Teams.</PanelDescription>
+          </div>
+          <Trophy size={18} className="text-[var(--club-color)]" aria-hidden />
+        </PanelHeader>
+        <div className="overflow-x-auto">
         <table className="w-full min-w-[760px] text-left text-sm">
           <thead className="border-b border-zinc-800 text-xs uppercase text-zinc-500">
             <tr>
@@ -2113,7 +2172,8 @@ function TableView({ snapshot }: { snapshot: LobbySnapshot }) {
           </tbody>
         </table>
       </div>
-    </Panel>
+      </Panel>
+    </div>
   );
 }
 
@@ -2410,12 +2470,14 @@ function mapOwnedPlayerToCardData(owned: NonNullable<LobbySnapshot["club_overvie
 }
 
 function mapOwnedPlayerToLineupCardData(owned: NonNullable<LobbySnapshot["club_overview"]>["squad"][number]): PlayerCardData & {
+  injured?: boolean;
   sourceZone?: string;
   lineupSlot?: number | null;
 } {
   return {
     ...mapOwnedPlayerToCardData(owned),
     id: owned.id,
+    injured: owned.injured,
     lineupSlot: owned.lineup_slot,
     sourceZone: owned.current_zone,
   };
@@ -2476,8 +2538,19 @@ function parseFixtureResult(value: Record<string, unknown> | null | undefined) {
         zone_stars: number;
       };
       index: number;
+      label: "away_attack" | "home_attack" | "midfield";
     }>;
   };
+}
+
+function getThirdLabel(label: "away_attack" | "home_attack" | "midfield") {
+  const labels = {
+    away_attack: "Auswaerts greift an",
+    home_attack: "Heim greift an",
+    midfield: "Mittelfeld",
+  };
+
+  return labels[label];
 }
 
 function getOwnLineupPowerSummary(snapshot: LobbySnapshot): LineupPowerSummary | null {

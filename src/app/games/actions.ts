@@ -4,6 +4,7 @@ import { auth } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { setReadyAction, startGameAction } from "@/app/lobby/actions";
+import { calculateManagerScore, getManagerScoreBand, getPlacementReward, getStadiumIncome } from "@/lib/game/rules";
 import {
   canPlaceDeadlineBid,
   DEADLINE_BID_STEP,
@@ -1133,12 +1134,17 @@ export async function saveLineupAction(formData: FormData) {
   const submitted = parseLineupPayload(lineupPayload);
   const { data: ownedRows, error: ownedError } = await supabase
     .from("club_players")
-    .select("id")
+    .select("id, injured")
     .eq("club_id", ownClub.id)
-    .returns<Array<{ id: string }>>();
+    .returns<Array<{ id: string; injured: boolean }>>();
 
   if (ownedError) {
     throw ownedError;
+  }
+
+  const injuredIds = new Set((ownedRows ?? []).filter((row) => row.injured).map((row) => row.id));
+  if (submitted.some((item) => injuredIds.has(item.club_player_id))) {
+    redirect(`/games/${roomCode}?view=lineup`);
   }
 
   const submittedById = new Map(submitted.map((item) => [item.club_player_id, item]));
@@ -1373,6 +1379,14 @@ export async function advancePhaseAction(formData: FormData) {
 
   if (nextPhase === "prematch") {
     await ensureSeasonSchedule(supabase, gameId, nextSettings);
+  }
+
+  if (game.phase === "match" && nextPhase === "season_end") {
+    await finalizeSeasonEnd(supabase, gameId, Number(game.settings?.seasonNumber ?? 1));
+  }
+
+  if (game.phase === "season_end" && nextPhase === "offseason_finance") {
+    await bookSeasonFinance(supabase, gameId, Number(game.settings?.seasonNumber ?? 1));
   }
 
   const { error: updateGameError } = await supabase
@@ -2004,6 +2018,193 @@ async function updateHumanClubRanks(
 
     await supabase.from("clubs").update({ season_rank: standing.rank }).eq("id", participant.club_id);
   }
+}
+
+type ManagerScoreRow = {
+  attractiveness_stars: number;
+  club_id: string;
+  club_name: string;
+  match_points: number;
+  rank: number;
+  season_score: number;
+  squad_stars: number;
+  status: string;
+};
+
+async function finalizeSeasonEnd(supabase: SupabaseServiceClient, gameId: string, seasonNumber: number) {
+  const rows = await getManagerScoreRows(supabase, gameId, seasonNumber);
+
+  for (const row of rows) {
+    const { error } = await supabase
+      .from("clubs")
+      .update({
+        attractiveness_stars: row.attractiveness_stars,
+        points: row.season_score,
+        season_rank: row.rank,
+        status: row.status,
+      })
+      .eq("id", row.club_id)
+      .eq("game_id", gameId);
+
+    if (error) {
+      throw error;
+    }
+  }
+}
+
+async function bookSeasonFinance(supabase: SupabaseServiceClient, gameId: string, seasonNumber: number) {
+  const rows = await getManagerScoreRows(supabase, gameId, seasonNumber);
+  const humanClubCount = rows.length;
+
+  for (const row of rows) {
+    const { data: existing, error: existingError } = await supabase
+      .from("transactions")
+      .select("id")
+      .eq("game_id", gameId)
+      .eq("club_id", row.club_id)
+      .eq("reason", "season_finance")
+      .contains("metadata", { season_number: seasonNumber })
+      .limit(1)
+      .returns<Array<{ id: string }>>();
+
+    if (existingError) {
+      throw existingError;
+    }
+
+    if (existing?.length) {
+      continue;
+    }
+
+    const { data: club, error: clubError } = await supabase
+      .from("clubs")
+      .select("id, money, stadium_level, status, season_rank")
+      .eq("id", row.club_id)
+      .eq("game_id", gameId)
+      .single<{ id: string; money: number | string; season_rank: number | null; stadium_level: number | null; status: string | null }>();
+
+    if (clubError) {
+      throw clubError;
+    }
+
+    const status = row.status as "established" | "mid_table" | "newly_promoted" | "title_contender";
+    const stadiumIncome = getStadiumIncome(Number(club.stadium_level ?? 1), status);
+    const placementReward = getPlacementReward(row.rank, humanClubCount);
+    const wages = row.squad_stars * 1_000_000;
+    const net = stadiumIncome + placementReward - wages;
+
+    const { error: updateClubError } = await supabase
+      .from("clubs")
+      .update({
+        attractiveness_stars: row.attractiveness_stars,
+        money: Number(club.money ?? 0) + net,
+        points: row.season_score,
+        season_rank: row.rank,
+        status: row.status,
+      })
+      .eq("id", row.club_id)
+      .eq("game_id", gameId);
+
+    if (updateClubError) {
+      throw updateClubError;
+    }
+
+    const { error: transactionError } = await supabase.from("transactions").insert({
+      amount: Math.max(0, net),
+      club_id: row.club_id,
+      game_id: gameId,
+      metadata: {
+        attractiveness_stars: row.attractiveness_stars,
+        net,
+        placement_reward: placementReward,
+        season_match_points: row.match_points,
+        season_number: seasonNumber,
+        season_rank: row.rank,
+        season_score: row.season_score,
+        squad_stars: row.squad_stars,
+        stadium_income: stadiumIncome,
+        status: row.status,
+        wages,
+      },
+      reason: "season_finance",
+    });
+
+    if (transactionError) {
+      throw transactionError;
+    }
+  }
+
+  const clubIds = rows.map((row) => row.club_id);
+  if (clubIds.length > 0) {
+    const { error: injuryResetError } = await supabase.from("club_players").update({ injured: false }).in("club_id", clubIds);
+
+    if (injuryResetError) {
+      throw injuryResetError;
+    }
+  }
+}
+
+async function getManagerScoreRows(supabase: SupabaseServiceClient, gameId: string, seasonNumber: number): Promise<ManagerScoreRow[]> {
+  const [{ data: standings, error: standingsError }, { data: squadRows, error: squadError }] = await Promise.all([
+    supabase
+      .from("season_standings")
+      .select("match_points, participant:season_participants(id, kind, club_id, display_name)")
+      .eq("game_id", gameId)
+      .eq("season_number", seasonNumber)
+      .returns<
+        Array<{
+          match_points: number | string;
+          participant: { club_id?: string | null; display_name: string; id: string; kind: string };
+        }>
+      >(),
+    supabase
+      .from("club_players")
+      .select("club_id, current_stars, club:clubs!inner(game_id)")
+      .eq("club.game_id", gameId)
+      .returns<Array<{ club_id: string; current_stars: number | string }>>(),
+  ]);
+
+  if (standingsError) {
+    throw standingsError;
+  }
+
+  if (squadError) {
+    throw squadError;
+  }
+
+  const starsByClubId = new Map<string, number>();
+  for (const row of squadRows ?? []) {
+    starsByClubId.set(row.club_id, (starsByClubId.get(row.club_id) ?? 0) + Number(row.current_stars ?? 0));
+  }
+
+  const rows = (standings ?? [])
+    .filter((standing) => standing.participant.kind === "human" && standing.participant.club_id)
+    .map((standing) => {
+      const clubId = standing.participant.club_id as string;
+      const squadStars = starsByClubId.get(clubId) ?? 0;
+      const matchPoints = Number(standing.match_points ?? 0);
+      const seasonScore = calculateManagerScore(squadStars, matchPoints);
+      const band = getManagerScoreBand(seasonScore);
+
+      return {
+        attractiveness_stars: band.attractivenessStars,
+        club_id: clubId,
+        club_name: standing.participant.display_name,
+        match_points: matchPoints,
+        rank: 1,
+        season_score: seasonScore,
+        squad_stars: squadStars,
+        status: band.status,
+      };
+    })
+    .sort((a, b) => {
+      const scoreDiff = b.season_score - a.season_score;
+      if (scoreDiff !== 0) return scoreDiff;
+      const squadDiff = b.squad_stars - a.squad_stars;
+      if (squadDiff !== 0) return squadDiff;
+      return a.club_name.localeCompare(b.club_name);
+    });
+
+  return rows.map((row, index) => ({ ...row, rank: index + 1 }));
 }
 
 async function areSeasonFixturesComplete(supabase: SupabaseServiceClient, gameId: string, seasonNumber: number) {

@@ -44,4 +44,14 @@ describe("lineup power", () => {
       { ATT: 7, DEF: 15, MID: 12 },
     );
   });
+
+  it("ignores injured players when calculating lineup power", () => {
+    const summary = calculateLineupPower([
+      player("MID", 1, 3, { chemistry_right: true }),
+      { ...player("MID", 2, 3, { chemistry_left: true }), injured: true },
+      player("MID", 3, 2),
+    ]);
+
+    assert.deepEqual(summary.MID, { base: 5, chemistry: 0, total: 5 });
+  });
 });

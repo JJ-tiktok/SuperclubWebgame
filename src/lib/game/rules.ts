@@ -117,6 +117,11 @@ export type FinanceSummary = {
   net: Money;
 };
 
+export type ManagerScoreBand = {
+  attractivenessStars: number;
+  status: ClubStatus;
+};
+
 export function money(value: Money) {
   return `${Math.round(value / MILLION)}M`;
 }
@@ -215,6 +220,28 @@ export function getPlacementReward(rank: number, clubCount: number) {
 
 export function getStadiumIncome(level: number, status: ClubStatus) {
   return STADIUM_INCOME[clampLevel(level)][status];
+}
+
+export function calculateManagerScore(squadStars: number, seasonMatchPoints: number) {
+  return Math.trunc(Number(squadStars) + Number(seasonMatchPoints));
+}
+
+export function getManagerScoreBand(score: number): ManagerScoreBand {
+  const normalizedScore = Math.trunc(Number(score));
+
+  if (normalizedScore >= 80) {
+    return { attractivenessStars: 6, status: "title_contender" };
+  }
+
+  if (normalizedScore >= 60) {
+    return { attractivenessStars: 5, status: "mid_table" };
+  }
+
+  if (normalizedScore >= 40) {
+    return { attractivenessStars: 4, status: "established" };
+  }
+
+  return { attractivenessStars: 3, status: "newly_promoted" };
 }
 
 export function getWages(

@@ -103,6 +103,7 @@ create table public.clubs (
   points int not null default 0,
   season_rank int not null default 1,
   status text not null default 'newly_promoted',
+  attractiveness_stars int not null default 3 check (attractiveness_stars between 1 and 6),
   stadium_level int not null default 1 check (stadium_level between 1 and 4),
   scouting_level int not null default 1 check (scouting_level between 1 and 4),
   training_level int not null default 1 check (training_level between 1 and 4),

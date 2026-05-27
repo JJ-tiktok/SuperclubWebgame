@@ -17,6 +17,7 @@ import type {
   LobbyGame,
   LobbyMember,
   LobbySnapshot,
+  ManagerStandingSnapshot,
   SavedGameSummary,
   ScoutingDrawSnapshot,
   ScoutingSnapshot,
@@ -24,7 +25,7 @@ import type {
   SeasonSnapshot,
   SeasonStandingSnapshot,
 } from "./types";
-import { getPlacementReward, getStadiumIncome } from "@/lib/game/rules";
+import { calculateManagerScore, getManagerScoreBand, getPlacementReward, getStadiumIncome } from "@/lib/game/rules";
 import { getDeadlineAuctionCount } from "@/lib/lobby/deadline";
 import { getClubScoutingCapacity, getNextPendingScoutingClubId } from "@/lib/lobby/scouting";
 import { getTrainingStatus, parseTrainingEvent } from "@/lib/lobby/training";
@@ -231,6 +232,7 @@ async function getSeasonSnapshot(game: LobbyGame): Promise<SeasonSnapshot | null
     return {
       current_matchday: 1,
       fixtures: [],
+      manager_standings: [],
       setup_error: "Saison-Tabellen fehlen noch in Supabase. Bitte `supabase/season_matchday_upgrade.sql` ausfuehren.",
       standings: [],
     };
@@ -238,12 +240,83 @@ async function getSeasonSnapshot(game: LobbyGame): Promise<SeasonSnapshot | null
 
   const normalizedFixtures = fixtures ?? [];
   const currentMatchday = normalizedFixtures.find((fixture) => fixture.status !== "completed")?.matchday ?? normalizedFixtures.at(-1)?.matchday ?? 1;
+  const managerStandings = await getManagerStandings(game, standings ?? []);
 
   return {
     current_matchday: currentMatchday,
     fixtures: normalizedFixtures,
+    manager_standings: managerStandings,
     standings: standings ?? [],
   };
+}
+
+async function getManagerStandings(game: LobbyGame, standings: SeasonStandingSnapshot[]): Promise<ManagerStandingSnapshot[]> {
+  const supabase = createSupabaseServiceClient();
+  const humanClubIds = standings
+    .map((standing) => standing.participant)
+    .filter((participant) => participant.kind === "human" && participant.club_id)
+    .map((participant) => participant.club_id as string);
+
+  if (!supabase || humanClubIds.length === 0) {
+    return [];
+  }
+
+  const [{ data: clubs, error: clubsError }, { data: squadRows, error: squadError }] = await Promise.all([
+    supabase
+      .from("clubs")
+      .select("id, club_name, points, season_rank, status")
+      .in("id", humanClubIds)
+      .returns<Array<{ club_name: string; id: string; points: number | string; season_rank: number | null; status: string | null }>>(),
+    supabase
+      .from("club_players")
+      .select("club_id, current_stars")
+      .in("club_id", humanClubIds)
+      .returns<Array<{ club_id: string; current_stars: number | string }>>(),
+  ]);
+
+  if (clubsError) {
+    throw clubsError;
+  }
+
+  if (squadError) {
+    throw squadError;
+  }
+
+  const starsByClubId = new Map<string, number>();
+  for (const row of squadRows ?? []) {
+    starsByClubId.set(row.club_id, (starsByClubId.get(row.club_id) ?? 0) + Number(row.current_stars ?? 0));
+  }
+
+  const clubsById = new Map((clubs ?? []).map((club) => [club.id, club]));
+  const rows = standings
+    .filter((standing) => standing.participant.kind === "human" && standing.participant.club_id)
+    .map((standing) => {
+      const clubId = standing.participant.club_id as string;
+      const club = clubsById.get(clubId);
+      const squadStars = starsByClubId.get(clubId) ?? 0;
+      const seasonScore = calculateManagerScore(squadStars, standing.match_points);
+      const band = getManagerScoreBand(seasonScore);
+
+      return {
+        attractiveness_stars: band.attractivenessStars,
+        club_id: clubId,
+        club_name: club?.club_name ?? standing.participant.display_name,
+        rank: Number(club?.season_rank ?? 1),
+        season_match_points: Number(standing.match_points ?? 0),
+        season_score: seasonScore,
+        squad_stars: squadStars,
+        status: club?.status ?? band.status,
+      };
+    })
+    .sort((a, b) => {
+      const scoreDiff = b.season_score - a.season_score;
+      if (scoreDiff !== 0) return scoreDiff;
+      const squadDiff = b.squad_stars - a.squad_stars;
+      if (squadDiff !== 0) return squadDiff;
+      return a.club_name.localeCompare(b.club_name);
+    });
+
+  return rows.map((row, index) => ({ ...row, rank: index + 1 }));
 }
 
 type DeadlineAuctionRow = Omit<DeadlineAuctionSnapshot, "bids"> & {
@@ -394,7 +467,7 @@ async function getClubOverviewSnapshot(
   const trainingEvents = (trainingTransactions ?? [])
     .map(parseTrainingEvent)
     .filter((event): event is NonNullable<ReturnType<typeof parseTrainingEvent>> => Boolean(event))
-    .filter((event) => event.season_number === seasonNumber && event.game_phase === game.phase);
+    .filter((event) => event.season_number === seasonNumber);
   const squadStars = (clubPlayers ?? []).reduce((total, owned) => total + Number(owned.current_stars), 0);
   const status = normalizeClubStatus(club.status);
   const stadiumIncome = getStadiumIncome(club.stadium_level ?? 1, status);

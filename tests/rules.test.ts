@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  calculateManagerScore,
   calculateChemistryBonus,
   checkSeasonResult,
   getDraftPickOrder,
   getFinanceSummary,
+  getManagerScoreBand,
   resolveAuction,
   resolveMatch,
   validateFormation,
@@ -18,6 +20,17 @@ import {
 } from "@/lib/game/sample-data";
 
 describe("Superclub rules", () => {
+  it("calculates manager score from squad stars and season match points", () => {
+    assert.equal(calculateManagerScore(34, 9), 43);
+  });
+
+  it("maps manager score bands to status and attractiveness", () => {
+    assert.deepEqual(getManagerScoreBand(20), { attractivenessStars: 3, status: "newly_promoted" });
+    assert.deepEqual(getManagerScoreBand(40), { attractivenessStars: 4, status: "established" });
+    assert.deepEqual(getManagerScoreBand(60), { attractivenessStars: 5, status: "mid_table" });
+    assert.deepEqual(getManagerScoreBand(80), { attractivenessStars: 6, status: "title_contender" });
+  });
+
   it("rotates the draft starter by round instead of using a snake draft", () => {
     const clubs = ["a", "b", "c", "d"];
 

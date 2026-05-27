@@ -664,7 +664,9 @@ function buildInitialAssignments(cards: LineupCard[], formationSlots: FormationS
       continue;
     }
 
-    assignCard(card, preferredZone, assignments, used, slotIdsByZone);
+    // Restore saved position without checking card.positions — allows off-position saves to be
+    // correctly restored even if the player's natural position doesn't match the saved zone.
+    assignCard(card, preferredZone, assignments, used, slotIdsByZone, { ignorePositionCheck: true });
   }
 
   if (fillRemaining) {
@@ -689,6 +691,7 @@ function assignCard(
   assignments: Record<string, string>,
   used: Set<string>,
   slotIdsByZone: Record<PlayerCardPosition, string[]>,
+  options: { ignorePositionCheck?: boolean } = {},
 ) {
   const slots = slotIdsByZone[zone] ?? [];
 
@@ -697,7 +700,11 @@ function assignCard(
   }
 
   for (const slotId of slots) {
-    if (assignments[slotId] || !card.positions.includes(zone)) {
+    if (assignments[slotId]) {
+      continue;
+    }
+
+    if (!options.ignorePositionCheck && !card.positions.includes(zone)) {
       continue;
     }
 

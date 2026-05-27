@@ -39,7 +39,6 @@ import {
   buyScoutedPlayerAction,
   dismissStaffAction,
   drawScoutingPlayerAction,
-  finishScoutingTurnAction,
   healInjuredPlayerAction,
   passAllScoutedPlayersAction,
   initializeSeasonScheduleAction,
@@ -58,7 +57,6 @@ import {
   setPhaseDoneAction,
   setReadyFromDashboardAction,
   startGameFromDashboardAction,
-  syncScoutingTurnAction,
   trainPlayerAction,
   upgradeInvestmentAction,
 } from "@/app/games/actions";
@@ -966,33 +964,52 @@ function ScoutingView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub:
   }
 
   const ownStatus = scouting.status_by_club_id[ownClub.id];
-  const currentClub = snapshot.clubs.find((club) => club.id === scouting.current_club_id);
-  const nextPendingClub = snapshot.clubs.find((club) => club.id === scouting.next_pending_club_id);
-  const isMyTurn = scouting.current_club_id === ownClub.id;
-  const needsTurnSync = !scouting.current_club_id && !scouting.all_finished;
   const ownDraws = scouting.draws.filter((draw) => draw.club_id === ownClub.id);
   const ownOpenDraws = ownDraws.filter((draw) => draw.status === "drawn");
   const allOwnCardsDrawn = ownStatus.draw_count >= ownStatus.capacity;
-  const canFinish = isMyTurn && allOwnCardsDrawn && ownOpenDraws.length === 0;
-  const turnLabel = currentClub?.club_name ?? (scouting.all_finished ? "Scouting fertig" : nextPendingClub?.club_name ?? "Turn offen");
-  const waitDescription = needsTurnSync
-    ? isHost
-      ? "Der Scouting-Zug muss synchronisiert werden."
-      : "Wartet auf die Scouting-Synchronisierung durch den Host."
-    : `Wartet auf ${turnLabel}.`;
+  const ownFinished = allOwnCardsDrawn && ownOpenDraws.length === 0;
+  const finishedCount = Object.values(scouting.status_by_club_id).filter((s) => s.finished).length;
+  const totalCount = snapshot.clubs.length;
+  const drawCheck = canDrawScoutingPlayer({
+    drawnCount: ownStatus.draw_count,
+    ownClubId: ownClub.id,
+    scoutingCapacity: ownStatus.capacity,
+  });
+  const canDraw = drawCheck.ok;
 
   return (
     <div className="space-y-4">
+      {scouting.all_finished ? (
+        <div className="rounded-md border border-emerald-800 bg-emerald-950/40 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-emerald-100">Alle Clubs haben gescoutet</p>
+              <p className="mt-1 text-xs text-emerald-200/75">Der Host kann die Phase jetzt fortsetzen.</p>
+            </div>
+            {isHost ? (
+              <form action={advancePhaseAction}>
+                <input name="game_id" type="hidden" value={snapshot.game.id} />
+                <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                <Button type="submit">
+                  <ListOrdered size={16} aria-hidden />
+                  Phase fortsetzen
+                </Button>
+              </form>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
       <Panel className="border-[var(--club-border)] bg-zinc-950/85">
         <PanelHeader>
           <div>
             <PanelTitle>Scouting Network</PanelTitle>
-            <PanelDescription>Ziehe Karten aus den Welt-Stapeln und kaufe danach aus deiner Auslage.</PanelDescription>
+            <PanelDescription>Ziehe Karten, kaufe oder passe — alle Clubs spielen gleichzeitig.</PanelDescription>
           </div>
           <MapIcon size={18} className="text-[var(--club-color)]" aria-hidden />
         </PanelHeader>
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-          <Metric detail={isMyTurn ? "Du scoutest gerade" : needsTurnSync ? "Sync erforderlich" : "wartet"} icon={ListOrdered} label="Am Zug" value={turnLabel} />
+          <Metric detail="Clubs abgeschlossen" icon={ListOrdered} label="Fortschritt" value={`${finishedCount}/${totalCount}`} />
           <Metric detail="Vereinsgelaende" icon={Eye} label="Scouting Level" value={`${ownClub.scouting_level ?? 1}/4`} />
           <Metric detail="eigene Ziehungen" icon={ClipboardList} label="Gezogen" value={`${ownStatus.draw_count}/${ownStatus.capacity}`} />
           <Metric detail="offene Entscheidungen" icon={ShoppingCart} label="Auslage" value={`${ownOpenDraws.length}`} />
@@ -1005,74 +1022,42 @@ function ScoutingView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub:
           <PanelHeader>
             <div>
               <PanelTitle>The World of Scouting</PanelTitle>
-              <PanelDescription>{isMyTurn ? "Waehle einen Stapel fuer die naechste Karte." : waitDescription}</PanelDescription>
+              <PanelDescription>
+                {ownFinished ? "Du hast alle Karten gezogen und entschieden." : allOwnCardsDrawn ? "Entscheide ueber deine Auslage." : "Waehle einen Stapel fuer die naechste Karte."}
+              </PanelDescription>
             </div>
-            <Badge tone={isMyTurn ? "green" : "neutral"}>{ownStatus.draw_count}/{ownStatus.capacity}</Badge>
+            <Badge tone={ownFinished ? "blue" : canDraw ? "green" : "neutral"}>{ownStatus.draw_count}/{ownStatus.capacity}</Badge>
           </PanelHeader>
-          {needsTurnSync ? (
-            <div className="mb-3 rounded-md border border-amber-800 bg-amber-950/40 p-3">
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <p className="text-sm font-semibold text-amber-100">Scouting-Turn fehlt</p>
-                  <p className="mt-1 text-xs text-amber-200/75">
-                    {isHost
-                      ? `Naechster offener Club: ${nextPendingClub?.club_name ?? "noch offen"}.`
-                      : "Der Host kann den aktuellen Scouting-Zug neu setzen."}
-                  </p>
-                </div>
-                {isHost ? (
-                  <form action={syncScoutingTurnAction}>
-                    <input name="game_id" type="hidden" value={snapshot.game.id} />
-                    <input name="room_code" type="hidden" value={snapshot.game.room_code} />
-                    <Button type="submit" variant="secondary">
-                      <ListOrdered size={16} aria-hidden />
-                      Scouting synchronisieren
-                    </Button>
-                  </form>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
           <div className="relative overflow-hidden rounded-lg border border-emerald-900/70 bg-[radial-gradient(circle_at_50%_45%,rgba(16,185,129,0.20),transparent_21rem),linear-gradient(135deg,#07110d,#071522_58%,#050609)] p-4">
             <div className="pointer-events-none absolute left-[16%] top-[28%] h-20 w-32 rounded-full border border-emerald-500/20 bg-emerald-400/5 blur-sm" />
             <div className="pointer-events-none absolute right-[18%] top-[42%] h-28 w-36 rounded-full border border-sky-500/20 bg-sky-400/5 blur-sm" />
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              {SCOUTING_PILES.map((pile, index) => {
-                const drawCheck = canDrawScoutingPlayer({
-                  currentTurnClubId: scouting.current_club_id,
-                  drawnCount: ownStatus.draw_count,
-                  ownClubId: ownClub.id,
-                  scoutingCapacity: ownStatus.capacity,
-                });
-                const canDraw = drawCheck.ok;
-
-                return (
-                  <form action={drawScoutingPlayerAction} key={pile.key}>
-                    <input name="game_id" type="hidden" value={snapshot.game.id} />
-                    <input name="room_code" type="hidden" value={snapshot.game.room_code} />
-                    <input name="club_id" type="hidden" value={ownClub.id} />
-                    <input name="pile_key" type="hidden" value={pile.key} />
-                    <button
-                      className={cn(
-                        "group relative h-36 w-full overflow-hidden rounded-lg border border-sky-800/70 bg-slate-950/80 p-4 text-left shadow-lg transition",
-                        canDraw ? "hover:-translate-y-0.5 hover:border-lime-300/80 hover:bg-slate-900" : "opacity-55",
-                      )}
-                      disabled={!canDraw}
-                      title={canDraw ? "Spieler scouten" : getScoutingCheckLabel(drawCheck)}
-                      type="submit"
-                    >
-                      <span className="absolute right-4 top-4 rounded-md border border-sky-700 bg-sky-950 px-2 py-1 text-xs font-semibold text-sky-100">
-                        Stapel {index + 1}
-                      </span>
-                      <span className="mt-12 block text-lg font-black text-zinc-50">{pile.label}</span>
-                      <span className="mt-1 block text-xs text-zinc-500">Random Player Base</span>
-                      <span className="absolute bottom-4 left-4 right-4 h-2 rounded-full bg-sky-950">
-                        <span className="block h-2 rounded-full bg-lime-300 transition group-hover:w-full" style={{ width: canDraw ? "58%" : "20%" }} />
-                      </span>
-                    </button>
-                  </form>
-                );
-              })}
+              {SCOUTING_PILES.map((pile, index) => (
+                <form action={drawScoutingPlayerAction} key={pile.key}>
+                  <input name="game_id" type="hidden" value={snapshot.game.id} />
+                  <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                  <input name="club_id" type="hidden" value={ownClub.id} />
+                  <input name="pile_key" type="hidden" value={pile.key} />
+                  <button
+                    className={cn(
+                      "group relative h-36 w-full overflow-hidden rounded-lg border border-sky-800/70 bg-slate-950/80 p-4 text-left shadow-lg transition",
+                      canDraw ? "hover:-translate-y-0.5 hover:border-lime-300/80 hover:bg-slate-900" : "opacity-55",
+                    )}
+                    disabled={!canDraw}
+                    title={canDraw ? "Spieler scouten" : getScoutingCheckLabel(drawCheck)}
+                    type="submit"
+                  >
+                    <span className="absolute right-4 top-4 rounded-md border border-sky-700 bg-sky-950 px-2 py-1 text-xs font-semibold text-sky-100">
+                      Stapel {index + 1}
+                    </span>
+                    <span className="mt-12 block text-lg font-black text-zinc-50">{pile.label}</span>
+                    <span className="mt-1 block text-xs text-zinc-500">Random Player Base</span>
+                    <span className="absolute bottom-4 left-4 right-4 h-2 rounded-full bg-sky-950">
+                      <span className="block h-2 rounded-full bg-lime-300 transition group-hover:w-full" style={{ width: canDraw ? "58%" : "20%" }} />
+                    </span>
+                  </button>
+                </form>
+              ))}
             </div>
           </div>
         </Panel>
@@ -1080,7 +1065,7 @@ function ScoutingView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub:
         <Panel className="border-[var(--club-border)] bg-zinc-950/85">
           <PanelHeader>
             <div>
-              <PanelTitle>Scouting-Zug</PanelTitle>
+              <PanelTitle>Fortschritt</PanelTitle>
               <PanelDescription>Erst ziehen, dann kaufen oder passen.</PanelDescription>
             </div>
             <ListOrdered size={18} className="text-[var(--club-color)]" aria-hidden />
@@ -1088,28 +1073,22 @@ function ScoutingView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub:
           <div className="space-y-3">
             {snapshot.clubs.map((club) => {
               const status = scouting.status_by_club_id[club.id];
+              const isOwn = club.id === ownClub.id;
 
               return (
-                <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3" key={club.id}>
+                <div className={cn("rounded-md border p-3", isOwn ? "border-[var(--club-border)] bg-zinc-900/70" : "border-zinc-800 bg-zinc-900/40")} key={club.id}>
                   <div className="flex items-center justify-between gap-3">
-                    <p className="text-sm font-semibold text-zinc-100">{club.club_name}</p>
-                    <Badge tone={scouting.current_club_id === club.id ? "green" : status?.finished ? "blue" : "neutral"}>
-                      {scouting.current_club_id === club.id ? "am Zug" : status?.finished ? "fertig" : "wartet"}
+                    <p className={cn("text-sm font-semibold", isOwn ? "text-[var(--club-color)]" : "text-zinc-100")}>{club.club_name}</p>
+                    <Badge tone={status?.finished ? "blue" : "neutral"}>
+                      {status?.finished ? "fertig" : "laeuft"}
                     </Badge>
                   </div>
                   <p className="mt-1 text-xs text-zinc-500">
-                    {status?.draw_count ?? 0}/{status?.capacity ?? 0} gezogen, {status?.bought_count ?? 0} gekauft
+                    {status?.draw_count ?? 0}/{status?.capacity ?? 0} gezogen · {status?.bought_count ?? 0} gekauft · {status?.passed_count ?? 0} gepasst
                   </p>
                 </div>
               );
             })}
-            <form action={finishScoutingTurnAction}>
-              <input name="game_id" type="hidden" value={snapshot.game.id} />
-              <input name="room_code" type="hidden" value={snapshot.game.room_code} />
-              <Button className="w-full" disabled={!canFinish} type="submit">
-                Scouting-Zug beenden
-              </Button>
-            </form>
           </div>
         </Panel>
       </div>
@@ -1167,7 +1146,6 @@ function ScoutingDrawsPanel({
             const card = mapDbPlayerToPlayerCardData(draw.player);
             const isOwnDraw = draw.club_id === ownClub.id;
             const buyCheck = canBuyScoutedPlayer({
-              currentTurnClubId: scouting.current_club_id,
               drawnCount: ownDraws.length,
               money: overview.finance.money,
               ownClubId: ownClub.id,
@@ -1176,7 +1154,6 @@ function ScoutingDrawsPanel({
               squadSize: overview.squad.length,
             });
             const resolveCheck = canResolveScoutedPlayer({
-              currentTurnClubId: scouting.current_club_id,
               drawnCount: ownDraws.length,
               ownClubId: ownClub.id,
               scoutingCapacity: ownStatus.capacity,
@@ -1570,25 +1547,41 @@ function DeadlineAuctionList({ deadline, snapshot }: { deadline: NonNullable<Lob
       <PanelHeader>
         <div>
           <PanelTitle>Auktionsliste</PanelTitle>
-          <PanelDescription>Alle Spieler, die in diesem Deadline Day auf den Markt kommen.</PanelDescription>
+          <PanelDescription>Spieler werden erst beim Aufrufen der Auktion enthüllt.</PanelDescription>
         </div>
         <ClipboardList size={18} className="text-[var(--club-color)]" aria-hidden />
       </PanelHeader>
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {deadline.auctions.map((auction) => (
-          <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3" key={auction.id}>
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="truncate text-sm font-semibold text-zinc-50">#{auction.auction_index + 1} {auction.player.display_name}</p>
-                <p className="mt-1 text-xs text-zinc-500">Min. {formatMoney(auction.minimum_bid)}</p>
+        {deadline.auctions.map((auction) => {
+          const hidden = auction.status === "scheduled";
+          return (
+            <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3" key={auction.id}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  {hidden ? (
+                    <>
+                      <p className="text-sm font-semibold text-zinc-500">#{auction.auction_index + 1} — noch verdeckt</p>
+                      <p className="mt-1 text-xs text-zinc-700">Spieler wird beim Start der Auktion enthüllt</p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="truncate text-sm font-semibold text-zinc-50">#{auction.auction_index + 1} {auction.player.display_name}</p>
+                      <p className="mt-1 text-xs text-zinc-500">Min. {formatMoney(auction.minimum_bid)}</p>
+                    </>
+                  )}
+                </div>
+                <Badge tone={getAuctionBadgeTone(auction.status)}>{getAuctionStatusLabel(auction.status)}</Badge>
               </div>
-              <Badge tone={getAuctionBadgeTone(auction.status)}>{getAuctionStatusLabel(auction.status)}</Badge>
+              {!hidden ? (
+                <p className="mt-3 text-xs text-zinc-400">
+                  {auction.winning_club_id
+                    ? `${clubNames.get(auction.winning_club_id) ?? "Club"} — ${formatMoney(auction.current_amount)}`
+                    : "Noch kein Zuschlag"}
+                </p>
+              ) : null}
             </div>
-            <p className="mt-3 text-xs text-zinc-400">
-              {auction.winning_club_id ? `${clubNames.get(auction.winning_club_id) ?? "Club"} - ${formatMoney(auction.current_amount)}` : "Noch kein Zuschlag"}
-            </p>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </Panel>
   );
@@ -2395,6 +2388,20 @@ function FixtureCard({
   const ownPowerSummary = getOwnLineupPowerSummary(snapshot);
   const result = parseFixtureResult(fixture.result);
 
+  // For PvP: build a fake "lineup" object from stored locked power so the opponent's
+  // strengths become visible once both sides have locked their lineups.
+  const makeLockedLineup = (def: number | null | undefined, mid: number | null | undefined, att: number | null | undefined) =>
+    def != null && mid != null && att != null
+      ? { def_stars: def, mid_stars: mid, att_stars: att, display_name: "", id: "" }
+      : null;
+
+  const homePvpLineup = !fixture.home_cpu_lineup && bothHumanLineupsLocked
+    ? makeLockedLineup(fixture.home_locked_def, fixture.home_locked_mid, fixture.home_locked_att)
+    : null;
+  const awayPvpLineup = !fixture.away_cpu_lineup && bothHumanLineupsLocked
+    ? makeLockedLineup(fixture.away_locked_def, fixture.away_locked_mid, fixture.away_locked_att)
+    : null;
+
   const [showLockWarning, setShowLockWarning] = useState(false);
   const lockFormRef = useRef<HTMLFormElement>(null);
 
@@ -2435,7 +2442,7 @@ function FixtureCard({
           <div className="mt-4 grid gap-3 md:grid-cols-2">
             <FixtureSideCard
               locked={fixture.home_lineup_locked}
-              lineup={fixture.home_cpu_lineup}
+              lineup={fixture.home_cpu_lineup ?? homePvpLineup}
               participant={home}
               powerSummary={home.club_id === ownClub?.id && fixture.home_lineup_locked ? ownPowerSummary : null}
               score={fixture.home_score}
@@ -2443,7 +2450,7 @@ function FixtureCard({
             />
             <FixtureSideCard
               locked={fixture.away_lineup_locked}
-              lineup={fixture.away_cpu_lineup}
+              lineup={fixture.away_cpu_lineup ?? awayPvpLineup}
               participant={away}
               powerSummary={away.club_id === ownClub?.id && fixture.away_lineup_locked ? ownPowerSummary : null}
               score={fixture.away_score}

@@ -28,15 +28,10 @@ export function getClubScoutingCapacity(club: Pick<LobbyClub, "scouting_level">)
 }
 
 export function canDrawScoutingPlayer(params: {
-  currentTurnClubId?: string | null;
   drawnCount: number;
   ownClubId: string;
   scoutingCapacity: number;
 }) {
-  if (params.currentTurnClubId !== params.ownClubId) {
-    return { ok: false, reason: "not_turn" } as const;
-  }
-
   if (params.drawnCount >= params.scoutingCapacity) {
     return { ok: false, reason: "capacity_used" } as const;
   }
@@ -45,15 +40,10 @@ export function canDrawScoutingPlayer(params: {
 }
 
 export function canResolveScoutedPlayer(params: {
-  currentTurnClubId?: string | null;
   drawnCount: number;
   ownClubId: string;
   scoutingCapacity: number;
 }) {
-  if (params.currentTurnClubId !== params.ownClubId) {
-    return { ok: false, reason: "not_turn" } as const;
-  }
-
   if (params.drawnCount < params.scoutingCapacity) {
     return { ok: false, reason: "draw_first" } as const;
   }
@@ -62,7 +52,6 @@ export function canResolveScoutedPlayer(params: {
 }
 
 export function canBuyScoutedPlayer(params: {
-  currentTurnClubId?: string | null;
   drawnCount: number;
   money: number;
   ownClubId: string;
@@ -120,7 +109,6 @@ export function getScoutingActionLabel(reason: string) {
     draw_first: "Erst alle ziehen",
     insufficient_money: "Zu wenig Geld",
     not_offseason: "Nur Offseason",
-    not_turn: "Nicht am Zug",
     sale_limit: "Verkaufslimit",
     squad_full: "Kader voll",
   };

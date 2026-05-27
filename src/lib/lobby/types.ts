@@ -361,6 +361,9 @@ export type SeasonFixtureSnapshot = {
     mid_stars: number;
   } | null;
   away_lineup_locked: boolean;
+  away_locked_att?: number | null;
+  away_locked_def?: number | null;
+  away_locked_mid?: number | null;
   away_participant: SeasonParticipantSnapshot;
   away_participant_id: string;
   away_score?: number | null;
@@ -375,6 +378,9 @@ export type SeasonFixtureSnapshot = {
     mid_stars: number;
   } | null;
   home_lineup_locked: boolean;
+  home_locked_att?: number | null;
+  home_locked_def?: number | null;
+  home_locked_mid?: number | null;
   home_participant: SeasonParticipantSnapshot;
   home_participant_id: string;
   home_score?: number | null;

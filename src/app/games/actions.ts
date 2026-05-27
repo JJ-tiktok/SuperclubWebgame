@@ -34,7 +34,6 @@ import {
   canResolveScoutedPlayer,
   canSellClubPlayer,
   getClubScoutingCapacity,
-  getNextPendingScoutingClubId,
   isOffseasonPhase,
   isScoutingPileKey,
 } from "@/lib/lobby/scouting";
@@ -572,7 +571,6 @@ export async function drawScoutingPlayerAction(formData: FormData) {
     .reduce((sum, e) => sum + Number(e.cards ?? 0), 0);
   const capacity = getClubScoutingCapacity(ownClub) + scoutingExtraCards;
   const drawCheck = canDrawScoutingPlayer({
-    currentTurnClubId: game.current_turn_club_id,
     drawnCount: ownDraws.length,
     ownClubId: ownClub.id,
     scoutingCapacity: capacity,
@@ -646,10 +644,13 @@ export async function buyScoutedPlayerAction(formData: FormData) {
   }
 
   const ownDraws = draws.filter((item) => item.club_id === ownClub.id);
-  const capacity = getClubScoutingCapacity(ownClub);
+  const scoutingExtraCards = (buyStaffRows.data ?? [])
+    .flatMap((s) => s.card?.effects ?? [])
+    .filter((e) => e.type === "scouting_extra_cards")
+    .reduce((sum, e) => sum + Number(e.cards ?? 0), 0);
+  const capacity = getClubScoutingCapacity(ownClub) + scoutingExtraCards;
   const price = Number(draw.player.scouting_price ?? 0);
   const buyCheck = canBuyScoutedPlayer({
-    currentTurnClubId: game.current_turn_club_id,
     drawnCount: ownDraws.length,
     money: Number(ownClub.money),
     ownClubId: ownClub.id,
@@ -746,7 +747,6 @@ export async function passScoutedPlayerAction(formData: FormData) {
   const draw = draws.find((item) => item.id === drawId);
   const ownDraws = draws.filter((item) => item.club_id === ownClub.id);
   const resolveCheck = canResolveScoutedPlayer({
-    currentTurnClubId: game.current_turn_club_id,
     drawnCount: ownDraws.length,
     ownClubId: ownClub.id,
     scoutingCapacity: getClubScoutingCapacity(ownClub),
@@ -803,78 +803,6 @@ export async function passAllScoutedPlayersAction(formData: FormData) {
     .in("id", openDrawIds)
     .eq("club_id", ownClub.id)
     .eq("status", "drawn");
-
-  if (error) {
-    throw error;
-  }
-
-  await touchGameSave(supabase, gameId, userId);
-  revalidatePath(`/games/${roomCode}`);
-  redirect(`/games/${roomCode}?view=scouting`);
-}
-
-export async function syncScoutingTurnAction(formData: FormData) {
-  const { userId } = await auth();
-  const gameId = String(formData.get("game_id") || "");
-  const roomCode = String(formData.get("room_code") || "");
-  const supabase = createSupabaseServiceClient();
-
-  if (!userId || !gameId || !roomCode || !supabase) {
-    redirect(`/games/${roomCode}?view=scouting`);
-  }
-
-  const { game, clubs } = await getGameClubContext(supabase, gameId, userId);
-
-  if (game.phase !== "offseason_scouting" || game.host_clerk_user_id !== userId) {
-    redirect(`/games/${roomCode}?view=scouting`);
-  }
-
-  const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
-  const draws = await getScoutingDraws(supabase, gameId, seasonNumber);
-  const nextClubId = getNextPendingScoutingClubId(clubs, draws);
-
-  const { error } = await supabase.from("games").update({ current_turn_club_id: nextClubId }).eq("id", gameId);
-
-  if (error) {
-    throw error;
-  }
-
-  await touchGameSave(supabase, gameId, userId);
-  revalidatePath(`/games/${roomCode}`);
-  redirect(`/games/${roomCode}?view=scouting`);
-}
-
-export async function finishScoutingTurnAction(formData: FormData) {
-  const { userId } = await auth();
-  const gameId = String(formData.get("game_id") || "");
-  const roomCode = String(formData.get("room_code") || "");
-  const supabase = createSupabaseServiceClient();
-
-  if (!userId || !gameId || !roomCode || !supabase) {
-    redirect(`/games/${roomCode}?view=scouting`);
-  }
-
-  const { game, ownClub, clubs } = await getGameClubContext(supabase, gameId, userId);
-  if (game.phase !== "offseason_scouting" || game.current_turn_club_id !== ownClub.id) {
-    redirect(`/games/${roomCode}?view=scouting`);
-  }
-
-  const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
-  const draws = await getScoutingDraws(supabase, gameId, seasonNumber);
-  const ownDraws = draws.filter((draw) => draw.club_id === ownClub.id);
-  const capacity = getClubScoutingCapacity(ownClub);
-  const unresolvedOwnDraws = ownDraws.filter((draw) => draw.status === "drawn");
-
-  if (ownDraws.length < capacity || unresolvedOwnDraws.length > 0) {
-    redirect(`/games/${roomCode}?view=scouting`);
-  }
-
-  const nextClubId = getNextPendingScoutingClubId(
-    clubs.filter((club) => club.id !== ownClub.id),
-    draws,
-  );
-
-  const { error } = await supabase.from("games").update({ current_turn_club_id: nextClubId }).eq("id", gameId);
 
   if (error) {
     throw error;
@@ -1293,9 +1221,47 @@ export async function lockFixtureLineupAction(formData: FormData) {
     throw new Error("Du kannst nur deine eigenen Fixtures locken.");
   }
 
+  // Calculate locked lineup power including staff bonuses
+  const [{ data: playerData }, { data: staffData }] = await Promise.all([
+    supabase
+      .from("club_players")
+      .select("current_stars, current_zone, lineup_slot, injured, player:players(chemistry_left, chemistry_right)")
+      .eq("club_id", ownClub.id)
+      .neq("current_zone", "bench")
+      .eq("injured", false)
+      .returns<Array<{
+        current_stars: number | string;
+        current_zone: string;
+        lineup_slot: number | null;
+        injured: boolean;
+        player: { chemistry_left?: boolean | null; chemistry_right?: boolean | null } | null;
+      }>>(),
+    supabase
+      .from("club_staff")
+      .select("staff_card:staff_cards(effects)")
+      .eq("club_id", ownClub.id)
+      .returns<Array<{ staff_card: { effects: Array<{ type: string; zone?: string; stars?: number; factor?: number }> } | null }>>(),
+  ]);
+
+  const staffEffects = (staffData ?? []).flatMap((s) => s.staff_card?.effects ?? []);
+  const powers = calculateLineupPower(
+    (playerData ?? []).map((p) => ({
+      chemistry_left: p.player?.chemistry_left,
+      chemistry_right: p.player?.chemistry_right,
+      current_stars: p.current_stars,
+      current_zone: p.current_zone,
+      lineup_slot: p.lineup_slot,
+    })),
+    staffEffects,
+  );
+
+  const lockUpdate = side === "home"
+    ? { home_lineup_locked: true, home_locked_def: powers.DEF.total, home_locked_mid: powers.MID.total, home_locked_att: powers.ATT.total }
+    : { away_lineup_locked: true, away_locked_def: powers.DEF.total, away_locked_mid: powers.MID.total, away_locked_att: powers.ATT.total };
+
   const { error } = await supabase
     .from("fixtures")
-    .update(side === "home" ? { home_lineup_locked: true } : { away_lineup_locked: true })
+    .update(lockUpdate)
     .eq("id", fixtureId)
     .eq("game_id", gameId);
 
@@ -1470,7 +1436,8 @@ export async function advancePhaseAction(formData: FormData) {
 
   const nextPhase = getNextLobbyPhase(game.phase);
   const now = new Date().toISOString();
-  const nextTurnClubId = nextPhase === "offseason_scouting" ? await getFirstClubId(supabase, gameId) : null;
+  // Scouting is now parallel — no turn concept needed; keep null for all phases that don't need a turn
+  const nextTurnClubId = null;
   const nextSettings = getSettingsForNextPhase(game.settings, game.phase, nextPhase);
 
   if (nextPhase === "prematch") {

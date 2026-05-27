@@ -203,7 +203,7 @@ async function getScoutingSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promise
 
   return {
     all_finished: nextPendingClubId === null,
-    current_club_id: game.current_turn_club_id ?? null,
+    current_club_id: null, // Scouting is parallel — no turn concept
     draws: normalizedDraws,
     next_pending_club_id: nextPendingClubId,
     sales_by_club_id: salesByClubId,
@@ -224,7 +224,10 @@ async function getSeasonSnapshot(game: LobbyGame): Promise<SeasonSnapshot | null
       .from("fixtures")
       .select(
         `id, game_id, season_number, matchday, home_participant_id, away_participant_id, status,
-        home_lineup_locked, away_lineup_locked, home_score, away_score, home_third_points, away_third_points, result, completed_at,
+        home_lineup_locked, away_lineup_locked,
+        home_locked_def, home_locked_mid, home_locked_att,
+        away_locked_def, away_locked_mid, away_locked_att,
+        home_score, away_score, home_third_points, away_third_points, result, completed_at,
         home_participant:season_participants!fixtures_home_participant_id_fkey(id, game_id, season_number, kind, club_id, cpu_team_id, display_name),
         away_participant:season_participants!fixtures_away_participant_id_fkey(id, game_id, season_number, kind, club_id, cpu_team_id, display_name),
         home_cpu_lineup:cpu_lineups!fixtures_home_cpu_lineup_id_fkey(id, display_name, def_stars, mid_stars, att_stars),

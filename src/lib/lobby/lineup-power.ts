@@ -1,3 +1,5 @@
+import { applyPositionPenalty, getPositionPenalty } from "@/lib/lobby/position-penalty";
+
 export type LineupZone = "ATT" | "DEF" | "GK" | "MID";
 export type TacticalLineupZone = "ATT" | "DEF" | "MID";
 
@@ -8,6 +10,7 @@ export type LineupPowerPlayer = {
   current_zone: LineupZone | string;
   injured?: boolean | null;
   lineup_slot?: number | null;
+  position?: string | null;
 };
 
 export type LineupPowerSummary = {
@@ -82,7 +85,12 @@ export function calculateLineupPower(
 }
 
 function getBaseStars(players: LineupPowerPlayer[], zone: LineupZone) {
-  return getZonePlayers(players, zone).reduce((total, player) => total + Number(player.current_stars), 0);
+  return getZonePlayers(players, zone).reduce((total, player) => {
+    const raw = Number(player.current_stars);
+    const naturalPos = player.position ?? zone;
+    const penalty = getPositionPenalty(naturalPos, zone);
+    return total + applyPositionPenalty(raw, penalty);
+  }, 0);
 }
 
 function getZonePlayers(players: LineupPowerPlayer[], zone: LineupZone) {

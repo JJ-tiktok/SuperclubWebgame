@@ -7,6 +7,7 @@ import { PlayerCard } from "@/components/player-card/PlayerCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { applyPositionPenalty, getPositionPenalty } from "@/lib/lobby/position-penalty";
 import { getTotalSkillValue, type PlayerCardData, type PlayerCardPosition } from "@/types/player-card";
 
 type LineupCard = PlayerCardData & {
@@ -331,12 +332,16 @@ export function GameLineupBoard({
             const playerId = assignments[slot.id];
             const player = playerId ? cardById.get(playerId) : undefined;
             const isDragged = drag?.fromSlotId === slot.id;
+            const offPosPenalty = player && !player.injured
+              ? getPositionPenalty(player.positions[0] ?? "MID", slot.zone)
+              : 0;
+            const isOffPosition = isFinite(offPosPenalty) ? offPosPenalty > 0 : true;
 
             return (
               <div
                 className={cn(
                   "absolute h-[112px] w-[92px] rounded-md border border-dashed bg-black/20 p-1",
-                  slot.required ? "border-emerald-400/75" : "border-zinc-600/70",
+                  player && isOffPosition ? "border-rose-500/80" : slot.required ? "border-emerald-400/75" : "border-zinc-600/70",
                   !player ? "flex items-center justify-center text-[10px] font-black text-zinc-500" : "",
                 )}
                 key={slot.id}
@@ -347,7 +352,7 @@ export function GameLineupBoard({
                     className={cn(player.lockedDefault || player.injured ? "cursor-default" : "cursor-grab active:cursor-grabbing")}
                     onPointerDown={(event) => startDrag(event, slot.id, player.id)}
                   >
-                    <LineupPlayerCard player={player} selected={player.lockedDefault} variant="lineup" />
+                    <LineupPlayerCard offPosPenalty={isOffPosition ? offPosPenalty : 0} player={player} selected={player.lockedDefault} variant="lineup" />
                   </div>
                 ) : (
                   <span>{slot.label}</span>
@@ -619,7 +624,9 @@ function getLineupSummary(
       continue;
     }
 
-    const value = getTotalSkillValue(card);
+    const naturalPos = card.positions[0] ?? "MID";
+    const penalty = getPositionPenalty(naturalPos, slot.zone);
+    const value = applyPositionPenalty(getTotalSkillValue(card), penalty);
     summary.players += 1;
 
     if (slot.zone === "GK") {
@@ -734,14 +741,19 @@ function DraggedCard({ drag, player }: { drag: DragState; player: LineupCard | u
 }
 
 function LineupPlayerCard({
+  offPosPenalty = 0,
   player,
   selected,
   variant,
 }: {
+  offPosPenalty?: number;
   player: LineupCard;
   selected?: boolean;
   variant: "draft" | "lineup";
 }) {
+  const isOffPos = offPosPenalty > 0;
+  const penaltyLabel = !isFinite(offPosPenalty) || offPosPenalty >= 10 ? "GK" : `-${offPosPenalty}★`;
+
   return (
     <div className={cn("relative", player.injured ? "opacity-55 grayscale" : "")}>
       <PlayerCard disabled={player.injured} player={player} selected={selected} variant={variant} />
@@ -749,6 +761,13 @@ function LineupPlayerCard({
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-md bg-black/45">
           <span className="rounded bg-rose-500 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-white shadow-lg">
             Verletzt
+          </span>
+        </div>
+      ) : null}
+      {isOffPos ? (
+        <div className="pointer-events-none absolute bottom-1 left-0 right-0 z-10 flex justify-center">
+          <span className="rounded bg-rose-600 px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wide text-white shadow-lg">
+            {penaltyLabel}
           </span>
         </div>
       ) : null}
@@ -811,8 +830,8 @@ function getFormationCounts(assignments: Record<string, string>, playerById: Map
   );
 }
 
-function canUseSlot(player: LineupCard, slot: FormationSlot) {
-  return !player.injured && player.positions.includes(slot.zone);
+function canUseSlot(player: LineupCard, _slot: FormationSlot) {
+  return !player.injured;
 }
 
 function clamp(value: number, min: number, max: number) {

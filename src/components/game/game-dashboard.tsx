@@ -2304,6 +2304,20 @@ function MatchdayView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub:
   const matchdayFixtures = season.fixtures.filter((fixture) => fixture.matchday === season.current_matchday);
   const completedCount = matchdayFixtures.filter((fixture) => fixture.status === "completed").length;
 
+  // Find own club's most recently completed fixture across all matchdays
+  const ownLastFixture = ownClub
+    ? [...season.fixtures]
+        .filter(
+          (f) =>
+            f.status === "completed" &&
+            (f.home_participant.club_id === ownClub.id || f.away_participant.club_id === ownClub.id),
+        )
+        .sort((a, b) => b.matchday - a.matchday)[0] ?? null
+    : null;
+  // Only pin it if it's not already visible in the current matchday list
+  const pinnedOwnFixture =
+    ownLastFixture && !matchdayFixtures.some((f) => f.id === ownLastFixture.id) ? ownLastFixture : null;
+
   if (season.fixtures.length === 0) {
     return (
       <Panel className="border-amber-700 bg-amber-950/30">
@@ -2353,6 +2367,16 @@ function MatchdayView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub:
           <Metric detail="Tabellenpunkte" icon={Trophy} label="Punkte" value={snapshot.game.settings.match_points_mode === "classic_6_2_0" ? "6/2/0" : "3/1/0"} />
         </div>
       </Panel>
+
+      {pinnedOwnFixture ? (
+        <div className="space-y-2">
+          <p className="flex items-center gap-2 text-xs font-medium uppercase text-zinc-500">
+            <CalendarDays size={13} aria-hidden />
+            Letztes eigenes Spiel (Spieltag {pinnedOwnFixture.matchday})
+          </p>
+          <FixtureCard fixture={pinnedOwnFixture} isHost={isHost} ownClub={ownClub} snapshot={snapshot} />
+        </div>
+      ) : null}
 
       <div className="grid gap-4">
         {matchdayFixtures.map((fixture) => (
@@ -3412,6 +3436,7 @@ function getOwnLineupPowerSummary(snapshot: LobbySnapshot): LineupPowerSummary |
       current_zone: owned.current_zone,
       injured: owned.injured,
       lineup_slot: owned.lineup_slot,
+      position: owned.player.position,
     })),
     staffEffects,
   );

@@ -1225,7 +1225,7 @@ export async function lockFixtureLineupAction(formData: FormData) {
   const [{ data: playerData }, { data: staffData }] = await Promise.all([
     supabase
       .from("club_players")
-      .select("current_stars, current_zone, lineup_slot, injured, player:players(chemistry_left, chemistry_right)")
+      .select("current_stars, current_zone, lineup_slot, injured, player:players(chemistry_left, chemistry_right, position)")
       .eq("club_id", ownClub.id)
       .neq("current_zone", "bench")
       .eq("injured", false)
@@ -1234,7 +1234,7 @@ export async function lockFixtureLineupAction(formData: FormData) {
         current_zone: string;
         lineup_slot: number | null;
         injured: boolean;
-        player: { chemistry_left?: boolean | null; chemistry_right?: boolean | null } | null;
+        player: { chemistry_left?: boolean | null; chemistry_right?: boolean | null; position?: string | null } | null;
       }>>(),
     supabase
       .from("club_staff")
@@ -1251,6 +1251,7 @@ export async function lockFixtureLineupAction(formData: FormData) {
       current_stars: p.current_stars,
       current_zone: p.current_zone,
       lineup_slot: p.lineup_slot,
+      position: p.player?.position,
     })),
     staffEffects,
   );
@@ -1882,7 +1883,7 @@ async function buildFixtureSide(supabase: SupabaseServiceClient, participant: Fi
   const [{ data, error }, { data: staffData }] = await Promise.all([
     supabase
       .from("club_players")
-      .select("id, current_stars, current_zone, lineup_slot, player:players(chemistry_left, chemistry_right)")
+      .select("id, current_stars, current_zone, lineup_slot, player:players(chemistry_left, chemistry_right, position)")
       .eq("club_id", participant.club_id)
       .neq("current_zone", "bench")
       .eq("injured", false)
@@ -1893,7 +1894,7 @@ async function buildFixtureSide(supabase: SupabaseServiceClient, participant: Fi
           current_zone: string;
           id: string;
           lineup_slot: number | null;
-          player: { chemistry_left?: boolean | null; chemistry_right?: boolean | null };
+          player: { chemistry_left?: boolean | null; chemistry_right?: boolean | null; position?: string | null };
         }>
       >(),
     supabase
@@ -1922,6 +1923,7 @@ async function buildFixtureSide(supabase: SupabaseServiceClient, participant: Fi
       current_stars: player.current_stars,
       current_zone: player.current_zone,
       lineup_slot: player.lineup_slot,
+      position: player.player?.position,
     })),
     staffEffects,
   );

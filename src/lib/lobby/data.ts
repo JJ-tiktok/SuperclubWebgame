@@ -24,6 +24,8 @@ import type {
   SeasonFixtureSnapshot,
   SeasonSnapshot,
   SeasonStandingSnapshot,
+  StaffCardRow,
+  StaffOfferSnapshot,
 } from "./types";
 import { calculateManagerScore, getManagerScoreBand, getPlacementReward, getStadiumIncome } from "@/lib/game/rules";
 import { getDeadlineAuctionCount } from "@/lib/lobby/deadline";
@@ -127,7 +129,8 @@ async function getScoutingSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promise
   }
 
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
-  const [{ data: draws, error: drawsError }, { data: saleRows, error: saleRowsError }] = await Promise.all([
+  const clubIds = clubs.map((c) => c.id);
+  const [{ data: draws, error: drawsError }, { data: saleRows, error: saleRowsError }, { data: staffEffectRows }] = await Promise.all([
     supabase
       .from("scouting_draws")
       .select(`id, game_id, club_id, season_number, pile_key, draw_index, player_id, status, created_at, resolved_at, player:players(${DRAFT_PLAYER_SELECT})`)
@@ -142,6 +145,11 @@ async function getScoutingSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promise
       .eq("reason", "player_sale")
       .contains("metadata", { season_number: seasonNumber })
       .returns<Array<{ club_id: string | null }>>(),
+    supabase
+      .from("club_staff")
+      .select("club_id, card:staff_cards(effects)")
+      .in("club_id", clubIds)
+      .returns<Array<{ club_id: string; card: { effects: Array<Record<string, unknown>> } }>>(),
   ]);
 
   if (drawsError) {
@@ -160,13 +168,24 @@ async function getScoutingSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promise
     }
   }
 
+  // Build a map of scouting_extra_cards bonus per club from staff effects
+  const scoutingBonusByClubId: Record<string, number> = {};
+  for (const row of staffEffectRows ?? []) {
+    const bonus = (row.card?.effects ?? [])
+      .filter((e) => e.type === "scouting_extra_cards")
+      .reduce((sum, e) => sum + Number(e.cards ?? 0), 0);
+    if (bonus > 0) {
+      scoutingBonusByClubId[row.club_id] = (scoutingBonusByClubId[row.club_id] ?? 0) + bonus;
+    }
+  }
+
   const normalizedDraws: ScoutingDrawSnapshot[] = draws ?? [];
   const statusByClubId: ScoutingSnapshot["status_by_club_id"] = {};
 
   for (const club of clubs) {
     const clubDraws = normalizedDraws.filter((draw) => draw.club_id === club.id);
     const openCount = clubDraws.filter((draw) => draw.status === "drawn").length;
-    const capacity = getClubScoutingCapacity(club);
+    const capacity = getClubScoutingCapacity(club) + (scoutingBonusByClubId[club.id] ?? 0);
 
     statusByClubId[club.id] = {
       bought_count: clubDraws.filter((draw) => draw.status === "bought").length,
@@ -305,7 +324,7 @@ async function getManagerStandings(game: LobbyGame, standings: SeasonStandingSna
         season_match_points: Number(standing.match_points ?? 0),
         season_score: seasonScore,
         squad_stars: squadStars,
-        status: club?.status ?? band.status,
+        status: band.status,
       };
     })
     .sort((a, b) => {
@@ -393,6 +412,7 @@ async function getClubOverviewSnapshot(
     { data: investments, error: investmentsError },
     { data: trainingTransactions, error: trainingTransactionsError },
     { data: saleTransactions, error: saleTransactionsError },
+    { data: openOfferRows, error: openOfferError },
   ] = await Promise.all([
     supabase
       .from("club_players")
@@ -438,6 +458,14 @@ async function getClubOverviewSnapshot(
       .eq("reason", "player_sale")
       .contains("metadata", { season_number: seasonNumber })
       .returns<Array<{ id: string; metadata: unknown }>>(),
+    supabase
+      .from("staff_offers")
+      .select("id, season_number, status, offered_card_ids, chosen_card_id")
+      .eq("club_id", club.id)
+      .eq("season_number", seasonNumber)
+      .eq("status", "open")
+      .limit(1)
+      .returns<Array<{ id: string; season_number: number; status: string; offered_card_ids: string[]; chosen_card_id: string | null }>>(),
   ]);
 
   if (clubPlayersError) {
@@ -464,6 +492,26 @@ async function getClubOverviewSnapshot(
     throw saleTransactionsError;
   }
 
+  // openOfferError may occur when the table does not yet exist in the schema cache; treat as no offer
+  let openStaffOffer: StaffOfferSnapshot | null = null;
+  const openOfferRow = !openOfferError ? openOfferRows?.[0] : undefined;
+  if (openOfferRow) {
+    const { data: offeredCards } = await supabase
+      .from("staff_cards")
+      .select("id, content_key, display_name, price, effects, visibility")
+      .in("id", openOfferRow.offered_card_ids)
+      .returns<StaffCardRow[]>();
+
+    openStaffOffer = {
+      id: openOfferRow.id,
+      season_number: openOfferRow.season_number,
+      status: openOfferRow.status as "open",
+      offered_card_ids: openOfferRow.offered_card_ids,
+      chosen_card_id: openOfferRow.chosen_card_id,
+      offered_cards: offeredCards ?? [],
+    };
+  }
+
   const trainingEvents = (trainingTransactions ?? [])
     .map(parseTrainingEvent)
     .filter((event): event is NonNullable<ReturnType<typeof parseTrainingEvent>> => Boolean(event))
@@ -481,6 +529,7 @@ async function getClubOverviewSnapshot(
     staff: staffRows ?? [],
     game_changers: gameChangerRows ?? [],
     investments: investments ?? [],
+    open_staff_offer: openStaffOffer,
     training: {
       events: trainingEvents,
       status: getTrainingStatus({

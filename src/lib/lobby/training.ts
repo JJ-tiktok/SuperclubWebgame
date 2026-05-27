@@ -69,14 +69,18 @@ export function resolveTrainingAttempt(params: {
 
   const trainingCap = Math.min(beforeStars + trainingLevel, skillMax);
   const rolledTarget = Math.min(diceRoll, trainingCap);
-  const guaranteedTarget = params.guaranteedBonusAvailable ? Math.min(beforeStars + 1, skillMax, trainingCap) : beforeStars;
+  const rollSucceeded = rolledTarget > beforeStars;
+
+  // Guaranteed bonus only activates when the dice roll failed — it saves the first failed roll as +1
+  const guaranteedActivates = params.guaranteedBonusAvailable && !rollSucceeded;
+  const guaranteedTarget = guaranteedActivates ? Math.min(beforeStars + 1, skillMax) : beforeStars;
   const afterStars = Math.max(beforeStars, rolledTarget, guaranteedTarget);
 
   return {
     afterStars,
     beforeStars,
     diceRoll,
-    guaranteedBonusUsed: params.guaranteedBonusAvailable && afterStars > beforeStars && guaranteedTarget > beforeStars,
+    guaranteedBonusUsed: guaranteedActivates && guaranteedTarget > beforeStars,
     success: afterStars > beforeStars,
   };
 }
@@ -84,13 +88,14 @@ export function resolveTrainingAttempt(params: {
 export function getTrainingStatus(params: {
   events: TrainingEventSnapshot[];
   trainingLevel: number;
+  extraPlayers?: number;
 }): TrainingStatusSnapshot {
   const capacity = getTrainingCapacity(params.trainingLevel);
   const guaranteedBonusUsed = params.events.some((event) => event.guaranteed_bonus_used);
 
   return {
     attempts_used: params.events.length,
-    capacity_players: capacity.players,
+    capacity_players: capacity.players + (params.extraPlayers ?? 0),
     guaranteed_bonus_available: capacity.guaranteedStarForPlayers > 0 && !guaranteedBonusUsed,
     guaranteed_bonus_used: guaranteedBonusUsed,
     max_gain_per_player: capacity.maxStarsPerPlayer,

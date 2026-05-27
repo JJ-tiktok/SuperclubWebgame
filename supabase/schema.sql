@@ -216,6 +216,22 @@ create table public.club_staff (
   unique (club_id, staff_card_id)
 );
 
+create table public.staff_offers (
+  id uuid primary key default gen_random_uuid(),
+  game_id uuid not null references public.games(id) on delete cascade,
+  club_id uuid not null references public.clubs(id) on delete cascade,
+  season_number int not null,
+  offered_card_ids uuid[] not null,
+  chosen_card_id uuid references public.staff_cards(id),
+  status text not null default 'open' check (status in ('open', 'resolved', 'declined')),
+  created_at timestamptz not null default now(),
+  resolved_at timestamptz
+);
+
+create unique index staff_offers_open_per_club
+  on public.staff_offers (club_id, season_number)
+  where status = 'open';
+
 create table public.game_changer_cards (
   id uuid primary key default gen_random_uuid(),
   content_key text not null unique,
@@ -460,6 +476,7 @@ alter table public.draft_rounds enable row level security;
 alter table public.scouting_draws enable row level security;
 alter table public.staff_cards enable row level security;
 alter table public.club_staff enable row level security;
+alter table public.staff_offers enable row level security;
 alter table public.game_changer_cards enable row level security;
 alter table public.club_game_changers enable row level security;
 alter table public.investments enable row level security;
@@ -602,6 +619,50 @@ using (
     from public.clubs c
     where c.id = club_staff.club_id
       and public.is_game_member(c.game_id)
+  )
+);
+
+create policy "members can read own staff offers"
+on public.staff_offers for select
+to authenticated
+using (
+  exists (
+    select 1
+    from public.clubs c
+    where c.id = staff_offers.club_id
+      and c.clerk_user_id = public.requesting_clerk_user_id()
+  )
+);
+
+create policy "members can insert own staff offers"
+on public.staff_offers for insert
+to authenticated
+with check (
+  exists (
+    select 1
+    from public.clubs c
+    where c.id = staff_offers.club_id
+      and c.clerk_user_id = public.requesting_clerk_user_id()
+  )
+);
+
+create policy "members can update own staff offers"
+on public.staff_offers for update
+to authenticated
+using (
+  exists (
+    select 1
+    from public.clubs c
+    where c.id = staff_offers.club_id
+      and c.clerk_user_id = public.requesting_clerk_user_id()
+  )
+)
+with check (
+  exists (
+    select 1
+    from public.clubs c
+    where c.id = staff_offers.club_id
+      and c.clerk_user_id = public.requesting_clerk_user_id()
   )
 );
 
@@ -1140,6 +1201,44 @@ cross join (
 ) as lineup(display_name, def_stars, mid_stars, att_stars, sort_order)
 on conflict (cpu_team_id, sort_order) do nothing;
 
+insert into public.staff_cards (content_key, display_name, price, effects, visibility) values
+  ('mark_de_man',    'Mark De Man',    10000000, '[{"type":"zone_bonus","zone":"MID","stars":1}]'::jsonb, 'room'),
+  ('lastic_tackle',  'Lastic Tackle',  20000000, '[{"type":"zone_bonus","zone":"DEF","stars":2}]'::jsonb, 'room'),
+  ('chuck_long',     'Chuck Long',     10000000, '[{"type":"zone_bonus","zone":"ATT","stars":1}]'::jsonb, 'room'),
+  ('agil_itty',      'Agil Itty',      10000000, '[{"type":"zone_bonus","zone":"DEF","stars":1}]'::jsonb, 'room'),
+  ('tobanks_ofour',  'Tobanks O''Four',40000000, '[{"type":"zone_bonus","zone":"DEF","stars":3}]'::jsonb, 'room'),
+  ('line_upread',    'Line Upread',    40000000, '[{"type":"captain_boost_extra","stars":3}]'::jsonb, 'room'),
+  ('will_lowbawl',   'Will Lowbawl',   10000000, '[{"type":"auction_discount","amount":5000000}]'::jsonb, 'room'),
+  ('hugh_gloves',    'Hugh Gloves',    10000000, '[{"type":"zone_bonus","zone":"DEF","stars":1}]'::jsonb, 'room'),
+  ('goldi_gerr',     'Goldi Gerr',     20000000, '[{"type":"attractiveness_bonus","stars":1}]'::jsonb, 'room'),
+  ('jet_zetter',     'Jet Zetter',     30000000, '[{"type":"scouting_extra_cards","cards":1}]'::jsonb, 'room'),
+  ('sally_recut',    'Sally Recut',    40000000, '[{"type":"wage_multiplier","factor":0.5}]'::jsonb, 'room'),
+  ('lev_ellip',      'Lev Ellip',      50000000, '[{"type":"new_signing_star_bonus","stars":1}]'::jsonb, 'room'),
+  ('mae_khit',       'Mae Khit',       30000000, '[{"type":"training_player_bonus","players":1}]'::jsonb, 'room'),
+  ('roi_surge',      'Roi Surge',      20000000, '[{"type":"season_income_bonus","amount":15000000}]'::jsonb, 'room'),
+  ('dwight_price',   'Dwight Price',   30000000, '[{"type":"season_income_bonus","amount":20000000}]'::jsonb, 'room'),
+  ('n_ginear',       'N. Ginear',      25000000, '[{"type":"investment_action_bonus","extra":1}]'::jsonb, 'room'),
+  ('mira_cleure',    'Mira Cleure',    20000000, '[{"type":"injury_heal_manual","perMatchday":1}]'::jsonb, 'room'),
+  ('mimic_shearer',  'Mimic Shearer',  50000000, '[{"type":"status_tier_up","tiers":1}]'::jsonb, 'room'),
+  ('tara_p_sessions','Tara P. Sessions',20000000,'[{"type":"zone_bonus","zone":"MID","stars":2}]'::jsonb, 'room'),
+  ('tippy_tawway',   'Tippy Tawway',   40000000, '[{"type":"draw_reroll","threshold":8}]'::jsonb, 'room'),
+  ('upon_a_wel',     'Upon A. Wel',    30000000, '[{"type":"training_player_bonus","players":1}]'::jsonb, 'room'),
+  ('bill_bendjmin',  'Bill Bendjmin',  100000000,'[{"type":"season_income_bonus","amount":50000000}]'::jsonb, 'room'),
+  ('alfie_ness',     'Alfie Ness',     40000000, '[{"type":"zone_bonus","zone":"MID","stars":3}]'::jsonb, 'room'),
+  ('colly_flowers',  'Colly Flowers',  40000000, '[{"type":"dice_zone_bonus","stars":1}]'::jsonb, 'room'),
+  ('chris_crossower','Chris Crossower',10000000, '[{"type":"zone_bonus","zone":"MID","stars":1}]'::jsonb, 'room'),
+  ('ellie_captian',  'Ellie Captian',  20000000, '[{"type":"captain_boost_extra","stars":1}]'::jsonb, 'room'),
+  ('kip_das_veres',  'Kip Das Veres',  80000000, '[{"type":"scouting_extra_cards","cards":2}]'::jsonb, 'room'),
+  ('lacy_strike',    'Lacy Strike',    20000000, '[{"type":"zone_bonus","zone":"ATT","stars":2}]'::jsonb, 'room'),
+  ('b_friend',       'B. Friend',      60000000, '[{"type":"chemistry_multiplier","factor":2}]'::jsonb, 'room'),
+  ('t_kitaka',       'T. Kitaka',      40000000, '[{"type":"zone_bonus","zone":"ATT","stars":3}]'::jsonb, 'room'),
+  ('finn_isher',     'Finn Isher',     10000000, '[{"type":"zone_bonus","zone":"ATT","stars":1}]'::jsonb, 'room')
+on conflict (content_key) do update
+  set display_name = excluded.display_name,
+      price        = excluded.price,
+      effects      = excluded.effects,
+      visibility   = excluded.visibility;
+
 grant usage on schema public to authenticated;
 grant select, insert, update on public.games to authenticated;
 grant select, insert, update on public.game_members to authenticated;
@@ -1147,6 +1246,7 @@ grant select on public.club_templates to authenticated;
 grant select, insert, update on public.clubs to authenticated;
 grant select on public.players, public.decks, public.club_players, public.draft_rounds, public.scouting_draws to authenticated;
 grant select on public.staff_cards, public.club_staff, public.game_changer_cards, public.club_game_changers to authenticated;
+grant select, insert, update on public.staff_offers to authenticated;
 grant select on public.investments, public.auctions, public.bids, public.matches, public.lineups, public.match_events, public.transactions to authenticated;
 grant select on public.cpu_teams, public.cpu_lineups, public.season_participants, public.fixtures, public.season_standings to authenticated;
 grant select, insert on public.game_saves to authenticated;
@@ -1227,6 +1327,51 @@ begin
       and tablename = 'season_standings'
   ) then
     alter publication supabase_realtime add table public.season_standings;
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'club_players'
+  ) then
+    alter publication supabase_realtime add table public.club_players;
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'transactions'
+  ) then
+    alter publication supabase_realtime add table public.transactions;
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'investments'
+  ) then
+    alter publication supabase_realtime add table public.investments;
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'club_staff'
+  ) then
+    alter publication supabase_realtime add table public.club_staff;
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'staff_offers'
+  ) then
+    alter publication supabase_realtime add table public.staff_offers;
   end if;
 end;
 $$;

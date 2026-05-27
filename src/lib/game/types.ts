@@ -85,6 +85,20 @@ export type StaffCard = {
 
 export type StaffEffect =
   | { type: "zone_bonus"; zone: TacticalZone; stars: number }
+  | { type: "dice_zone_bonus"; stars: number }
+  | { type: "captain_boost_extra"; stars: number }
+  | { type: "wage_multiplier"; factor: number }
+  | { type: "auction_discount"; amount: Money }
+  | { type: "scouting_extra_cards"; cards: number }
+  | { type: "season_income_bonus"; amount: Money }
+  | { type: "investment_action_bonus"; extra: number }
+  | { type: "attractiveness_bonus"; stars: number }
+  | { type: "status_tier_up"; tiers: number }
+  | { type: "chemistry_multiplier"; factor: number }
+  | { type: "training_player_bonus"; players: number }
+  | { type: "new_signing_star_bonus"; stars: number }
+  | { type: "injury_heal_manual"; perMatchday: number }
+  | { type: "draw_reroll"; threshold: number }
   | { type: "wage_discount"; amountPerStar: Money }
   | { type: "scouting_discount"; amount: Money }
   | { type: "auction_tiebreak"; stars: number };

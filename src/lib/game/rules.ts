@@ -251,13 +251,47 @@ export function getWages(
   club?: Club,
 ) {
   const squadStars = calculateSquadStars(clubId, clubPlayers, playerCatalog);
-  const discount = club?.staff
-    .flatMap((staff) => staff.effects)
-    .filter((effect) => effect.type === "wage_discount")
-    .reduce((total, effect) => total + effect.amountPerStar, 0) ?? 0;
+  const effects = club?.staff.flatMap((staff) => staff.effects) ?? [];
+
+  const discount = effects
+    .filter((e) => e.type === "wage_discount")
+    .reduce((total, e) => total + (e as { type: "wage_discount"; amountPerStar: number }).amountPerStar, 0);
+
+  const multiplier = effects
+    .filter((e) => e.type === "wage_multiplier")
+    .reduce((min, e) => Math.min(min, (e as { type: "wage_multiplier"; factor: number }).factor), 1);
+
   const wagePerStar = Math.max(0, MILLION - discount);
 
-  return squadStars * wagePerStar;
+  return Math.round(squadStars * wagePerStar * multiplier);
+}
+
+export function applyStatusTierUp(status: ClubStatus, tiers: number): ClubStatus {
+  const ORDER: ClubStatus[] = ["newly_promoted", "established", "mid_table", "title_contender"];
+  const idx = Math.min(ORDER.length - 1, ORDER.indexOf(status) + tiers);
+  return ORDER[idx];
+}
+
+export function getEffectiveStatus(club: Club): ClubStatus {
+  const tierUp = club.staff
+    .flatMap((s) => s.effects)
+    .filter((e) => e.type === "status_tier_up")
+    .reduce((sum, e) => sum + (e as { type: "status_tier_up"; tiers: number }).tiers, 0);
+  return applyStatusTierUp(club.status, tierUp);
+}
+
+export function getStaffSeasonIncomeBonus(club: Club): number {
+  return club.staff
+    .flatMap((s) => s.effects)
+    .filter((e) => e.type === "season_income_bonus")
+    .reduce((sum, e) => sum + (e as { type: "season_income_bonus"; amount: number }).amount, 0);
+}
+
+export function getStaffAttractivenessBonus(club: Club): number {
+  return club.staff
+    .flatMap((s) => s.effects)
+    .filter((e) => e.type === "attractiveness_bonus")
+    .reduce((sum, e) => sum + (e as { type: "attractiveness_bonus"; stars: number }).stars, 0);
 }
 
 export function getFinanceSummary(params: {
@@ -438,25 +472,33 @@ export function calculateZonePower(params: {
     const tacticalZone = lineup.starters.GK.includes(playerId) ? "GK" : zone;
     return total + effectivePlayerStars(card, owned, tacticalZone);
   }, 0);
-  const chemistryBonus = calculateChemistryBonus(playerIds, playerCatalog);
-  const captainBoost =
-    lineup.captainBoostZone === zone && club.captainBoostRank ? club.captainBoostRank : 0;
-  const staffBonus = club.staff
-    .flatMap((staff) => staff.effects)
-    .reduce((total, effect) => {
-      if (effect.type !== "zone_bonus" || effect.zone !== zone) {
-        return total;
-      }
+  const allEffects = club.staff.flatMap((staff) => staff.effects);
 
-      return total + effect.stars;
-    }, 0);
+  const chemistryRawBonus = calculateChemistryBonus(playerIds, playerCatalog);
+  const chemistryMultiplier = allEffects
+    .filter((e) => e.type === "chemistry_multiplier")
+    .reduce((best, e) => Math.max(best, (e as { type: "chemistry_multiplier"; factor: number }).factor), 1);
+  const chemistryBonus = Math.floor(chemistryRawBonus * chemistryMultiplier);
+
+  const captainBoostBase = lineup.captainBoostZone === zone && club.captainBoostRank ? club.captainBoostRank : 0;
+  const captainBoostExtra = lineup.captainBoostZone === zone
+    ? allEffects.filter((e) => e.type === "captain_boost_extra").reduce((sum, e) => sum + (e as { type: "captain_boost_extra"; stars: number }).stars, 0)
+    : 0;
+  const captainBoost = captainBoostBase + captainBoostExtra;
+
+  const staffBonus = allEffects.reduce((total, effect) => {
+    if (effect.type === "zone_bonus" && effect.zone === zone) return total + effect.stars;
+    if (effect.type === "dice_zone_bonus" && zone !== ("GK" as string)) return total + (effect as { type: "dice_zone_bonus"; stars: number }).stars;
+    return total;
+  }, 0);
+
   const total = baseStars + chemistryBonus + captainBoost + staffBonus + dice[0] + dice[1];
 
   return {
     clubId: club.id,
     zone,
     baseStars,
-    chemistryBonus,
+    chemistryBonus: chemistryBonus,
     captainBoost,
     staffBonus,
     dice,

@@ -94,7 +94,19 @@ const formationLayouts: Record<FormationKey, FormationSlot[]> = {
   ],
 };
 
-export function GameLineupBoard({ cards, gameId, roomCode }: { cards: LineupCard[]; gameId: string; roomCode: string }) {
+type StaffZoneEffect = { type: string; zone?: string; stars?: number; factor?: number };
+
+export function GameLineupBoard({
+  cards,
+  gameId,
+  roomCode,
+  staffEffects = [],
+}: {
+  cards: LineupCard[];
+  gameId: string;
+  roomCode: string;
+  staffEffects?: StaffZoneEffect[];
+}) {
   const boardRef = useRef<HTMLDivElement>(null);
   const cardsWithDefaultKeeper = useMemo(() => ensureDefaultKeeper(cards), [cards]);
   const cardById = useMemo(() => new Map(cardsWithDefaultKeeper.map((card) => [card.id, card])), [cardsWithDefaultKeeper]);
@@ -108,7 +120,10 @@ export function GameLineupBoard({ cards, gameId, roomCode }: { cards: LineupCard
   const assignedIds = new Set(Object.values(assignments));
   const benchCards = cardsWithDefaultKeeper.filter((card) => !assignedIds.has(card.id) && !card.lockedDefault);
   const chemistryLinks = getChemistryLinks(assignments, cardById, formationSlots);
-  const summary = getLineupSummary(assignments, cardById, chemistryLinks, formationSlots);
+  const summary = getLineupSummary(assignments, cardById, chemistryLinks, formationSlots, staffEffects);
+  const chemistryMultiplier = (staffEffects ?? [])
+    .filter((e) => e.type === "chemistry_multiplier")
+    .reduce((best, e) => Math.max(best, e.factor ?? 1), 1);
   const counts = getFormationCounts(assignments, cardById, formationSlots);
   const lineupPayload = useMemo(() => getLineupPayload(assignments, cardById, formationSlots), [assignments, cardById, formationSlots]);
   const validBase =
@@ -248,9 +263,17 @@ export function GameLineupBoard({ cards, gameId, roomCode }: { cards: LineupCard
       <section className="rounded-lg border border-[var(--club-border)] bg-zinc-950/85 p-4">
         <div className="grid gap-3 md:grid-cols-4">
           <SummaryMetric label="Gesamt" value={summary.total} detail={`${summary.players}/11 Spieler`} />
-          <SummaryMetric label="Abwehr" value={summary.DEF.total} detail={`${summary.DEF.base} + ${summary.DEF.chemistry} Link`} />
-          <SummaryMetric label="Mittelfeld" value={summary.MID.total} detail={`${summary.MID.base} + ${summary.MID.chemistry} Link`} />
-          <SummaryMetric label="Angriff" value={summary.ATT.total} detail={`${summary.ATT.base} + ${summary.ATT.chemistry} Link`} />
+          {(["DEF", "MID", "ATT"] as const).map((zone) => {
+            const label = zone === "DEF" ? "Abwehr" : zone === "MID" ? "Mittelfeld" : "Angriff";
+            const z = summary[zone];
+            const rawLinks = chemistryLinks.filter((l) => l.zone === zone).length;
+            const parts: string[] = [`${z.base} Basis`];
+            if (rawLinks > 0) {
+              parts.push(chemistryMultiplier > 1 ? `${z.chemistry} Link (${rawLinks}×${chemistryMultiplier})` : `${z.chemistry} Link`);
+            }
+            if (z.staffBonus > 0) parts.push(`+${z.staffBonus}★ Mitarbeiter`);
+            return <SummaryMetric key={zone} label={label} value={z.total} detail={parts.join(" + ")} />;
+          })}
         </div>
       </section>
 
@@ -566,11 +589,26 @@ function getChemistryLinks(assignments: Record<string, string>, cardById: Map<st
   return links;
 }
 
-function getLineupSummary(assignments: Record<string, string>, cardById: Map<string, LineupCard>, chemistryLinks: ChemistryLink[], formationSlots: FormationSlot[]) {
+function getLineupSummary(
+  assignments: Record<string, string>,
+  cardById: Map<string, LineupCard>,
+  chemistryLinks: ChemistryLink[],
+  formationSlots: FormationSlot[],
+  staffEffects: StaffZoneEffect[] = [],
+) {
+  const diceZoneBonus = staffEffects
+    .filter((e) => e.type === "dice_zone_bonus")
+    .reduce((sum, e) => sum + (e.stars ?? 0), 0);
+
+  const staffBonusForZone = (zone: "ATT" | "DEF" | "MID") =>
+    staffEffects
+      .filter((e) => e.type === "zone_bonus" && e.zone === zone)
+      .reduce((sum, e) => sum + (e.stars ?? 0), 0) + diceZoneBonus;
+
   const summary = {
-    ATT: { base: 0, chemistry: 0, total: 0 },
-    DEF: { base: 0, chemistry: 0, total: 0 },
-    MID: { base: 0, chemistry: 0, total: 0 },
+    ATT: { base: 0, chemistry: 0, staffBonus: staffBonusForZone("ATT"), total: 0 },
+    DEF: { base: 0, chemistry: 0, staffBonus: staffBonusForZone("DEF"), total: 0 },
+    MID: { base: 0, chemistry: 0, staffBonus: staffBonusForZone("MID"), total: 0 },
     players: 0,
     total: 0,
   };
@@ -591,13 +629,17 @@ function getLineupSummary(assignments: Record<string, string>, cardById: Map<str
     }
   }
 
+  const chemistryMultiplier = staffEffects
+    .filter((e) => e.type === "chemistry_multiplier")
+    .reduce((best, e) => Math.max(best, e.factor ?? 1), 1);
+
   for (const link of chemistryLinks) {
-    summary[link.zone].chemistry += 1;
+    summary[link.zone].chemistry += chemistryMultiplier;
   }
 
-  summary.ATT.total = summary.ATT.base + summary.ATT.chemistry;
-  summary.DEF.total = summary.DEF.base + summary.DEF.chemistry;
-  summary.MID.total = summary.MID.base + summary.MID.chemistry;
+  summary.ATT.total = summary.ATT.base + summary.ATT.chemistry + summary.ATT.staffBonus;
+  summary.DEF.total = summary.DEF.base + summary.DEF.chemistry + summary.DEF.staffBonus;
+  summary.MID.total = summary.MID.base + summary.MID.chemistry + summary.MID.staffBonus;
   summary.total = summary.ATT.total + summary.DEF.total + summary.MID.total;
 
   return summary;

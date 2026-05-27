@@ -217,18 +217,29 @@ export type ClubPlayerSnapshot = {
   player: DraftPlayerRow;
 };
 
+export type StaffCardRow = {
+  id: string;
+  content_key?: string | null;
+  display_name: string;
+  price: number;
+  effects: unknown[];
+  visibility?: string | null;
+};
+
 export type ClubStaffSnapshot = {
   id: string;
   staff_card_id: string;
   hired_at?: string;
-  card: {
-    id: string;
-    content_key?: string | null;
-    display_name: string;
-    price: number;
-    effects: unknown[];
-    visibility?: string | null;
-  };
+  card: StaffCardRow;
+};
+
+export type StaffOfferSnapshot = {
+  id: string;
+  season_number: number;
+  status: "open" | "resolved" | "declined";
+  offered_card_ids: string[];
+  chosen_card_id?: string | null;
+  offered_cards: StaffCardRow[];
 };
 
 export type ClubGameChangerSnapshot = {
@@ -296,6 +307,7 @@ export type ClubOverviewSnapshot = {
   staff: ClubStaffSnapshot[];
   game_changers: ClubGameChangerSnapshot[];
   investments: InvestmentSnapshot[];
+  open_staff_offer: StaffOfferSnapshot | null;
   training: {
     events: TrainingEventSnapshot[];
     status: TrainingStatusSnapshot;

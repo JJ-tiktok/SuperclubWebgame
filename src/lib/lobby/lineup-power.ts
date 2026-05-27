@@ -19,27 +19,63 @@ export type LineupPowerSummary = {
 export type LineupZonePower = {
   base: number;
   chemistry: number;
+  staffBonus: number;
   total: number;
 };
 
-export function calculateLineupPower(players: LineupPowerPlayer[]): LineupPowerSummary {
+export type StaffEffectInput = {
+  type: string;
+  zone?: string;
+  stars?: number;
+  cards?: number;
+  players?: number;
+  factor?: number;
+  extra?: number;
+  amount?: number;
+  tiers?: number;
+  threshold?: number;
+  perMatchday?: number;
+};
+
+export function calculateLineupPower(
+  players: LineupPowerPlayer[],
+  staffEffects: StaffEffectInput[] = [],
+): LineupPowerSummary {
   const activePlayers = players
     .filter((player) => !player.injured && isLineupZone(player.current_zone))
     .sort((a, b) => Number(a.lineup_slot ?? 999) - Number(b.lineup_slot ?? 999));
-  const summary: LineupPowerSummary = {
-    ATT: { base: getBaseStars(activePlayers, "ATT"), chemistry: 0, total: 0 },
-    DEF: { base: getBaseStars(activePlayers, "DEF") + getBaseStars(activePlayers, "GK"), chemistry: 0, total: 0 },
-    MID: { base: getBaseStars(activePlayers, "MID"), chemistry: 0, total: 0 },
+
+  const diceZoneBonus = staffEffects
+    .filter((e) => e.type === "dice_zone_bonus")
+    .reduce((sum, e) => sum + (e.stars ?? 0), 0);
+
+  const staffBonusForZone = (zone: "ATT" | "DEF" | "MID"): number => {
+    const zoneBonus = staffEffects
+      .filter((e) => e.type === "zone_bonus" && e.zone === zone)
+      .reduce((sum, e) => sum + (e.stars ?? 0), 0);
+    return zoneBonus + diceZoneBonus;
   };
 
+  const summary: LineupPowerSummary = {
+    ATT: { base: getBaseStars(activePlayers, "ATT"), chemistry: 0, staffBonus: staffBonusForZone("ATT"), total: 0 },
+    DEF: { base: getBaseStars(activePlayers, "DEF") + getBaseStars(activePlayers, "GK"), chemistry: 0, staffBonus: staffBonusForZone("DEF"), total: 0 },
+    MID: { base: getBaseStars(activePlayers, "MID"), chemistry: 0, staffBonus: staffBonusForZone("MID"), total: 0 },
+  };
+
+  const chemistryMultiplier = staffEffects
+    .filter((e) => e.type === "chemistry_multiplier")
+    .reduce((best, e) => Math.max(best, e.factor ?? 1), 1);
+
   for (const zone of ["ATT", "MID", "DEF"] as const) {
-    summary[zone].chemistry += getAdjacentChemistryLinks(getZonePlayers(activePlayers, zone));
+    const rawLinks = getAdjacentChemistryLinks(getZonePlayers(activePlayers, zone));
+    summary[zone].chemistry += Math.floor(rawLinks * chemistryMultiplier);
   }
 
-  summary.DEF.chemistry += getGoalkeeperChemistryLinks(activePlayers);
+  const rawGkLinks = getGoalkeeperChemistryLinks(activePlayers);
+  summary.DEF.chemistry += Math.floor(rawGkLinks * chemistryMultiplier);
 
   for (const zone of ["ATT", "DEF", "MID"] as const) {
-    summary[zone].total = summary[zone].base + summary[zone].chemistry;
+    summary[zone].total = summary[zone].base + summary[zone].chemistry + summary[zone].staffBonus;
   }
 
   return summary;

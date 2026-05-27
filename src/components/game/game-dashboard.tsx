@@ -24,20 +24,24 @@ import {
   Target,
   Trash2,
   Trophy,
+  UserCheck,
   UserMinus,
   Users,
   X,
 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
-import type { CSSProperties } from "react";
-import { useState } from "react";
+import type { CSSProperties, ReactNode } from "react";
+import { useRef, useState } from "react";
 import {
   advancePhaseAction,
   deleteGameAction,
   buyScoutedPlayerAction,
+  dismissStaffAction,
   drawScoutingPlayerAction,
   finishScoutingTurnAction,
+  healInjuredPlayerAction,
+  passAllScoutedPlayersAction,
   initializeSeasonScheduleAction,
   initializeDeadlineDayAction,
   lockFixtureLineupAction,
@@ -45,6 +49,9 @@ import {
   passDeadlineBidAction,
   passScoutedPlayerAction,
   placeDeadlineBidAction,
+  recruitStaffOpenAction,
+  recruitStaffResolveAction,
+  triggerDrawRerollAction,
   resolveDeadlineAuctionAction,
   resolveFixtureAction,
   sellClubPlayerAction,
@@ -63,9 +70,10 @@ import { Button } from "@/components/ui/button";
 import { Panel, PanelDescription, PanelHeader, PanelTitle } from "@/components/ui/panel";
 import { DEADLINE_BID_STEP, DEADLINE_TURN_SECONDS, getDeadlineActionLabel, getMinimumNextBid } from "@/lib/lobby/deadline";
 import { mapDbPlayerToPlayerCardData } from "@/lib/lobby/draft";
-import { canUpgradeFacility, getUpgradeCost, getUpgradeReasonLabel, type UpgradeAction } from "@/lib/lobby/investments";
+import { canRecruitStaff, canUpgradeFacility, getStaffRecruitReasonLabel, getUpgradeCost, getUpgradeReasonLabel, type UpgradeAction } from "@/lib/lobby/investments";
 import { calculateLineupPower } from "@/lib/lobby/lineup-power";
 import { isInvestmentPhase } from "@/lib/lobby/phases";
+import { getManagerScoreBand, getPlacementReward, getScoutingCapacity, getStadiumIncome, getTrainingCapacity, MAX_SQUAD_SIZE } from "@/lib/game/rules";
 import { canStartLobby } from "@/lib/lobby/rules";
 import {
   canBuyScoutedPlayer,
@@ -78,7 +86,7 @@ import {
 } from "@/lib/lobby/scouting";
 import { getClubTheme } from "@/lib/lobby/theme";
 import { canTrainOwnedPlayer, getTrainingReasonLabel } from "@/lib/lobby/training";
-import type { DraftPlayerRow, LobbyClub, LobbySnapshot, SeasonFixtureSnapshot } from "@/lib/lobby/types";
+import type { DraftPlayerRow, LobbyClub, LobbySnapshot, SeasonFixtureSnapshot, StaffOfferSnapshot } from "@/lib/lobby/types";
 import { cn } from "@/lib/utils";
 import { getPositionLabel, type PlayerCardData, type PlayerCardPosition } from "@/types/player-card";
 
@@ -103,9 +111,9 @@ type GameDashboardProps = {
 };
 
 type LineupPowerSummary = {
-  ATT: { base: number; chemistry: number; total: number };
-  DEF: { base: number; chemistry: number; total: number };
-  MID: { base: number; chemistry: number; total: number };
+  ATT: { base: number; chemistry: number; staffBonus: number; total: number };
+  DEF: { base: number; chemistry: number; staffBonus: number; total: number };
+  MID: { base: number; chemistry: number; staffBonus: number; total: number };
 };
 
 const mainMenu: Array<{ id: GameView; label: string; icon: typeof Home }> = [
@@ -349,6 +357,19 @@ function GameHeader({
             {ownClub?.club_slogan ? `${ownClub.club_slogan} - ` : ""}
             {currentTurnClub ? `${currentTurnClub.club_name} ist am Zug` : formatSavedLine(snapshot.game.last_saved_at)}
           </p>
+          {ownClub ? (
+            <div className="mt-2 flex flex-wrap items-center gap-3 text-sm">
+              <span className="flex items-center gap-1.5 text-zinc-300">
+                <Banknote size={14} className="text-zinc-500" aria-hidden />
+                <span className="font-medium text-zinc-50">{formatMoney(ownClub.money)}</span>
+              </span>
+              <span className="text-zinc-700">·</span>
+              <span className="flex items-center gap-1.5 text-zinc-300">
+                <Sparkles size={14} className="text-zinc-500" aria-hidden />
+                <span className="font-medium text-zinc-50">{formatStars(ownClub.squad_stars ?? 0)} Sterne</span>
+              </span>
+            </div>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Link
@@ -561,7 +582,22 @@ function DraftView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
   const isMyTurn = Boolean(ownClub && draft.current_club_id === ownClub.id && snapshot.game.current_turn_club_id === ownClub.id);
   const ownSquadCount = ownClub ? draft.squad_counts[ownClub.id] ?? 0 : 0;
   const playerNames = new Map(draft.board_players.map((player) => [player.id, player.display_name]));
+  const playerPositions = new Map(draft.board_players.map((player) => [player.id, player.position]));
   const clubNames = new Map(snapshot.clubs.map((club) => [club.id, club.club_name]));
+
+  type PositionKey = "GK" | "DEF" | "MID" | "ATT";
+  const POSITIONS: PositionKey[] = ["GK", "DEF", "MID", "ATT"];
+  const clubPositionCounts: Record<string, Record<PositionKey, number>> = {};
+  for (const club of snapshot.clubs) {
+    clubPositionCounts[club.id] = { GK: 0, DEF: 0, MID: 0, ATT: 0 };
+  }
+  for (const pick of draft.picks) {
+    const pos = playerPositions.get(pick.playerId) ?? "";
+    const key = POSITIONS.find((p) => p === pos);
+    if (key && clubPositionCounts[pick.clubId]) {
+      clubPositionCounts[pick.clubId][key] += 1;
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -629,28 +665,71 @@ function DraftView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
           </div>
         </Panel>
 
-        <Panel className="border-[var(--club-border)] bg-zinc-950/85">
-          <PanelHeader>
-            <div>
-              <PanelTitle>Pick-Historie</PanelTitle>
-              <PanelDescription>Aktuelle Runde, neueste Picks unten.</PanelDescription>
+        <div className="space-y-4">
+          <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+            <PanelHeader>
+              <div>
+                <PanelTitle>Kaderstand</PanelTitle>
+                <PanelDescription>Picks pro Position je Club</PanelDescription>
+              </div>
+              <Users size={18} className="text-[var(--club-color)]" aria-hidden />
+            </PanelHeader>
+            <div className="space-y-2">
+              {snapshot.clubs.map((club) => {
+                const counts = clubPositionCounts[club.id] ?? { GK: 0, DEF: 0, MID: 0, ATT: 0 };
+                const total = draft.squad_counts[club.id] ?? 0;
+                const isOwn = club.id === ownClub?.id;
+                return (
+                  <div
+                    key={club.id}
+                    className={cn(
+                      "rounded-md border p-3",
+                      isOwn ? "border-[var(--club-color)] bg-zinc-900/70" : "border-zinc-800 bg-zinc-900/40",
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-semibold text-zinc-200 truncate">{club.club_name}</p>
+                      <span className="shrink-0 text-xs text-zinc-500">{total} Picks</span>
+                    </div>
+                    <div className="mt-2 grid grid-cols-4 gap-1 text-center text-xs">
+                      {POSITIONS.map((pos) => (
+                        <div key={pos} className="rounded bg-zinc-800/70 px-1 py-1">
+                          <p className="font-medium text-zinc-400">{pos}</p>
+                          <p className={cn("font-bold", counts[pos] > 0 ? "text-zinc-100" : "text-zinc-600")}>
+                            {counts[pos]}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-            <ListOrdered size={18} className="text-[var(--club-color)]" aria-hidden />
-          </PanelHeader>
-          <div className="space-y-2">
-            {draft.picks.length === 0 ? (
-              <p className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3 text-sm text-zinc-400">Noch kein Pick in dieser Runde.</p>
-            ) : (
-              draft.picks.map((pick) => (
-                <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3" key={`${pick.clubId}-${pick.playerId}`}>
-                  <p className="text-xs font-medium uppercase text-zinc-500">Pick {pick.pickIndex + 1}</p>
-                  <p className="mt-1 text-sm font-semibold text-zinc-100">{playerNames.get(pick.playerId) ?? "Spieler"}</p>
-                  <p className="mt-1 text-xs text-zinc-500">{clubNames.get(pick.clubId) ?? "Club"}</p>
-                </div>
-              ))
-            )}
-          </div>
-        </Panel>
+          </Panel>
+
+          <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+            <PanelHeader>
+              <div>
+                <PanelTitle>Pick-Historie</PanelTitle>
+                <PanelDescription>Aktuelle Runde, neueste Picks unten.</PanelDescription>
+              </div>
+              <ListOrdered size={18} className="text-[var(--club-color)]" aria-hidden />
+            </PanelHeader>
+            <div className="space-y-2">
+              {draft.picks.length === 0 ? (
+                <p className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3 text-sm text-zinc-400">Noch kein Pick in dieser Runde.</p>
+              ) : (
+                draft.picks.map((pick) => (
+                  <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3" key={`${pick.clubId}-${pick.playerId}`}>
+                    <p className="text-xs font-medium uppercase text-zinc-500">Pick {pick.pickIndex + 1}</p>
+                    <p className="mt-1 text-sm font-semibold text-zinc-100">{playerNames.get(pick.playerId) ?? "Spieler"}</p>
+                    <p className="mt-1 text-xs text-zinc-500">{clubNames.get(pick.clubId) ?? "Club"}</p>
+                  </div>
+                ))
+              )}
+            </div>
+          </Panel>
+        </div>
       </div>
     </div>
   );
@@ -752,7 +831,30 @@ function TrainingView({
             </div>
           ) : (
             <div className="grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))] gap-3">
-              {overview.squad.map((owned) => {
+              {[...overview.squad]
+                .sort((a, b) => {
+                  const aStars = Math.trunc(Number(a.current_stars));
+                  const bStars = Math.trunc(Number(b.current_stars));
+                  const aTrainable = canTrainOwnedPlayer({
+                    alreadyTrained: trainedClubPlayerIds.has(a.id),
+                    attemptsUsed: status.attempts_used,
+                    capacityPlayers: status.capacity_players,
+                    currentStars: aStars,
+                    injured: a.injured,
+                    skillMax: Math.trunc(Number(a.player.skill_max ?? aStars)),
+                  }).ok;
+                  const bTrainable = canTrainOwnedPlayer({
+                    alreadyTrained: trainedClubPlayerIds.has(b.id),
+                    attemptsUsed: status.attempts_used,
+                    capacityPlayers: status.capacity_players,
+                    currentStars: bStars,
+                    injured: b.injured,
+                    skillMax: Math.trunc(Number(b.player.skill_max ?? bStars)),
+                  }).ok;
+                  if (aTrainable !== bTrainable) return aTrainable ? -1 : 1;
+                  return aStars - bStars;
+                })
+                .map((owned) => {
                 const card = mapOwnedPlayerToCardData(owned);
                 const currentStars = Math.trunc(Number(owned.current_stars));
                 const skillMax = Math.trunc(Number(owned.player.skill_max ?? card.skill.max));
@@ -1033,6 +1135,9 @@ function ScoutingDrawsPanel({
   const ownDraws = scouting.draws.filter((draw) => draw.club_id === ownClub.id);
   const allOwnCardsDrawn = ownStatus.draw_count >= ownStatus.capacity;
 
+  const ownOpenDraws = ownDraws.filter((d) => d.status === "drawn");
+  const canPassAll = allOwnCardsDrawn && ownOpenDraws.length > 1;
+
   return (
     <Panel className="border-[var(--club-border)] bg-zinc-950/85">
       <PanelHeader>
@@ -1040,7 +1145,19 @@ function ScoutingDrawsPanel({
           <PanelTitle>Scouting-Auslagen</PanelTitle>
           <PanelDescription>Alle Manager sehen die gescouteten Spieler.</PanelDescription>
         </div>
-        <Eye size={18} className="text-[var(--club-color)]" aria-hidden />
+        <div className="flex items-center gap-3">
+          {canPassAll ? (
+            <form action={passAllScoutedPlayersAction}>
+              <input name="game_id" type="hidden" value={snapshot.game.id} />
+              <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+              <Button size="sm" type="submit" variant="outline">
+                <X size={13} aria-hidden />
+                Rest passen ({ownOpenDraws.length})
+              </Button>
+            </form>
+          ) : null}
+          <Eye size={18} className="text-[var(--club-color)]" aria-hidden />
+        </div>
       </PanelHeader>
       {scouting.draws.length === 0 ? (
         <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-4 text-sm text-zinc-400">Noch keine Spieler gescoutet.</div>
@@ -1147,19 +1264,32 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
         <PanelHeader>
           <div>
             <PanelTitle>Eigener Kader</PanelTitle>
-            <PanelDescription>Position, Staerke und Marktwerte sind direkt an den Spielstand gekoppelt.</PanelDescription>
+            <PanelDescription>
+              {overview.squad.length} / {MAX_SQUAD_SIZE} Spieler · {MAX_SQUAD_SIZE - overview.squad.length} Plätze frei
+            </PanelDescription>
           </div>
           <Users size={18} className="text-[var(--club-color)]" aria-hidden />
         </PanelHeader>
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <Badge tone={saleCheck.ok ? "green" : "red"}>{saleCheck.ok ? "Verkauf moeglich" : getScoutingCheckLabel(saleCheck)}</Badge>
-          <Badge>{overview.squad.length} Spieler</Badge>
+          <Badge tone={overview.squad.length >= MAX_SQUAD_SIZE ? "red" : overview.squad.length >= MAX_SQUAD_SIZE - 3 ? "amber" : "neutral"}>
+            {overview.squad.length} / {MAX_SQUAD_SIZE} Spieler
+          </Badge>
         </div>
+        {overview.squad.length > 0 ? <div className="mb-4"><SquadPositionBreakdown squad={overview.squad} /></div> : null}
         {overview.squad.length === 0 ? (
           <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-4 text-sm text-zinc-400">Keine Spieler im Kader.</div>
         ) : (
           <div className="grid gap-3 lg:grid-cols-2">
-            {overview.squad.map((owned) => {
+            {[...overview.squad]
+              .sort((a, b) => {
+                const posOrder: Record<string, number> = { GK: 0, DEF: 1, MID: 2, ATT: 3 };
+                const posA = posOrder[a.player.position] ?? 4;
+                const posB = posOrder[b.player.position] ?? 4;
+                if (posA !== posB) return posA - posB;
+                return Number(b.current_stars) - Number(a.current_stars);
+              })
+              .map((owned) => {
               const card = mapOwnedPlayerToCardData(owned);
               const positionLabel = getPlayerPositionLabel(owned.player);
               const currentStars = Number(owned.current_stars);
@@ -1483,6 +1613,9 @@ function LineupView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; sna
 
   const lineupCards = getSortedSquadPlayers(overview.squad).map(mapOwnedPlayerToLineupCardData);
   const hasGoalkeeper = lineupCards.some((card) => card.positions.includes("GK"));
+  const staffEffects = (overview.staff ?? []).flatMap(
+    (s) => s.card.effects as Array<{ type: string; zone?: string; stars?: number }>,
+  );
 
   return (
     <div className="space-y-4">
@@ -1501,7 +1634,7 @@ function LineupView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; sna
         </div>
       </Panel>
 
-      <GameLineupBoard cards={lineupCards} gameId={snapshot.game.id} roomCode={snapshot.game.room_code} />
+      <GameLineupBoard cards={lineupCards} gameId={snapshot.game.id} roomCode={snapshot.game.room_code} staffEffects={staffEffects} />
     </div>
   );
 }
@@ -1535,8 +1668,11 @@ function ClubOverviewView({
     <div className="space-y-4">
       {focus === "grounds" ? <ClubFinancePanel ownClub={ownClub} overview={overview} snapshot={snapshot} /> : null}
       {focus === "grounds" ? <FacilityUpgradePanel ownClub={ownClub} overview={overview} snapshot={snapshot} /> : null}
-      <SquadPanel overview={overview} title={focus === "squad" ? "Kaderuebersicht" : "Gesamter Kader"} />
-      {focus === "grounds" ? <ClubCardsPanel overview={overview} /> : null}
+      {focus === "grounds" && overview.open_staff_offer ? (
+        <StaffMarketView offer={overview.open_staff_offer} ownClub={ownClub} snapshot={snapshot} />
+      ) : null}
+      {focus === "squad" ? <SquadPanel ownClub={ownClub} overview={overview} snapshot={snapshot} title="Kaderuebersicht" /> : null}
+      {focus === "grounds" ? <ClubCardsPanel ownClub={ownClub} overview={overview} snapshot={snapshot} /> : null}
     </div>
   );
 }
@@ -1551,31 +1687,87 @@ function ClubFinancePanel({
   snapshot: LobbySnapshot;
 }) {
   const finance = overview.finance;
+  const season = snapshot.season;
+
+  const managerStanding = season?.manager_standings.find((s) => s.club_id === ownClub.id);
+  const hasActiveSeason = Boolean(season && !season.setup_error);
+  const managerScore = managerStanding?.season_score ?? Math.round(ownClub.squad_stars ?? 0);
+  const bookingStatus = getManagerScoreBand(managerScore).status;
+  const stadiumIncome = getStadiumIncome(ownClub.stadium_level ?? 1, bookingStatus);
+  const managerRank = managerStanding?.rank ?? ownClub.season_rank ?? 1;
+  const placementReward = getPlacementReward(managerRank, snapshot.clubs.length);
+  const totalIncome = stadiumIncome + placementReward;
+  const wages = finance.wages;
+  const net = totalIncome - wages;
+
+  const rankLabel = hasActiveSeason
+    ? `Manager-Rang #${managerRank} · Spieltag ${season?.current_matchday ?? "–"}`
+    : `Manager-Rang #${managerRank} · letztes Saisonende`;
 
   return (
     <Panel className="border-[var(--club-border)] bg-zinc-950/85">
       <PanelHeader>
         <div>
           <PanelTitle>{ownClub.club_name}</PanelTitle>
-          <PanelDescription>Finanzen, Kaderwert und erwartete Saison-Effekte.</PanelDescription>
+          <PanelDescription>Finanzen und voraussichtliche Saisonabrechnung.</PanelDescription>
         </div>
         <Banknote size={18} className="text-[var(--club-color)]" aria-hidden />
       </PanelHeader>
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+
+      <div className="mb-4 grid gap-3 sm:grid-cols-2">
         <Metric detail="aktueller Kontostand" icon={Banknote} label="Geld" value={formatMoney(finance.money)} />
-        <Metric detail={`${formatStars(finance.squad_stars)} Kadersterne`} icon={Sparkles} label="Kaderstaerke" value={`${formatStars(finance.squad_stars)}`} />
-        <Metric detail="1M pro Stern" icon={Users} label="Gehaelter" value={formatMoney(finance.wages)} />
-        <Metric detail={`Stadion L${ownClub.stadium_level ?? 1} + ${getClubStatusLabel(ownClub.status)}`} icon={Building2} label="Stadion" value={formatMoney(finance.stadium_income)} />
-        <Metric detail={`${snapshot.clubs.length} Clubs, Platz #${ownClub.season_rank ?? 1}`} icon={Trophy} label="Praemie" value={formatMoney(finance.placement_reward)} />
+        <Metric detail={`${formatStars(finance.squad_stars)} Kadersterne · 1M pro Stern`} icon={Users} label="Gehaelter" value={formatMoney(wages)} />
       </div>
-      <div className="mt-3 rounded-md border border-zinc-800 bg-zinc-900/70 p-4">
-        <p className="text-xs font-medium uppercase text-zinc-500">Voraussichtlicher Nettoeffekt</p>
-        <p className={cn("mt-2 text-2xl font-semibold", finance.projected_net >= 0 ? "text-emerald-200" : "text-rose-200")}>
-          {formatMoney(finance.projected_net)}
-        </p>
-        <p className="mt-1 text-sm text-zinc-500">
-          Einnahmen {formatMoney(finance.projected_income)} minus Gehaelter {formatMoney(finance.wages)}
-        </p>
+
+      <div className="rounded-md border border-zinc-800 bg-zinc-900/70 overflow-hidden">
+        <div className="border-b border-zinc-800 px-4 py-2">
+          <p className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Einnahmen</p>
+        </div>
+        <div className="divide-y divide-zinc-800/60">
+          <div className="flex items-center justify-between px-4 py-2.5">
+            <div>
+              <p className="text-sm text-zinc-200">Stadioneinnahmen</p>
+              <p className="text-xs text-zinc-500">Stadion L{ownClub.stadium_level ?? 1} · Status: {getClubStatusLabel(bookingStatus)}</p>
+            </div>
+            <p className="text-sm font-semibold text-emerald-300">+{formatMoney(stadiumIncome)}</p>
+          </div>
+          <div className="flex items-center justify-between px-4 py-2.5">
+            <div>
+              <p className="text-sm text-zinc-200">Platzierungspraemie</p>
+              <p className="text-xs text-zinc-500">{rankLabel}</p>
+            </div>
+            <p className="text-sm font-semibold text-emerald-300">+{formatMoney(placementReward)}</p>
+          </div>
+          <div className="flex items-center justify-between bg-zinc-800/30 px-4 py-2.5">
+            <p className="text-sm font-semibold text-zinc-300">Einnahmen gesamt</p>
+            <p className="text-sm font-bold text-emerald-200">+{formatMoney(totalIncome)}</p>
+          </div>
+        </div>
+
+        <div className="border-b border-t border-zinc-800 px-4 py-2">
+          <p className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">Ausgaben</p>
+        </div>
+        <div className="divide-y divide-zinc-800/60">
+          <div className="flex items-center justify-between px-4 py-2.5">
+            <div>
+              <p className="text-sm text-zinc-200">Gehaelter</p>
+              <p className="text-xs text-zinc-500">{formatStars(finance.squad_stars)} Sterne × 1M</p>
+            </div>
+            <p className="text-sm font-semibold text-rose-300">−{formatMoney(wages)}</p>
+          </div>
+        </div>
+
+        <div className="border-t border-zinc-800 bg-zinc-800/30 px-4 py-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-semibold text-zinc-200">Netto bei Saisonabschluss</p>
+              <p className="text-xs text-zinc-500">Abrechnung erfolgt am Saisonende. Rang und Status zum Zeitpunkt der Abrechnung massgeblich.</p>
+            </div>
+            <p className={cn("ml-4 shrink-0 text-xl font-black", net >= 0 ? "text-emerald-200" : "text-rose-200")}>
+              {net >= 0 ? "+" : ""}{formatMoney(net)}
+            </p>
+          </div>
+        </div>
       </div>
     </Panel>
   );
@@ -1592,34 +1784,134 @@ function FacilityUpgradePanel({
 }) {
   const actionsThisSeason = overview.investments.map((investment) => investment.action);
   const investmentPhaseActive = isInvestmentPhase(snapshot.game.phase);
+
+  const managerStanding = snapshot.season?.manager_standings.find((s) => s.club_id === ownClub.id);
+  const managerScore = managerStanding?.season_score ?? Math.round(ownClub.squad_stars ?? 0);
+  const clubStatus = getManagerScoreBand(managerScore).status;
+
+  const extraInvestmentSlots = overview.staff.reduce((sum, s) => {
+    return sum + (s.card.effects as Array<{ type: string; extra?: number }>)
+      .filter((e) => e.type === "investment_action_bonus")
+      .reduce((a, e) => a + (e.extra ?? 0), 0);
+  }, 0);
+
+  const LEVELS = [1, 2, 3, 4] as const;
+  const ALL_STATUSES = ["newly_promoted", "established", "mid_table", "title_contender"] as const;
+  const [stadiumViewStatus, setStadiumViewStatus] = useState<typeof ALL_STATUSES[number]>(clubStatus);
+
+  function renderTrainingEffects(level: number) {
+    const cur = getTrainingCapacity(level);
+    const next = level < 4 ? getTrainingCapacity(level + 1) : null;
+    return (
+      <div className="mt-3 space-y-2 rounded-md border border-zinc-800 bg-zinc-950/50 p-3 text-xs">
+        <div>
+          <p className="font-semibold text-zinc-400">Aktuell (L{level})</p>
+          <p className="mt-1 text-zinc-300">
+            {cur.players} Spieler/Phase · max +{cur.maxStarsPerPlayer} Stern(e)/Spieler
+            {cur.guaranteedStarForPlayers > 0 ? " · +1 Stern garantiert" : ""}
+          </p>
+        </div>
+        {next ? (
+          <div className="border-t border-zinc-800 pt-2">
+            <p className="font-semibold text-[var(--club-color)]">Stufe {level + 1}</p>
+            <p className="mt-1 text-zinc-400">
+              {next.players} Spieler/Phase · max +{next.maxStarsPerPlayer} Stern(e)/Spieler
+              {next.guaranteedStarForPlayers > 0 ? " · +1 Stern garantiert" : ""}
+            </p>
+          </div>
+        ) : (
+          <div className="border-t border-zinc-800 pt-2">
+            <p className="text-zinc-600">Maximalstufe erreicht.</p>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function renderScoutingEffects(level: number) {
+    const cur = getScoutingCapacity(level);
+    const next = level < 4 ? getScoutingCapacity(level + 1) : null;
+    return (
+      <div className="mt-3 space-y-2 rounded-md border border-zinc-800 bg-zinc-950/50 p-3 text-xs">
+        <div>
+          <p className="font-semibold text-zinc-400">Aktuell (L{level})</p>
+          <p className="mt-1 text-zinc-300">{cur.players} Karte(n) pro Scouting-Phase</p>
+        </div>
+        {next ? (
+          <div className="border-t border-zinc-800 pt-2">
+            <p className="font-semibold text-[var(--club-color)]">Stufe {level + 1}</p>
+            <p className="mt-1 text-zinc-400">{next.players} Karte(n) pro Scouting-Phase</p>
+          </div>
+        ) : (
+          <div className="border-t border-zinc-800 pt-2">
+            <p className="text-zinc-600">Maximalstufe erreicht.</p>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function renderStadiumEffects(currentLevel: number) {
+    return (
+      <div className="mt-3 rounded-md border border-zinc-800 bg-zinc-950/50 p-3 text-xs">
+        <div className="mb-2 flex flex-wrap gap-1">
+          {ALL_STATUSES.map((st) => {
+            const isOwn = st === clubStatus;
+            const isSelected = st === stadiumViewStatus;
+            return (
+              <button
+                key={st}
+                onClick={() => setStadiumViewStatus(st)}
+                type="button"
+                className={cn(
+                  "rounded px-1.5 py-0.5 text-[10px] font-semibold transition-colors",
+                  isSelected
+                    ? "bg-[var(--club-color)] text-zinc-950"
+                    : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200",
+                  isOwn && !isSelected && "ring-1 ring-[var(--club-color)]/50",
+                )}
+              >
+                {getClubStatusLabel(st)}{isOwn ? " ★" : ""}
+              </button>
+            );
+          })}
+        </div>
+        <div className="grid grid-cols-4 gap-1">
+          {LEVELS.map((lvl) => {
+            const income = getStadiumIncome(lvl, stadiumViewStatus);
+            const isCurrent = lvl === currentLevel;
+            return (
+              <div
+                key={lvl}
+                className={cn(
+                  "rounded border px-1.5 py-1.5 text-center",
+                  isCurrent
+                    ? "border-[var(--club-color)] bg-[var(--club-color)]/15"
+                    : lvl < currentLevel
+                      ? "border-zinc-800 bg-zinc-900/30 opacity-40"
+                      : "border-zinc-700 bg-zinc-900/50",
+                )}
+              >
+                <p className={cn("font-semibold", isCurrent ? "text-[var(--club-color)]" : lvl > currentLevel ? "text-zinc-300" : "text-zinc-600")}>L{lvl}</p>
+                <p className={cn("mt-0.5", isCurrent ? "text-[var(--club-color)]" : lvl > currentLevel ? "text-zinc-400" : "text-zinc-700")}>{formatMoney(income)}</p>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
   const facilities: Array<{
     action: UpgradeAction;
-    detail: string;
     icon: typeof Home;
     label: string;
     level: number;
+    renderEffects: (level: number) => ReactNode;
   }> = [
-    {
-      action: "training",
-      detail: "Entwicklung und Potenzialsterne",
-      icon: Dumbbell,
-      label: "Training",
-      level: ownClub.training_level ?? 1,
-    },
-    {
-      action: "scouting",
-      detail: "Mehr Karten in Scoutingphasen",
-      icon: Eye,
-      label: "Scouting",
-      level: ownClub.scouting_level ?? 1,
-    },
-    {
-      action: "stadium",
-      detail: "Hoehere Stadioneinnahmen",
-      icon: Building2,
-      label: "Stadion",
-      level: ownClub.stadium_level ?? 1,
-    },
+    { action: "training", icon: Dumbbell, label: "Training", level: ownClub.training_level ?? 1, renderEffects: renderTrainingEffects },
+    { action: "scouting", icon: Eye, label: "Scouting", level: ownClub.scouting_level ?? 1, renderEffects: renderScoutingEffects },
+    { action: "stadium", icon: Building2, label: "Stadion", level: ownClub.stadium_level ?? 1, renderEffects: renderStadiumEffects },
   ];
 
   return (
@@ -1628,18 +1920,19 @@ function FacilityUpgradePanel({
         <div>
           <PanelTitle>Vereinsgelaende</PanelTitle>
           <PanelDescription>
-            {overview.investments.length}/2 Investment-Aktionen in Saison {overview.season_number} verwendet.
+            {overview.investments.length}/{2 + extraInvestmentSlots} Investment-Aktionen in Saison {overview.season_number} verwendet.
           </PanelDescription>
         </div>
         <Building2 size={18} className="text-[var(--club-color)]" aria-hidden />
       </PanelHeader>
-      <div className="grid gap-3 lg:grid-cols-3">
+      <div className="grid gap-3 lg:grid-cols-3 xl:grid-cols-4">
         {facilities.map((facility) => {
           const check = canUpgradeFacility({
             action: facility.action,
             actionsThisSeason,
             currentLevel: facility.level,
             money: overview.finance.money,
+            extraActionBonus: extraInvestmentSlots,
           });
           const upgradeDisabled = !investmentPhaseActive || !check.ok;
           const cost = getUpgradeCost(facility.action, facility.level);
@@ -1650,21 +1943,18 @@ function FacilityUpgradePanel({
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="text-sm font-semibold text-zinc-50">{facility.label}</p>
-                  <p className="mt-1 text-xs text-zinc-500">{facility.detail}</p>
+                  <p className="mt-0.5 text-xs font-bold text-[var(--club-color)]">Level {facility.level}/4</p>
                 </div>
                 <Icon size={18} className="text-[var(--club-color)]" aria-hidden />
               </div>
-              <div className="mt-4 flex items-end justify-between gap-3">
-                <div>
-                  <p className="text-xs font-medium uppercase text-zinc-500">Level</p>
-                  <p className="mt-1 text-2xl font-semibold text-zinc-50">{facility.level}/4</p>
-                </div>
-                <div className="text-right">
-                  <p className="text-xs font-medium uppercase text-zinc-500">Naechstes Upgrade</p>
-                  <p className="mt-1 text-sm font-semibold text-zinc-100">{facility.level >= 4 ? "Max" : formatMoney(cost)}</p>
-                </div>
+
+              {facility.renderEffects(facility.level)}
+
+              <div className="mt-3 flex items-center justify-between text-xs text-zinc-500">
+                <span>Naechstes Upgrade</span>
+                <span className="font-semibold text-zinc-300">{facility.level >= 4 ? "Max erreicht" : formatMoney(cost)}</span>
               </div>
-              <form action={upgradeInvestmentAction} className="mt-4">
+              <form action={upgradeInvestmentAction} className="mt-2">
                 <input name="game_id" type="hidden" value={snapshot.game.id} />
                 <input name="room_code" type="hidden" value={snapshot.game.room_code} />
                 <input name="club_id" type="hidden" value={ownClub.id} />
@@ -1681,6 +1971,46 @@ function FacilityUpgradePanel({
             </div>
           );
         })}
+
+        {/* Mitarbeiter-Karte */}
+        {(() => {
+          const staffCheck = canRecruitStaff({
+            actionsThisSeason,
+            currentStaffCount: overview.staff.length,
+            hasOpenOffer: Boolean(overview.open_staff_offer),
+            extraActionBonus: extraInvestmentSlots,
+          });
+          const staffDisabled = !investmentPhaseActive || !staffCheck.ok;
+          return (
+            <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-zinc-50">Mitarbeiter</p>
+                  <p className="mt-0.5 text-xs font-bold text-[var(--club-color)]">{overview.staff.length}/3 angeheuert</p>
+                </div>
+                <UserCheck size={18} className="text-[var(--club-color)]" aria-hidden />
+              </div>
+              <div className="mt-3 rounded-md border border-zinc-800 bg-zinc-950/50 p-3 text-xs">
+                <p className="font-semibold text-zinc-400">Wie es funktioniert</p>
+                <p className="mt-1 text-zinc-300">2 zufaellige Mitarbeiterkarten werden gezogen. Einen kannst du rekrutieren oder beide ablehnen.</p>
+                <p className="mt-1.5 text-zinc-500">Max. 3 Mitarbeiter. Entlassen jederzeit moeglich.</p>
+              </div>
+              <form action={recruitStaffOpenAction} className="mt-4">
+                <input name="game_id" type="hidden" value={snapshot.game.id} />
+                <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                <input name="club_id" type="hidden" value={ownClub.id} />
+                <Button
+                  className="w-full"
+                  disabled={staffDisabled}
+                  title={!investmentPhaseActive ? "Nur in der Investmentphase" : staffCheck.ok ? "Mitarbeitermarkt oeffnen" : getStaffRecruitReasonLabel(staffCheck.reason)}
+                  type="submit"
+                >
+                  {!investmentPhaseActive ? "Investmentphase abwarten" : staffCheck.ok ? "Mitarbeiter rekrutieren" : getStaffRecruitReasonLabel(staffCheck.reason)}
+                </Button>
+              </form>
+            </div>
+          );
+        })()}
       </div>
       {overview.investments.length > 0 ? (
         <div className="mt-4 grid gap-2 md:grid-cols-2">
@@ -1698,22 +2028,67 @@ function FacilityUpgradePanel({
 
 function SquadPanel({
   overview,
+  ownClub,
+  snapshot,
   title,
 }: {
   overview: NonNullable<LobbySnapshot["club_overview"]>;
+  ownClub?: LobbyClub;
+  snapshot?: LobbySnapshot;
   title: string;
 }) {
-  const sortedSquad = getSortedSquadPlayers(overview.squad);
+  const totalStars = overview.finance.squad_stars;
+  const sortedSquad = [...overview.squad].sort((a, b) => {
+    const posDiff = getPositionRank(a.player) - getPositionRank(b.player);
+    if (posDiff !== 0) return posDiff;
+    const starsDiff = Number(b.current_stars) - Number(a.current_stars);
+    if (starsDiff !== 0) return starsDiff;
+    return a.player.display_name.localeCompare(b.player.display_name, "de");
+  });
+  const playerCount = overview.squad.length;
+
+  const miraHealCharges = overview.staff.reduce((sum, s) => {
+    return sum + (s.card.effects as Array<{ type: string; perMatchday?: number }>)
+      .filter((e) => e.type === "injury_heal_manual")
+      .reduce((a, e) => a + (e.perMatchday ?? 0), 0);
+  }, 0);
 
   return (
     <Panel className="border-[var(--club-border)] bg-zinc-950/85">
       <PanelHeader>
         <div>
           <PanelTitle>{title}</PanelTitle>
-          <PanelDescription>{overview.squad.length} Spieler im aktuellen Spielstand.</PanelDescription>
+          <PanelDescription>{playerCount} von maximal {MAX_SQUAD_SIZE} Spielern im Kader.</PanelDescription>
         </div>
         <Users size={18} className="text-[var(--club-color)]" aria-hidden />
       </PanelHeader>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Metric
+          detail={`max. ${MAX_SQUAD_SIZE} Spieler`}
+          icon={Users}
+          label="Kadergrösse"
+          value={`${playerCount} / ${MAX_SQUAD_SIZE}`}
+        />
+        <Metric
+          detail={`${MAX_SQUAD_SIZE - playerCount} Plätze frei`}
+          icon={Sparkles}
+          label="Kadersterne gesamt"
+          value={formatStars(totalStars)}
+        />
+        <Metric
+          detail="Durchschnitt pro Spieler"
+          icon={Sparkles}
+          label="Ø Sterne"
+          value={playerCount > 0 ? formatStars(totalStars / playerCount) : "–"}
+        />
+      </div>
+      {overview.squad.length > 0 ? <SquadPositionBreakdown squad={overview.squad} /> : null}
+      {miraHealCharges > 0 && (
+        <div className="rounded-md border border-amber-800 bg-amber-950/30 p-3 text-xs text-amber-300">
+          <p className="font-semibold">Mira Cleure aktiv — {miraHealCharges} Heilung(en) verfuegbar</p>
+          <p className="mt-0.5 text-amber-400">Klicke auf "Heilen" bei einem verletzten Spieler.</p>
+        </div>
+      )}
       {overview.squad.length === 0 ? (
         <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-4 text-sm text-zinc-400">
           Noch keine Spieler im Kader. Nach dem Draft erscheinen sie hier.
@@ -1730,6 +2105,17 @@ function SquadPanel({
                   <SmallInfo label="Status" value={owned.current_zone === "bench" ? "Nicht aufgestellt" : "Aufgestellt"} />
                   <SmallInfo label="Zone" value={owned.current_zone} />
                 </div>
+                {owned.injured && miraHealCharges > 0 && ownClub && snapshot ? (
+                  <form action={healInjuredPlayerAction} className="mt-2">
+                    <input name="game_id" type="hidden" value={snapshot.game.id} />
+                    <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                    <input name="club_id" type="hidden" value={ownClub.id} />
+                    <input name="club_player_id" type="hidden" value={owned.id} />
+                    <Button className="h-7 w-full text-xs" type="submit" variant="secondary">
+                      Heilen (Mira)
+                    </Button>
+                  </form>
+                ) : null}
               </div>
             );
           })}
@@ -1739,25 +2125,57 @@ function SquadPanel({
   );
 }
 
-function ClubCardsPanel({ overview }: { overview: NonNullable<LobbySnapshot["club_overview"]> }) {
+function ClubCardsPanel({
+  overview,
+  ownClub,
+  snapshot,
+}: {
+  overview: NonNullable<LobbySnapshot["club_overview"]>;
+  ownClub: LobbyClub;
+  snapshot: LobbySnapshot;
+}) {
   return (
     <div className="grid gap-4 xl:grid-cols-2">
       <Panel className="border-[var(--club-border)] bg-zinc-950/85">
         <PanelHeader>
           <div>
-            <PanelTitle>Mitarbeiter</PanelTitle>
-            <PanelDescription>Staff-Karten des Clubs.</PanelDescription>
+            <PanelTitle>Mitarbeiter ({overview.staff.length}/3)</PanelTitle>
+            <PanelDescription>Aktive Staff-Karten des Clubs.</PanelDescription>
           </div>
           <Crown size={18} className="text-[var(--club-color)]" aria-hidden />
         </PanelHeader>
-        <CardList
-          empty="Noch keine Mitarbeiter."
-          items={overview.staff.map((staff) => ({
-            detail: formatEffects(staff.card.effects),
-            meta: staff.card.price ? formatMoney(staff.card.price) : "Staff",
-            title: staff.card.display_name,
-          }))}
-        />
+        {overview.staff.length === 0 ? (
+          <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-4 text-sm text-zinc-400">Noch keine Mitarbeiter.</div>
+        ) : (
+          <div className="space-y-2">
+            {overview.staff.map((staff) => (
+              <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3" key={staff.id}>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="font-semibold text-zinc-100">{staff.card.display_name}</p>
+                    <p className="mt-1 text-xs text-zinc-400">{describeStaffEffects(staff.card.effects)}</p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <Badge>{staff.card.price ? formatMoney(staff.card.price) : "Staff"}</Badge>
+                    <form action={dismissStaffAction}>
+                      <input name="game_id" type="hidden" value={snapshot.game.id} />
+                      <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                      <input name="club_id" type="hidden" value={ownClub.id} />
+                      <input name="club_staff_id" type="hidden" value={staff.id} />
+                      <button
+                        className="rounded p-1 text-zinc-500 transition-colors hover:bg-rose-900/40 hover:text-rose-300"
+                        title={`${staff.card.display_name} entlassen`}
+                        type="submit"
+                      >
+                        <UserMinus size={14} />
+                      </button>
+                    </form>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </Panel>
       <Panel className="border-[var(--club-border)] bg-zinc-950/85">
         <PanelHeader>
@@ -1777,6 +2195,65 @@ function ClubCardsPanel({ overview }: { overview: NonNullable<LobbySnapshot["clu
         />
       </Panel>
     </div>
+  );
+}
+
+function StaffMarketView({
+  offer,
+  ownClub,
+  snapshot,
+}: {
+  offer: StaffOfferSnapshot;
+  ownClub: LobbyClub;
+  snapshot: LobbySnapshot;
+}) {
+  return (
+    <Panel className="border-[var(--club-color)] bg-zinc-950/85">
+      <PanelHeader>
+        <div>
+          <PanelTitle>Mitarbeitermarkt</PanelTitle>
+          <PanelDescription>Waehle einen Mitarbeiter zur Rekrutierung oder lehne beide ab.</PanelDescription>
+        </div>
+        <UserCheck size={18} className="text-[var(--club-color)]" aria-hidden />
+      </PanelHeader>
+      <div className="grid gap-4 sm:grid-cols-2">
+        {offer.offered_cards.map((card) => {
+          const canAfford = ownClub.money >= card.price;
+          return (
+            <div className="rounded-md border border-zinc-700 bg-zinc-900/70 p-4" key={card.id}>
+              <div className="flex items-start justify-between gap-3">
+                <p className="font-semibold text-zinc-50">{card.display_name}</p>
+                <Badge className={canAfford ? "" : "opacity-50"}>{formatMoney(card.price)}</Badge>
+              </div>
+              <p className="mt-2 text-sm text-zinc-300">{describeStaffEffects(card.effects)}</p>
+              {!canAfford && <p className="mt-2 text-xs text-rose-400">Nicht genug Geld</p>}
+              <form action={recruitStaffResolveAction} className="mt-4">
+                <input name="game_id" type="hidden" value={snapshot.game.id} />
+                <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                <input name="club_id" type="hidden" value={ownClub.id} />
+                <input name="offer_id" type="hidden" value={offer.id} />
+                <input name="chosen_card_id" type="hidden" value={card.id} />
+                <Button className="w-full" disabled={!canAfford} type="submit">
+                  Rekrutieren ({formatMoney(card.price)})
+                </Button>
+              </form>
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-4">
+        <form action={recruitStaffResolveAction}>
+          <input name="game_id" type="hidden" value={snapshot.game.id} />
+          <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+          <input name="club_id" type="hidden" value={ownClub.id} />
+          <input name="offer_id" type="hidden" value={offer.id} />
+          <input name="chosen_card_id" type="hidden" value="" />
+          <Button className="w-full" type="submit" variant="secondary">
+            Beide ablehnen
+          </Button>
+        </form>
+      </div>
+    </Panel>
   );
 }
 
@@ -1918,6 +2395,29 @@ function FixtureCard({
   const ownPowerSummary = getOwnLineupPowerSummary(snapshot);
   const result = parseFixtureResult(fixture.result);
 
+  const [showLockWarning, setShowLockWarning] = useState(false);
+  const lockFormRef = useRef<HTMLFormElement>(null);
+
+  const squad = ownSide ? (snapshot.club_overview?.squad ?? []) : [];
+  const hasInjuredInLineup = squad.some((p) => p.injured && p.current_zone !== "bench");
+  const healthyStarters = squad.filter((p) => !p.injured && p.current_zone !== "bench").length;
+  const hasIncompleteLineup = healthyStarters < 9;
+  const hasLineupWarning = hasInjuredInLineup || hasIncompleteLineup;
+
+  const isOwnDraw = fixture.status === "completed" && ownSide && fixture.home_score != null && fixture.away_score != null && fixture.home_score === fixture.away_score;
+  const tippyThreshold = snapshot.club_overview?.staff.reduce((min, s) => {
+    const e = (s.card.effects as Array<{ type: string; threshold?: number }>).find((eff) => eff.type === "draw_reroll");
+    return e ? Math.min(min, e.threshold ?? 8) : min;
+  }, Infinity) ?? Infinity;
+
+  function handleLockClick() {
+    if (hasLineupWarning) {
+      setShowLockWarning(true);
+    } else {
+      lockFormRef.current?.requestSubmit();
+    }
+  }
+
   return (
     <Panel className="border-[var(--club-border)] bg-zinc-950/85">
       <div className="grid gap-4 p-4 lg:grid-cols-[1fr_220px]">
@@ -1984,16 +2484,63 @@ function FixtureCard({
             </p>
             <p>CPU-Aufstellungen werden stabil am Fixture gespeichert.</p>
           </div>
-          <div className="space-y-2">
-            {canLock ? (
-              <form action={lockFixtureLineupAction}>
+          {isOwnDraw && isFinite(tippyThreshold) && ownClub ? (
+            <div className="rounded-md border border-violet-700 bg-violet-950/30 p-3 text-xs">
+              <p className="font-semibold text-violet-300">Tippy aktivieren?</p>
+              <p className="mt-1 text-violet-400">Wuerfel 2W6 — ab {tippyThreshold}+ zaehlt als Sieg.</p>
+              <form action={triggerDrawRerollAction} className="mt-2">
                 <input name="game_id" type="hidden" value={snapshot.game.id} />
                 <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                <input name="club_id" type="hidden" value={ownClub.id} />
                 <input name="fixture_id" type="hidden" value={fixture.id} />
-                <Button className="w-full" type="submit" variant="primary">
-                  Aufstellung locken
+                <Button className="w-full" type="submit" variant="secondary">
+                  Neu wuerfeln (Tippy)
                 </Button>
               </form>
+            </div>
+          ) : null}
+          <div className="space-y-2">
+            {canLock ? (
+              <>
+                <form action={lockFixtureLineupAction} className="hidden" ref={lockFormRef}>
+                  <input name="game_id" type="hidden" value={snapshot.game.id} />
+                  <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                  <input name="fixture_id" type="hidden" value={fixture.id} />
+                </form>
+                {!showLockWarning ? (
+                  <Button className="w-full" onClick={handleLockClick} type="button" variant="primary">
+                    Aufstellung locken
+                  </Button>
+                ) : (
+                  <div className="rounded-md border border-amber-700 bg-amber-950/30 p-3">
+                    <p className="text-sm font-semibold text-amber-200">Aufstellung pruefen</p>
+                    <div className="mt-2 space-y-1 text-sm text-amber-200/80">
+                      {hasInjuredInLineup ? (
+                        <p>Ein oder mehrere Spieler in deiner Aufstellung sind verletzt und werden nicht eingesetzt.</p>
+                      ) : null}
+                      {hasIncompleteLineup ? (
+                        <p>Deine Aufstellung hat nicht genug gesunde Spieler fuer alle Formationsslots.</p>
+                      ) : null}
+                    </div>
+                    <p className="mt-2 text-sm text-amber-200/60">Du kannst die Aufstellung jetzt noch anpassen.</p>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button
+                        className="border-amber-700 text-amber-100 hover:bg-amber-950"
+                        onClick={() => lockFormRef.current?.requestSubmit()}
+                        type="button"
+                        variant="outline"
+                      >
+                        Trotzdem locken
+                      </Button>
+                      <a href={`/games/${snapshot.game.room_code}?view=lineup`}>
+                        <Button type="button" variant="secondary">
+                          Aufstellung oeffnen
+                        </Button>
+                      </a>
+                    </div>
+                  </div>
+                )}
+              </>
             ) : null}
             {canResolveOwnCpuMatch || canHostResolveCpuOnlyMatch || canHostResolvePvpMatch ? (
               <form action={resolveFixtureAction}>
@@ -2052,9 +2599,24 @@ function FixtureSideCard({
       </div>
       {lineup || powerSummary ? (
         <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
-          <SmallInfo label="DEF" value={formatStars(Number(lineup?.def_stars ?? powerSummary?.DEF.total ?? 0))} />
-          <SmallInfo label="MID" value={formatStars(Number(lineup?.mid_stars ?? powerSummary?.MID.total ?? 0))} />
-          <SmallInfo label="ATT" value={formatStars(Number(lineup?.att_stars ?? powerSummary?.ATT.total ?? 0))} />
+          {(["DEF", "MID", "ATT"] as const).map((zone) => {
+            const total = lineup
+              ? Number(zone === "DEF" ? lineup.def_stars : zone === "MID" ? lineup.mid_stars : lineup.att_stars)
+              : (powerSummary?.[zone].total ?? 0);
+            const staffBonus = powerSummary?.[zone].staffBonus ?? 0;
+            return (
+              <div key={zone}>
+                <SmallInfo
+                  label={zone}
+                  value={
+                    staffBonus > 0
+                      ? `${formatStars(total)} (+${staffBonus}★)`
+                      : formatStars(total)
+                  }
+                />
+              </div>
+            );
+          })}
         </div>
       ) : null}
       <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
@@ -2065,114 +2627,356 @@ function FixtureSideCard({
   );
 }
 
-function TableView({ snapshot }: { snapshot: LobbySnapshot }) {
+function TableView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snapshot: LobbySnapshot }) {
   const season = snapshot.season;
+  const hasActiveSeason = Boolean(season && !season.setup_error);
 
-  if (!season || season.setup_error) {
-    return (
-      <Panel className={cn("bg-zinc-950/85", season?.setup_error ? "border-amber-700" : "border-[var(--club-border)]")}>
-        <PanelHeader>
-          <div>
-            <PanelTitle>Tabelle</PanelTitle>
-            <PanelDescription>{season?.setup_error ?? "Noch keine Saison-Tabelle vorhanden. Sie entsteht beim Start der Prematch-Phase."}</PanelDescription>
-          </div>
-          <Trophy size={18} className="text-[var(--club-color)]" aria-hidden />
-        </PanelHeader>
-      </Panel>
-    );
+  const CLUB_LOGO_MAP: Record<string, string> = {
+    "Apex River United": "/AprexRiverUnited.png",
+    "Blackwood Athletic": "/BlackwoodAthletic.png",
+    "Crimson Cape FC": "/crimsonCape.png",
+    "FC Dynamo Draft": "/DynamoDraft.png",
+    "Golden Meadow United": "/GoldenMeadowUnited.png",
+    "Vanguard FC": "/VanguardFC.png",
+  };
+  function getLogoForClub(_clubId: string, clubName: string): string | null {
+    return CLUB_LOGO_MAP[clubName] ?? null;
   }
+
+  type BoardEntry = { club_id: string; club_name: string; season_score: number; logo: string | null };
+  const boardEntries: BoardEntry[] = hasActiveSeason
+    ? season!.manager_standings.map((s) => ({ club_id: s.club_id, club_name: s.club_name, season_score: s.season_score, logo: getLogoForClub(s.club_id, s.club_name) }))
+    : snapshot.clubs.map((c) => ({ club_id: c.id, club_name: c.club_name, season_score: Math.round(c.squad_stars ?? 0), logo: getLogoForClub(c.id, c.club_name) }));
+
+  const BOARD_MIN = 20;
+  const BOARD_MAX = 100;
+  const positions = Array.from({ length: BOARD_MAX - BOARD_MIN + 1 }, (_, i) => BOARD_MIN + i);
+  const scoreMap = new Map<number, BoardEntry[]>();
+  for (const entry of boardEntries) {
+    const pos = Math.min(Math.max(entry.season_score, BOARD_MIN), BOARD_MAX);
+    const existing = scoreMap.get(pos) ?? [];
+    existing.push(entry);
+    scoreMap.set(pos, existing);
+  }
+  const clubsBelowBoard = boardEntries.filter((e) => e.season_score < BOARD_MIN);
+  const clubsAboveBoard = boardEntries.filter((e) => e.season_score > BOARD_MAX);
+
+  const BOARD_ZONES = [
+    {
+      label: "Neu aufgestiegen",
+      min: BOARD_MIN,
+      max: 39,
+      emptyBorder: "border-rose-950",
+      emptyText: "text-rose-900",
+      occupiedBorder: "border-rose-600",
+      occupiedBg: "bg-rose-950/70",
+      occupiedText: "text-rose-200",
+      headerText: "text-rose-400",
+      headerLine: "bg-rose-950",
+      legendDot: "bg-rose-500",
+    },
+    {
+      label: "Etabliert",
+      min: 40,
+      max: 59,
+      emptyBorder: "border-amber-950",
+      emptyText: "text-amber-900",
+      occupiedBorder: "border-amber-500",
+      occupiedBg: "bg-amber-950/70",
+      occupiedText: "text-amber-200",
+      headerText: "text-amber-400",
+      headerLine: "bg-amber-950",
+      legendDot: "bg-amber-500",
+    },
+    {
+      label: "Mittlerer Tabellenplatz",
+      min: 60,
+      max: 79,
+      emptyBorder: "border-sky-950",
+      emptyText: "text-sky-900",
+      occupiedBorder: "border-sky-500",
+      occupiedBg: "bg-sky-950/70",
+      occupiedText: "text-sky-200",
+      headerText: "text-sky-400",
+      headerLine: "bg-sky-950",
+      legendDot: "bg-sky-500",
+    },
+    {
+      label: "Titelanwaerter",
+      min: 80,
+      max: BOARD_MAX,
+      emptyBorder: "border-emerald-950",
+      emptyText: "text-emerald-900",
+      occupiedBorder: "border-emerald-500",
+      occupiedBg: "bg-emerald-950/70",
+      occupiedText: "text-emerald-200",
+      headerText: "text-emerald-400",
+      headerLine: "bg-emerald-950",
+      legendDot: "bg-emerald-500",
+    },
+  ] as const;
 
   return (
     <div className="space-y-4">
       <Panel className="border-[var(--club-border)] bg-zinc-950/85">
         <PanelHeader>
           <div>
-            <PanelTitle>Managerwertung</PanelTitle>
-            <PanelDescription>Kernwertung: Kadersterne plus erspielte Saisonpunkte.</PanelDescription>
-          </div>
-          <Crown size={18} className="text-[var(--club-color)]" aria-hidden />
-        </PanelHeader>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[720px] text-left text-sm">
-            <thead className="border-b border-zinc-800 text-xs uppercase text-zinc-500">
-              <tr>
-                <th className="py-2 pr-3">#</th>
-                <th className="py-2 pr-3">Club</th>
-                <th className="py-2 pr-3">Kader</th>
-                <th className="py-2 pr-3">Saisonpkt</th>
-                <th className="py-2 pr-3">Score</th>
-                <th className="py-2 pr-3">Status</th>
-                <th className="py-2 pr-3">Attraktivitaet</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-900">
-              {season.manager_standings.map((standing) => (
-                <tr className="text-zinc-300" key={standing.club_id}>
-                  <td className="py-3 pr-3 font-semibold text-zinc-50">{standing.rank}</td>
-                  <td className="py-3 pr-3 font-semibold text-zinc-50">{standing.club_name}</td>
-                  <td className="py-3 pr-3">{formatStars(standing.squad_stars)}</td>
-                  <td className="py-3 pr-3">{standing.season_match_points}</td>
-                  <td className="py-3 pr-3 text-base font-bold text-zinc-50">{standing.season_score}</td>
-                  <td className="py-3 pr-3">
-                    <Badge tone="blue">{getClubStatusLabel(standing.status)}</Badge>
-                  </td>
-                  <td className="py-3 pr-3">{standing.attractiveness_stars} Sterne</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Panel>
-
-      <Panel className="border-[var(--club-border)] bg-zinc-950/85">
-        <PanelHeader>
-          <div>
-            <PanelTitle>Liga-Tabelle</PanelTitle>
-            <PanelDescription>Kosmetische Saisonansicht mit Human- und CPU-Teams.</PanelDescription>
+            <PanelTitle>Superclub-Positionsboard</PanelTitle>
+            <PanelDescription>
+              {hasActiveSeason
+                ? "Position = Kadersterne + Saisonpunkte. Zu Beginn jeder Saison startet man bei den Kadernsternen."
+                : "Noch keine laufende Saison. Positionen basieren auf den aktuellen Kadernsternen."}
+            </PanelDescription>
           </div>
           <Trophy size={18} className="text-[var(--club-color)]" aria-hidden />
         </PanelHeader>
-        <div className="overflow-x-auto">
-        <table className="w-full min-w-[760px] text-left text-sm">
-          <thead className="border-b border-zinc-800 text-xs uppercase text-zinc-500">
-            <tr>
-              <th className="py-2 pr-3">#</th>
-              <th className="py-2 pr-3">Team</th>
-              <th className="py-2 pr-3">Typ</th>
-              <th className="py-2 pr-3">Sp</th>
-              <th className="py-2 pr-3">S</th>
-              <th className="py-2 pr-3">U</th>
-              <th className="py-2 pr-3">N</th>
-              <th className="py-2 pr-3">Drittel</th>
-              <th className="py-2 pr-3">Pkt</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-zinc-900">
-            {season.standings.map((standing) => {
-              const thirdDiff = standing.third_points_for - standing.third_points_against;
-              return (
-                <tr className="text-zinc-300" key={standing.participant_id}>
-                  <td className="py-3 pr-3 font-semibold text-zinc-50">{standing.rank}</td>
-                  <td className="py-3 pr-3 font-semibold text-zinc-50">{standing.participant.display_name}</td>
-                  <td className="py-3 pr-3">
-                    <Badge tone={standing.participant.kind === "cpu" ? "blue" : "green"}>{standing.participant.kind === "cpu" ? "CPU" : "Manager"}</Badge>
-                  </td>
-                  <td className="py-3 pr-3">{standing.played}</td>
-                  <td className="py-3 pr-3">{standing.wins}</td>
-                  <td className="py-3 pr-3">{standing.draws}</td>
-                  <td className="py-3 pr-3">{standing.losses}</td>
-                  <td className="py-3 pr-3">
-                    {formatStars(standing.third_points_for)}:{formatStars(standing.third_points_against)} ({thirdDiff >= 0 ? "+" : ""}
-                    {formatStars(thirdDiff)})
-                  </td>
-                  <td className="py-3 pr-3 text-base font-bold text-zinc-50">{standing.match_points}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+
+        <div className="mb-4 flex flex-wrap gap-x-5 gap-y-2">
+          {BOARD_ZONES.map((zone) => (
+            <div className="flex items-center gap-1.5" key={zone.label}>
+              <span className={cn("h-2.5 w-2.5 rounded-full", zone.legendDot)} />
+              <span className="text-xs text-zinc-400">
+                {zone.label} <span className="text-zinc-600">({zone.min}–{zone.max})</span>
+              </span>
+            </div>
+          ))}
+        </div>
+
+        <div className="space-y-4">
+          {BOARD_ZONES.map((zone) => {
+            const zonePositions = positions.filter((p) => p >= zone.min && p <= zone.max);
+            return (
+              <div key={zone.label}>
+                <div className="mb-2 flex items-center gap-2">
+                  <div className={cn("h-px flex-1", zone.headerLine)} />
+                  <span className={cn("shrink-0 text-[10px] font-semibold uppercase tracking-widest", zone.headerText)}>
+                    {zone.label} · {zone.min}–{zone.max}
+                  </span>
+                  <div className={cn("h-px flex-1", zone.headerLine)} />
+                </div>
+                <div className="grid grid-cols-10 gap-1.5">
+                  {zonePositions.map((pos) => {
+                    const clubsHere = scoreMap.get(pos) ?? [];
+                    const ownIsHere = clubsHere.some((e) => e.club_id === ownClub?.id);
+                    const hasClub = clubsHere.length > 0;
+                    return (
+                      <div
+                        key={pos}
+                        className={cn(
+                          "relative flex aspect-square flex-col items-center justify-center overflow-hidden rounded-full border text-center",
+                          ownIsHere
+                            ? "border-[var(--club-color)] bg-[var(--club-color)]/20 ring-2 ring-[var(--club-color)]/40"
+                            : hasClub
+                              ? cn(zone.occupiedBorder, zone.occupiedBg)
+                              : cn(zone.emptyBorder, "bg-zinc-900/20"),
+                        )}
+                        title={clubsHere.map((e) => `${e.club_name}: ${e.season_score}`).join(" · ")}
+                      >
+                        {hasClub && clubsHere[0].logo ? (
+                          <>
+                            <Image
+                              alt={clubsHere[0].club_name}
+                              className="h-full w-full object-contain p-[15%]"
+                              fill
+                              sizes="48px"
+                              src={clubsHere[0].logo}
+                            />
+                            <span className="absolute bottom-0 left-0 right-0 bg-black/60 text-center text-[7px] font-bold leading-tight text-white">
+                              {pos}
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <span
+                              className={cn(
+                                "text-[10px] font-bold leading-none",
+                                ownIsHere
+                                  ? "text-[var(--club-color)]"
+                                  : hasClub
+                                    ? zone.occupiedText
+                                    : zone.emptyText,
+                              )}
+                            >
+                              {pos}
+                            </span>
+                            {clubsHere.length > 0 ? (
+                              <span
+                                className={cn(
+                                  "mt-0.5 block w-full truncate px-0.5 text-[7px] font-medium leading-none",
+                                  ownIsHere ? "text-[var(--club-color)]" : "text-zinc-400",
+                                )}
+                              >
+                                {clubsHere.map((e) => (e.club_name.length > 5 ? `${e.club_name.substring(0, 4)}…` : e.club_name)).join("/")}
+                              </span>
+                            ) : null}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {clubsBelowBoard.length > 0 ? (
+          <p className="mt-3 text-xs text-zinc-500">
+            Noch nicht auf dem Board (unter {BOARD_MIN}): {clubsBelowBoard.map((e) => `${e.club_name} (${e.season_score})`).join(", ")}
+          </p>
+        ) : null}
+        {clubsAboveBoard.length > 0 ? (
+          <p className="mt-3 text-xs text-zinc-500">
+            Position 100 ueberschritten: {clubsAboveBoard.map((e) => `${e.club_name} (${e.season_score})`).join(", ")}
+          </p>
+        ) : null}
+
+        <div className="mt-5 border-t border-zinc-800 pt-4">
+          <p className="mb-3 text-xs font-semibold uppercase tracking-widest text-zinc-500">Aktuelle Positionen</p>
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {[...boardEntries]
+              .sort((a, b) => b.season_score - a.season_score)
+              .map((e) => {
+                const isOwn = e.club_id === ownClub?.id;
+                const zone = BOARD_ZONES.find((z) => e.season_score >= z.min && e.season_score <= z.max) ?? BOARD_ZONES[0];
+                return (
+                  <div
+                    key={e.club_id}
+                    className={cn(
+                      "flex items-center gap-3 rounded-md border p-2",
+                      isOwn
+                        ? "border-[var(--club-color)] bg-[var(--club-color)]/10"
+                        : "border-zinc-800 bg-zinc-900/40",
+                    )}
+                  >
+                    <div className="relative h-8 w-8 shrink-0 overflow-hidden rounded-full border border-zinc-700 bg-zinc-800">
+                      {e.logo ? (
+                        <Image alt={e.club_name} className="object-contain p-1" fill sizes="32px" src={e.logo} />
+                      ) : (
+                        <span className="flex h-full w-full items-center justify-center text-[9px] font-bold text-zinc-400">
+                          {e.club_name.substring(0, 2).toUpperCase()}
+                        </span>
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className={cn("truncate text-xs font-semibold", isOwn ? "text-[var(--club-color)]" : "text-zinc-200")}>
+                        {e.club_name}
+                      </p>
+                      <p className={cn("text-[10px]", zone.headerText)}>{zone.label}</p>
+                    </div>
+                    <span className={cn("shrink-0 text-sm font-black tabular-nums", isOwn ? "text-[var(--club-color)]" : "text-zinc-200")}>
+                      {e.season_score}
+                    </span>
+                  </div>
+                );
+              })}
+          </div>
+        </div>
       </Panel>
+
+      {hasActiveSeason ? (
+        <>
+          <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+            <PanelHeader>
+              <div>
+                <PanelTitle>Managerwertung</PanelTitle>
+                <PanelDescription>Kernwertung: Kadersterne plus erspielte Saisonpunkte.</PanelDescription>
+              </div>
+              <Crown size={18} className="text-[var(--club-color)]" aria-hidden />
+            </PanelHeader>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[720px] text-left text-sm">
+                <thead className="border-b border-zinc-800 text-xs uppercase text-zinc-500">
+                  <tr>
+                    <th className="py-2 pr-3">#</th>
+                    <th className="py-2 pr-3">Club</th>
+                    <th className="py-2 pr-3">Kader</th>
+                    <th className="py-2 pr-3">Saisonpkt</th>
+                    <th className="py-2 pr-3">Score</th>
+                    <th className="py-2 pr-3">Status</th>
+                    <th className="py-2 pr-3">Attraktivitaet</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-900">
+                  {season!.manager_standings.map((standing) => (
+                    <tr className="text-zinc-300" key={standing.club_id}>
+                      <td className="py-3 pr-3 font-semibold text-zinc-50">{standing.rank}</td>
+                      <td className="py-3 pr-3 font-semibold text-zinc-50">{standing.club_name}</td>
+                      <td className="py-3 pr-3">{formatStars(standing.squad_stars)}</td>
+                      <td className="py-3 pr-3">{standing.season_match_points}</td>
+                      <td className="py-3 pr-3 text-base font-bold text-zinc-50">{standing.season_score}</td>
+                      <td className="py-3 pr-3">
+                        <Badge tone="blue">{getClubStatusLabel(standing.status)}</Badge>
+                      </td>
+                      <td className="py-3 pr-3">{standing.attractiveness_stars} Sterne</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Panel>
+
+          <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+            <PanelHeader>
+              <div>
+                <PanelTitle>Liga-Tabelle</PanelTitle>
+                <PanelDescription>Kosmetische Saisonansicht mit Human- und CPU-Teams.</PanelDescription>
+              </div>
+              <Trophy size={18} className="text-[var(--club-color)]" aria-hidden />
+            </PanelHeader>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[760px] text-left text-sm">
+                <thead className="border-b border-zinc-800 text-xs uppercase text-zinc-500">
+                  <tr>
+                    <th className="py-2 pr-3">#</th>
+                    <th className="py-2 pr-3">Team</th>
+                    <th className="py-2 pr-3">Typ</th>
+                    <th className="py-2 pr-3">Sp</th>
+                    <th className="py-2 pr-3">S</th>
+                    <th className="py-2 pr-3">U</th>
+                    <th className="py-2 pr-3">N</th>
+                    <th className="py-2 pr-3">Drittel</th>
+                    <th className="py-2 pr-3">Pkt</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-900">
+                  {season!.standings.map((standing) => {
+                    const thirdDiff = standing.third_points_for - standing.third_points_against;
+                    return (
+                      <tr className="text-zinc-300" key={standing.participant_id}>
+                        <td className="py-3 pr-3 font-semibold text-zinc-50">{standing.rank}</td>
+                        <td className="py-3 pr-3 font-semibold text-zinc-50">{standing.participant.display_name}</td>
+                        <td className="py-3 pr-3">
+                          <Badge tone={standing.participant.kind === "cpu" ? "blue" : "green"}>{standing.participant.kind === "cpu" ? "CPU" : "Manager"}</Badge>
+                        </td>
+                        <td className="py-3 pr-3">{standing.played}</td>
+                        <td className="py-3 pr-3">{standing.wins}</td>
+                        <td className="py-3 pr-3">{standing.draws}</td>
+                        <td className="py-3 pr-3">{standing.losses}</td>
+                        <td className="py-3 pr-3">
+                          {formatStars(standing.third_points_for)}:{formatStars(standing.third_points_against)} ({thirdDiff >= 0 ? "+" : ""}
+                          {formatStars(thirdDiff)})
+                        </td>
+                        <td className="py-3 pr-3 text-base font-bold text-zinc-50">{standing.match_points}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Panel>
+        </>
+      ) : (
+        <Panel className={cn("bg-zinc-950/85", season?.setup_error ? "border-amber-700" : "border-[var(--club-border)]")}>
+          <PanelHeader>
+            <div>
+              <PanelTitle>Tabelle</PanelTitle>
+              <PanelDescription>{season?.setup_error ?? "Managerwertung und Liga-Tabelle entstehen beim Start der Prematch-Phase."}</PanelDescription>
+            </div>
+            <Trophy size={18} className={season?.setup_error ? "text-amber-200" : "text-[var(--club-color)]"} aria-hidden />
+          </PanelHeader>
+        </Panel>
+      )}
     </div>
   );
 }
@@ -2299,7 +3103,7 @@ function renderView(
   }
 
   if (view === "table") {
-    return <TableView snapshot={props.snapshot} />;
+    return <TableView ownClub={props.ownClub} snapshot={props.snapshot} />;
   }
 
   return null;
@@ -2515,6 +3319,35 @@ function formatEffects(effects: unknown[]) {
     .join(", ");
 }
 
+function describeStaffEffects(effects: unknown[]): string {
+  if (!Array.isArray(effects) || effects.length === 0) return "Keine Effekte.";
+  return effects
+    .map((e) => {
+      if (!e || typeof e !== "object") return "Effekt";
+      const eff = e as Record<string, unknown>;
+      const fmt = (v: unknown) => formatMoney(Number(v));
+      switch (eff.type) {
+        case "zone_bonus": return `+${eff.stars} ${String(eff.zone)}`;
+        case "dice_zone_bonus": return `+${eff.stars} Wuerfelbonus (je Drittel)`;
+        case "captain_boost_extra": return `+${eff.stars} Captain-Boost`;
+        case "wage_multiplier": return `Gehaelter ×${eff.factor}`;
+        case "auction_discount": return `${fmt(eff.amount)} Rabatt (Deadline Day)`;
+        case "scouting_extra_cards": return `+${eff.cards} Scouting-Karte(n)`;
+        case "season_income_bonus": return `+${fmt(eff.amount)} pro Saison`;
+        case "investment_action_bonus": return `+${eff.extra} Investment-Aktion`;
+        case "attractiveness_bonus": return `+${eff.stars} Attraktivitaet`;
+        case "status_tier_up": return `+${eff.tiers} Statusstufe (Stadion & Attraktivitaet)`;
+        case "chemistry_multiplier": return `Chemie-Bonus ×${eff.factor}`;
+        case "training_player_bonus": return `+${eff.players} Trainingsplatz`;
+        case "new_signing_star_bonus": return `+${eff.stars} Stern auf neue Zugaenge`;
+        case "injury_heal_manual": return `${eff.perMatchday} Heilung/Spieltag`;
+        case "draw_reroll": return `Unentschieden: neu wuerfeln (${eff.threshold}+ = Sieg)`;
+        default: return String(eff.type).replaceAll("_", " ");
+      }
+    })
+    .join(" · ");
+}
+
 function parseFixtureResult(value: Record<string, unknown> | null | undefined) {
   if (!value || !Array.isArray(value.thirds)) {
     return null;
@@ -2560,6 +3393,10 @@ function getOwnLineupPowerSummary(snapshot: LobbySnapshot): LineupPowerSummary |
     return null;
   }
 
+  const staffEffects = (snapshot.club_overview?.staff ?? []).flatMap(
+    (s) => s.card.effects as Array<{ type: string; zone?: string; stars?: number }>,
+  );
+
   return calculateLineupPower(
     squad.map((owned) => ({
       chemistry_left: owned.player.chemistry_left,
@@ -2569,6 +3406,7 @@ function getOwnLineupPowerSummary(snapshot: LobbySnapshot): LineupPowerSummary |
       injured: owned.injured,
       lineup_slot: owned.lineup_slot,
     })),
+    staffEffects,
   );
 }
 
@@ -2611,6 +3449,36 @@ function formatMoney(value: number) {
 
 function formatStars(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function SquadPositionBreakdown({ squad }: { squad: NonNullable<LobbySnapshot["club_overview"]>["squad"] }) {
+  const POSITIONS = [
+    { key: "GK", label: "TW" },
+    { key: "DEF", label: "ABW" },
+    { key: "MID", label: "MIT" },
+    { key: "ATT", label: "ANG" },
+  ] as const;
+
+  const counts = Object.fromEntries(
+    POSITIONS.map(({ key }) => [
+      key,
+      squad.filter((p) => {
+        const positions = p.player.eligible_positions?.length ? p.player.eligible_positions : [p.player.position];
+        return positions.includes(key);
+      }).length,
+    ]),
+  ) as Record<string, number>;
+
+  return (
+    <div className="flex flex-wrap gap-2">
+      {POSITIONS.map(({ key, label }) => (
+        <div key={key} className="flex items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900/60 px-2.5 py-1.5">
+          <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">{label}</span>
+          <span className="text-sm font-bold text-zinc-100">{counts[key]}</span>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function getClubStatusLabel(status: LobbyClub["status"]) {

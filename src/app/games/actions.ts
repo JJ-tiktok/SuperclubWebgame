@@ -4,7 +4,7 @@ import { auth } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { setReadyAction, startGameAction } from "@/app/lobby/actions";
-import { calculateManagerScore, getManagerScoreBand, getPlacementReward, getStadiumIncome } from "@/lib/game/rules";
+import { applyStatusTierUp, calculateManagerScore, getManagerScoreBand, getPlacementReward, getStadiumIncome } from "@/lib/game/rules";
 import {
   canPlaceDeadlineBid,
   DEADLINE_BID_STEP,
@@ -14,7 +14,7 @@ import {
 } from "@/lib/lobby/deadline";
 import { DRAFT_PLAYER_SELECT } from "@/lib/lobby/draft";
 import { createDraftRound, getSquadCounts, allDraftSquadsComplete } from "@/lib/lobby/draft-server";
-import { canUpgradeFacility, type UpgradeAction } from "@/lib/lobby/investments";
+import { canRecruitStaff, canUpgradeFacility, type UpgradeAction } from "@/lib/lobby/investments";
 import { calculateLineupPower } from "@/lib/lobby/lineup-power";
 import { getNextLobbyPhase, getSettingsForNextPhase, isInvestmentPhase } from "@/lib/lobby/phases";
 import {
@@ -46,7 +46,7 @@ import {
   type TrainingEventMetadata,
 } from "@/lib/lobby/training";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
-import type { DraftPickSnapshot, DraftPlayerRow, LobbyClub, LobbyGame, LobbyPhase, ScoutingDrawSnapshot } from "@/lib/lobby/types";
+import type { DraftPickSnapshot, DraftPlayerRow, LobbyClub, LobbyGame, LobbyPhase, ScoutingDrawSnapshot, StaffCardRow } from "@/lib/lobby/types";
 
 export async function setReadyFromDashboardAction(formData: FormData) {
   const gameId = String(formData.get("game_id") || "");
@@ -124,22 +124,35 @@ export async function upgradeInvestmentAction(formData: FormData) {
   }
 
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
-  const { data: investments, error: investmentsError } = await supabase
-    .from("investments")
-    .select("action")
-    .eq("club_id", clubId)
-    .eq("season_number", seasonNumber)
-    .returns<Array<{ action: string }>>();
+  const [{ data: investments, error: investmentsError }, { data: upgradeStaffRows }] = await Promise.all([
+    supabase
+      .from("investments")
+      .select("action")
+      .eq("club_id", clubId)
+      .eq("season_number", seasonNumber)
+      .returns<Array<{ action: string }>>(),
+    supabase
+      .from("club_staff")
+      .select("card:staff_cards(effects)")
+      .eq("club_id", clubId)
+      .returns<Array<{ card: { effects: Array<Record<string, unknown>> } }>>(),
+  ]);
 
   if (investmentsError) {
     throw investmentsError;
   }
+
+  const upgradeExtraBonus = (upgradeStaffRows ?? [])
+    .flatMap((s) => s.card?.effects ?? [])
+    .filter((e) => e.type === "investment_action_bonus")
+    .reduce((sum, e) => sum + Number(e.extra ?? 0), 0);
 
   const currentLevel = getClubFacilityLevel(club, action);
   const check = canUpgradeFacility({
     action,
     actionsThisSeason: (investments ?? []).map((investment) => investment.action),
     currentLevel,
+    extraActionBonus: upgradeExtraBonus,
     money: Number(club.money),
   });
 
@@ -434,6 +447,16 @@ export async function trainPlayerAction(formData: FormData) {
     throw transactionsError;
   }
 
+  const { data: trainStaffRows } = await supabase
+    .from("club_staff")
+    .select("card:staff_cards(effects)")
+    .eq("club_id", ownedPlayer.club_id)
+    .returns<Array<{ card: { effects: Array<Record<string, unknown>> } }>>();
+  const trainingPlayerBonus = (trainStaffRows ?? [])
+    .flatMap((s) => s.card?.effects ?? [])
+    .filter((e) => e.type === "training_player_bonus")
+    .reduce((sum, e) => sum + Number(e.players ?? 0), 0);
+
   const trainingEvents = (transactionRows ?? [])
     .map(parseTrainingEvent)
     .filter((event): event is NonNullable<ReturnType<typeof parseTrainingEvent>> => Boolean(event))
@@ -441,6 +464,7 @@ export async function trainPlayerAction(formData: FormData) {
   const trainingStatus = getTrainingStatus({
     events: trainingEvents,
     trainingLevel: ownedPlayer.club.training_level,
+    extraPlayers: trainingPlayerBonus,
   });
   const currentStars = Math.trunc(Number(ownedPlayer.current_stars));
   const skillMax = Math.trunc(Number(ownedPlayer.player.skill_max ?? currentStars));
@@ -537,7 +561,16 @@ export async function drawScoutingPlayerAction(formData: FormData) {
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
   const draws = await getScoutingDraws(supabase, gameId, seasonNumber);
   const ownDraws = draws.filter((draw) => draw.club_id === ownClub.id);
-  const capacity = getClubScoutingCapacity(ownClub);
+  const { data: scoutStaffRows } = await supabase
+    .from("club_staff")
+    .select("card:staff_cards(effects)")
+    .eq("club_id", ownClub.id)
+    .returns<Array<{ card: { effects: Array<Record<string, unknown>> } }>>();
+  const scoutingExtraCards = (scoutStaffRows ?? [])
+    .flatMap((s) => s.card?.effects ?? [])
+    .filter((e) => e.type === "scouting_extra_cards")
+    .reduce((sum, e) => sum + Number(e.cards ?? 0), 0);
+  const capacity = getClubScoutingCapacity(ownClub) + scoutingExtraCards;
   const drawCheck = canDrawScoutingPlayer({
     currentTurnClubId: game.current_turn_club_id,
     drawnCount: ownDraws.length,
@@ -597,9 +630,14 @@ export async function buyScoutedPlayerAction(formData: FormData) {
   }
 
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
-  const [draws, squadCount] = await Promise.all([
+  const [draws, squadCount, buyStaffRows] = await Promise.all([
     getScoutingDraws(supabase, gameId, seasonNumber),
     getClubSquadCount(supabase, ownClub.id),
+    supabase
+      .from("club_staff")
+      .select("card:staff_cards(effects)")
+      .eq("club_id", ownClub.id)
+      .returns<Array<{ card: { effects: Array<Record<string, unknown>> } }>>(),
   ]);
   const draw = draws.find((item) => item.id === drawId);
 
@@ -624,11 +662,18 @@ export async function buyScoutedPlayerAction(formData: FormData) {
     redirect(`/games/${roomCode}?view=scouting`);
   }
 
+  const newSigningBonus = (buyStaffRows.data ?? [])
+    .flatMap((s) => s.card?.effects ?? [])
+    .filter((e) => e.type === "new_signing_star_bonus")
+    .reduce((sum, e) => sum + Number(e.stars ?? 0), 0);
+  const playerSkillMax = Number(draw.player.skill_max ?? draw.player.base_stars);
+  const newSigningStars = Math.min(playerSkillMax, draw.player.base_stars + newSigningBonus);
+
   await assertPlayerNotOwnedInGame(supabase, gameId, draw.player_id);
 
   const { error: insertClubPlayerError } = await supabase.from("club_players").insert({
     club_id: ownClub.id,
-    current_stars: draw.player.base_stars,
+    current_stars: newSigningStars,
     current_zone: "bench",
     player_id: draw.player_id,
   });
@@ -715,6 +760,47 @@ export async function passScoutedPlayerAction(formData: FormData) {
     .from("scouting_draws")
     .update({ resolved_at: new Date().toISOString(), status: "passed" })
     .eq("id", draw.id)
+    .eq("club_id", ownClub.id)
+    .eq("status", "drawn");
+
+  if (error) {
+    throw error;
+  }
+
+  await touchGameSave(supabase, gameId, userId);
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=scouting`);
+}
+
+export async function passAllScoutedPlayersAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !supabase) {
+    redirect(`/games/${roomCode}?view=scouting`);
+  }
+
+  const { game, ownClub } = await getGameClubContext(supabase, gameId, userId);
+  if (game.phase !== "offseason_scouting") {
+    redirect(`/games/${roomCode}?view=scouting`);
+  }
+
+  const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
+  const draws = await getScoutingDraws(supabase, gameId, seasonNumber);
+  const openDrawIds = draws
+    .filter((d) => d.club_id === ownClub.id && d.status === "drawn")
+    .map((d) => d.id);
+
+  if (openDrawIds.length === 0) {
+    redirect(`/games/${roomCode}?view=scouting`);
+  }
+
+  const { error } = await supabase
+    .from("scouting_draws")
+    .update({ resolved_at: new Date().toISOString(), status: "passed" })
+    .in("id", openDrawIds)
     .eq("club_id", ownClub.id)
     .eq("status", "drawn");
 
@@ -952,20 +1038,30 @@ export async function placeDeadlineBidAction(formData: FormData) {
     redirect(`/games/${roomCode}?view=deadline`);
   }
 
-  const [auction, squadCount] = await Promise.all([
+  const [auction, squadCount, bidStaffRows] = await Promise.all([
     getDeadlineAuction(supabase, auctionId),
     getClubSquadCount(supabase, ownClub.id),
+    supabase
+      .from("club_staff")
+      .select("card:staff_cards(effects)")
+      .eq("club_id", ownClub.id)
+      .returns<Array<{ card: { effects: Array<Record<string, unknown>> } }>>(),
   ]);
 
   if (!auction || auction.game_id !== gameId || auction.status !== "open") {
     redirect(`/games/${roomCode}?view=deadline`);
   }
 
+  const auctionDiscount = (bidStaffRows.data ?? [])
+    .flatMap((s) => s.card?.effects ?? [])
+    .filter((e) => e.type === "auction_discount")
+    .reduce((sum, e) => sum + Number(e.amount ?? 0), 0);
+
   const bidCheck = canPlaceDeadlineBid({
     amount: amountMillions * DEADLINE_BID_STEP,
     currentAmount: Number(auction.current_amount ?? 0),
     currentBidClubId: auction.current_bid_club_id,
-    minimumBid: Number(auction.minimum_bid ?? 0),
+    minimumBid: Math.max(0, Number(auction.minimum_bid ?? 0) - auctionDiscount),
     ownClubId: ownClub.id,
     ownMoney: Number(ownClub.money),
     squadSize: squadCount,
@@ -1816,26 +1912,35 @@ async function buildFixtureSide(supabase: SupabaseServiceClient, participant: Fi
     throw new Error("Human participant without club.");
   }
 
-  const { data, error } = await supabase
-    .from("club_players")
-    .select("id, current_stars, current_zone, lineup_slot, player:players(chemistry_left, chemistry_right)")
-    .eq("club_id", participant.club_id)
-    .neq("current_zone", "bench")
-    .eq("injured", false)
-    .order("lineup_slot", { ascending: true })
-    .returns<
-      Array<{
-        current_stars: number | string;
-        current_zone: string;
-        id: string;
-        lineup_slot: number | null;
-        player: { chemistry_left?: boolean | null; chemistry_right?: boolean | null };
-      }>
-    >();
+  const [{ data, error }, { data: staffData }] = await Promise.all([
+    supabase
+      .from("club_players")
+      .select("id, current_stars, current_zone, lineup_slot, player:players(chemistry_left, chemistry_right)")
+      .eq("club_id", participant.club_id)
+      .neq("current_zone", "bench")
+      .eq("injured", false)
+      .order("lineup_slot", { ascending: true })
+      .returns<
+        Array<{
+          current_stars: number | string;
+          current_zone: string;
+          id: string;
+          lineup_slot: number | null;
+          player: { chemistry_left?: boolean | null; chemistry_right?: boolean | null };
+        }>
+      >(),
+    supabase
+      .from("club_staff")
+      .select("staff_card:staff_cards(effects)")
+      .eq("club_id", participant.club_id)
+      .returns<Array<{ staff_card: { effects: Array<{ type: string; zone?: string; stars?: number }> } | null }>>(),
+  ]);
 
   if (error) {
     throw error;
   }
+
+  const staffEffects = (staffData ?? []).flatMap((s) => s.staff_card?.effects ?? []);
 
   const lineup = {
     ATT: getZoneIds(data ?? [], "ATT"),
@@ -1851,6 +1956,7 @@ async function buildFixtureSide(supabase: SupabaseServiceClient, participant: Fi
       current_zone: player.current_zone,
       lineup_slot: player.lineup_slot,
     })),
+    staffEffects,
   );
 
   return {
@@ -2075,27 +2181,44 @@ async function bookSeasonFinance(supabase: SupabaseServiceClient, gameId: string
       continue;
     }
 
-    const { data: club, error: clubError } = await supabase
-      .from("clubs")
-      .select("id, money, stadium_level, status, season_rank")
-      .eq("id", row.club_id)
-      .eq("game_id", gameId)
-      .single<{ id: string; money: number | string; season_rank: number | null; stadium_level: number | null; status: string | null }>();
+    const [{ data: club, error: clubError }, { data: staffRows }] = await Promise.all([
+      supabase
+        .from("clubs")
+        .select("id, money, stadium_level, status, season_rank")
+        .eq("id", row.club_id)
+        .eq("game_id", gameId)
+        .single<{ id: string; money: number | string; season_rank: number | null; stadium_level: number | null; status: string | null }>(),
+      supabase
+        .from("club_staff")
+        .select("id, card:staff_cards(effects)")
+        .eq("club_id", row.club_id)
+        .returns<Array<{ id: string; card: { effects: unknown[] } }>>(),
+    ]);
 
     if (clubError) {
       throw clubError;
     }
 
-    const status = row.status as "established" | "mid_table" | "newly_promoted" | "title_contender";
-    const stadiumIncome = getStadiumIncome(Number(club.stadium_level ?? 1), status);
+    const staffEffects = (staffRows ?? []).flatMap((s) => s.card?.effects ?? []) as Array<Record<string, unknown>>;
+    const tierUp = staffEffects.filter((e) => e.type === "status_tier_up").reduce((sum, e) => sum + Number(e.tiers ?? 0), 0);
+    const staffIncomeBonus = staffEffects.filter((e) => e.type === "season_income_bonus").reduce((sum, e) => sum + Number(e.amount ?? 0), 0);
+    const staffAttrBonus = staffEffects.filter((e) => e.type === "attractiveness_bonus").reduce((sum, e) => sum + Number(e.stars ?? 0), 0);
+    const wageMultiplier = staffEffects.filter((e) => e.type === "wage_multiplier").reduce((min, e) => Math.min(min, Number(e.factor ?? 1)), 1);
+
+    const baseStatus = row.status as "established" | "mid_table" | "newly_promoted" | "title_contender";
+    const effectiveStatus = applyStatusTierUp(baseStatus, tierUp);
+
+    const stadiumIncome = getStadiumIncome(Number(club.stadium_level ?? 1), effectiveStatus);
     const placementReward = getPlacementReward(row.rank, humanClubCount);
-    const wages = row.squad_stars * 1_000_000;
-    const net = stadiumIncome + placementReward - wages;
+    const wages = Math.round(row.squad_stars * 1_000_000 * wageMultiplier);
+    const net = stadiumIncome + placementReward + staffIncomeBonus - wages;
+
+    const finalAttractivenessStars = Math.min(6, row.attractiveness_stars + staffAttrBonus);
 
     const { error: updateClubError } = await supabase
       .from("clubs")
       .update({
-        attractiveness_stars: row.attractiveness_stars,
+        attractiveness_stars: finalAttractivenessStars,
         money: Number(club.money ?? 0) + net,
         points: row.season_score,
         season_rank: row.rank,
@@ -2113,7 +2236,7 @@ async function bookSeasonFinance(supabase: SupabaseServiceClient, gameId: string
       club_id: row.club_id,
       game_id: gameId,
       metadata: {
-        attractiveness_stars: row.attractiveness_stars,
+        attractiveness_stars: finalAttractivenessStars,
         net,
         placement_reward: placementReward,
         season_match_points: row.match_points,
@@ -2121,6 +2244,7 @@ async function bookSeasonFinance(supabase: SupabaseServiceClient, gameId: string
         season_rank: row.rank,
         season_score: row.season_score,
         squad_stars: row.squad_stars,
+        staff_income_bonus: staffIncomeBonus,
         stadium_income: stadiumIncome,
         status: row.status,
         wages,
@@ -2581,19 +2705,33 @@ async function resolveDeadlineAuction(supabase: SupabaseServiceClient, auctionId
     return;
   }
 
-  const { data: player, error: playerError } = await supabase
-    .from("players")
-    .select("id, base_stars")
-    .eq("id", auction.player_id)
-    .single<{ id: string; base_stars: number | string }>();
+  const [{ data: player, error: playerError }, { data: deadlineStaffRows }] = await Promise.all([
+    supabase
+      .from("players")
+      .select("id, base_stars, skill_max")
+      .eq("id", auction.player_id)
+      .single<{ id: string; base_stars: number | string; skill_max: number | null }>(),
+    supabase
+      .from("club_staff")
+      .select("card:staff_cards(effects)")
+      .eq("club_id", auction.winning_club_id)
+      .returns<Array<{ card: { effects: Array<Record<string, unknown>> } }>>(),
+  ]);
 
   if (playerError) {
     throw playerError;
   }
 
+  const deadlineNewSigningBonus = (deadlineStaffRows ?? [])
+    .flatMap((s) => s.card?.effects ?? [])
+    .filter((e) => e.type === "new_signing_star_bonus")
+    .reduce((sum, e) => sum + Number(e.stars ?? 0), 0);
+  const deadlineSkillMax = Number(player.skill_max ?? player.base_stars);
+  const deadlineStars = Math.min(deadlineSkillMax, Number(player.base_stars) + deadlineNewSigningBonus);
+
   const { error: insertPlayerError } = await supabase.from("club_players").insert({
     club_id: auction.winning_club_id,
-    current_stars: player.base_stars,
+    current_stars: deadlineStars,
     current_zone: "bench",
     player_id: auction.player_id,
   });
@@ -2736,4 +2874,380 @@ async function touchGameSave(supabase: SupabaseServiceClient, gameId: string, us
   if (error) {
     throw error;
   }
+}
+
+// ─── Staff Recruitment ────────────────────────────────────────────────────────
+
+export async function recruitStaffOpenAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const clubId = String(formData.get("club_id") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !clubId || !supabase) {
+    redirect(`/games/${roomCode}?view=grounds`);
+  }
+
+  const [{ data: game, error: gameError }, { data: club, error: clubError }] = await Promise.all([
+    supabase.from("games").select("id, room_code, phase, settings").eq("id", gameId).single<{ id: string; phase: LobbyPhase; room_code: string; settings: { seasonNumber?: number } }>(),
+    supabase.from("clubs").select("id, game_id, clerk_user_id, money").eq("id", clubId).eq("game_id", gameId).single<{ id: string; game_id: string; clerk_user_id: string; money: number }>(),
+  ]);
+
+  if (gameError) throw gameError;
+  if (clubError) throw clubError;
+  if (club.clerk_user_id !== userId) throw new Error("Unauthorized");
+  if (!isInvestmentPhase(game.phase)) redirect(`/games/${roomCode}?view=grounds`);
+
+  const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
+
+  const [{ data: investments }, { data: existingStaff }, { data: openOffer }, { data: staffEffectRows }] = await Promise.all([
+    supabase.from("investments").select("action").eq("club_id", clubId).eq("season_number", seasonNumber).returns<Array<{ action: string }>>(),
+    supabase.from("club_staff").select("id").eq("club_id", clubId).returns<Array<{ id: string }>>(),
+    supabase.from("staff_offers").select("id").eq("club_id", clubId).eq("season_number", seasonNumber).eq("status", "open").limit(1).returns<Array<{ id: string }>>(),
+    supabase.from("club_staff").select("card:staff_cards(effects)").eq("club_id", clubId).returns<Array<{ card: { effects: Array<Record<string, unknown>> } }>>(),
+  ]);
+
+  const extraBonus = (staffEffectRows ?? [])
+    .flatMap((s) => s.card?.effects ?? [])
+    .filter((e) => e.type === "investment_action_bonus")
+    .reduce((sum, e) => sum + Number(e.extra ?? 0), 0);
+
+  const check = canRecruitStaff({
+    actionsThisSeason: (investments ?? []).map((i) => i.action),
+    currentStaffCount: existingStaff?.length ?? 0,
+    hasOpenOffer: (openOffer?.length ?? 0) > 0,
+    extraActionBonus: extraBonus,
+  });
+
+  if (!check.ok) redirect(`/games/${roomCode}?view=grounds`);
+
+  // Build pool: all staff_cards not yet hired by any club in this game
+  const { data: allHired } = await supabase
+    .from("club_staff")
+    .select("staff_card_id, clubs!inner(game_id)")
+    .eq("clubs.game_id", gameId)
+    .returns<Array<{ staff_card_id: string }>>();
+
+  const hiredIds = (allHired ?? []).map((r) => r.staff_card_id);
+
+  let cardsQuery = supabase.from("staff_cards").select("id").eq("visibility", "room");
+  if (hiredIds.length > 0) {
+    // PostgREST expects UUIDs without quotes: (uuid1,uuid2)
+    cardsQuery = cardsQuery.not("id", "in", `(${hiredIds.join(",")})`);
+  }
+  const { data: availableCards, error: cardsError } = await cardsQuery.returns<Array<{ id: string }>>();
+
+  if (cardsError) throw cardsError;
+
+  const pool = [...(availableCards ?? [])];
+  if (pool.length === 0) redirect(`/games/${roomCode}?view=grounds`);
+
+  const shuffled = pool.sort(() => Math.random() - 0.5);
+  const offeredIds = shuffled.slice(0, Math.min(2, shuffled.length)).map((c) => c.id);
+
+  const { error: offerError } = await supabase.from("staff_offers").insert({
+    game_id: gameId,
+    club_id: clubId,
+    season_number: seasonNumber,
+    offered_card_ids: offeredIds,
+    status: "open",
+  });
+
+  if (offerError) throw offerError;
+
+  const { error: investmentError } = await supabase.from("investments").insert({
+    action: "staff",
+    club_id: clubId,
+    cost: 0,
+    game_id: gameId,
+    season_number: seasonNumber,
+  });
+
+  if (investmentError) throw investmentError;
+
+  await touchGameSave(supabase, gameId, userId);
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=grounds`);
+}
+
+export async function recruitStaffResolveAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const clubId = String(formData.get("club_id") || "");
+  const offerId = String(formData.get("offer_id") || "");
+  const chosenCardId = String(formData.get("chosen_card_id") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !clubId || !offerId || !supabase) {
+    redirect(`/games/${roomCode}?view=grounds`);
+  }
+
+  const { data: club, error: clubError } = await supabase
+    .from("clubs")
+    .select("id, clerk_user_id, money")
+    .eq("id", clubId)
+    .eq("game_id", gameId)
+    .single<{ id: string; clerk_user_id: string; money: number }>();
+
+  if (clubError) throw clubError;
+  if (club.clerk_user_id !== userId) throw new Error("Unauthorized");
+
+  const { data: offer, error: offerError } = await supabase
+    .from("staff_offers")
+    .select("id, offered_card_ids, status")
+    .eq("id", offerId)
+    .eq("club_id", clubId)
+    .eq("status", "open")
+    .single<{ id: string; offered_card_ids: string[]; status: string }>();
+
+  if (offerError || !offer) redirect(`/games/${roomCode}?view=grounds`);
+
+  if (chosenCardId && offer.offered_card_ids.includes(chosenCardId)) {
+    const { data: card, error: cardError } = await supabase
+      .from("staff_cards")
+      .select("id, price, effects")
+      .eq("id", chosenCardId)
+      .single<{ id: string; price: number; effects: unknown[] }>();
+
+    if (cardError || !card) redirect(`/games/${roomCode}?view=grounds`);
+
+    if (Number(club.money) < card.price) redirect(`/games/${roomCode}?view=grounds`);
+
+    const { error: hireError } = await supabase.from("club_staff").insert({
+      club_id: clubId,
+      staff_card_id: chosenCardId,
+    });
+
+    if (hireError) throw hireError;
+
+    const { error: moneyError } = await supabase
+      .from("clubs")
+      .update({ money: Number(club.money) - card.price })
+      .eq("id", clubId);
+
+    if (moneyError) throw moneyError;
+  }
+
+  const { error: resolveError } = await supabase
+    .from("staff_offers")
+    .update({
+      status: chosenCardId ? "resolved" : "declined",
+      chosen_card_id: chosenCardId || null,
+      resolved_at: new Date().toISOString(),
+    })
+    .eq("id", offerId);
+
+  if (resolveError) throw resolveError;
+
+  await touchGameSave(supabase, gameId, userId);
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=grounds`);
+}
+
+export async function dismissStaffAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const clubId = String(formData.get("club_id") || "");
+  const clubStaffId = String(formData.get("club_staff_id") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !clubId || !clubStaffId || !supabase) {
+    redirect(`/games/${roomCode}?view=grounds`);
+  }
+
+  const { data: club, error: clubError } = await supabase
+    .from("clubs")
+    .select("id, clerk_user_id")
+    .eq("id", clubId)
+    .eq("game_id", gameId)
+    .single<{ id: string; clerk_user_id: string }>();
+
+  if (clubError) throw clubError;
+  if (club.clerk_user_id !== userId) throw new Error("Unauthorized");
+
+  const { error: deleteError } = await supabase
+    .from("club_staff")
+    .delete()
+    .eq("id", clubStaffId)
+    .eq("club_id", clubId);
+
+  if (deleteError) throw deleteError;
+
+  await touchGameSave(supabase, gameId, userId);
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=grounds`);
+}
+
+export async function healInjuredPlayerAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const clubId = String(formData.get("club_id") || "");
+  const clubPlayerId = String(formData.get("club_player_id") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !clubId || !clubPlayerId || !supabase) {
+    redirect(`/games/${roomCode}`);
+  }
+
+  const { data: club, error: clubError } = await supabase
+    .from("clubs")
+    .select("id, clerk_user_id")
+    .eq("id", clubId)
+    .eq("game_id", gameId)
+    .single<{ id: string; clerk_user_id: string }>();
+
+  if (clubError) throw clubError;
+  if (club.clerk_user_id !== userId) throw new Error("Unauthorized");
+
+  const { error: healError } = await supabase
+    .from("club_players")
+    .update({ injured: false })
+    .eq("id", clubPlayerId)
+    .eq("club_id", clubId);
+
+  if (healError) throw healError;
+
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}`);
+}
+
+export async function triggerDrawRerollAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const clubId = String(formData.get("club_id") || "");
+  const fixtureId = String(formData.get("fixture_id") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !clubId || !fixtureId || !supabase) {
+    redirect(`/games/${roomCode}`);
+  }
+
+  const { data: club, error: clubError } = await supabase
+    .from("clubs")
+    .select("id, clerk_user_id")
+    .eq("id", clubId)
+    .eq("game_id", gameId)
+    .single<{ id: string; clerk_user_id: string }>();
+
+  if (clubError) throw clubError;
+  if (club.clerk_user_id !== userId) throw new Error("Unauthorized");
+
+  const { data: staffRows } = await supabase
+    .from("club_staff")
+    .select("card:staff_cards(effects)")
+    .eq("club_id", clubId)
+    .returns<Array<{ card: { effects: Array<Record<string, unknown>> } }>>();
+
+  const threshold = (staffRows ?? [])
+    .flatMap((s) => s.card?.effects ?? [])
+    .filter((e) => e.type === "draw_reroll")
+    .reduce((min, e) => Math.min(min, Number(e.threshold ?? 8)), Infinity);
+
+  if (!isFinite(threshold)) {
+    redirect(`/games/${roomCode}`);
+  }
+
+  const { data: fixture, error: fixtureError } = await supabase
+    .from("fixtures")
+    .select("id, game_id, home_participant_id, away_participant_id, home_score, away_score, status")
+    .eq("id", fixtureId)
+    .eq("game_id", gameId)
+    .single<{ id: string; game_id: string; home_participant_id: string; away_participant_id: string; home_score: number; away_score: number; status: string }>();
+
+  if (fixtureError || !fixture || fixture.status !== "completed") {
+    redirect(`/games/${roomCode}`);
+  }
+
+  if (fixture.home_score !== fixture.away_score) {
+    redirect(`/games/${roomCode}`);
+  }
+
+  const { data: homeParticipant } = await supabase
+    .from("season_participants")
+    .select("id, club_id")
+    .eq("id", fixture.home_participant_id)
+    .single<{ id: string; club_id: string | null }>();
+
+  const { data: awayParticipant } = await supabase
+    .from("season_participants")
+    .select("id, club_id")
+    .eq("id", fixture.away_participant_id)
+    .single<{ id: string; club_id: string | null }>();
+
+  const ownSide = homeParticipant?.club_id === clubId ? "home" : awayParticipant?.club_id === clubId ? "away" : null;
+  if (!ownSide) redirect(`/games/${roomCode}`);
+
+  const dice1 = Math.floor(Math.random() * 6) + 1;
+  const dice2 = Math.floor(Math.random() * 6) + 1;
+  const total = dice1 + dice2;
+  const rerollWin = total >= threshold;
+
+  if (rerollWin) {
+    const winnerParticipantId = ownSide === "home" ? fixture.home_participant_id : fixture.away_participant_id;
+    const loserParticipantId = ownSide === "home" ? fixture.away_participant_id : fixture.home_participant_id;
+
+    const newHomeScore = ownSide === "home" ? fixture.home_score + 1 : fixture.home_score;
+    const newAwayScore = ownSide === "away" ? fixture.away_score + 1 : fixture.away_score;
+
+    const { error: fixtureUpdateError } = await supabase
+      .from("fixtures")
+      .update({ home_score: newHomeScore, away_score: newAwayScore })
+      .eq("id", fixtureId);
+
+    if (fixtureUpdateError) throw fixtureUpdateError;
+
+    const seasonNumber = Number(
+      await supabase
+        .from("season_participants")
+        .select("season_number")
+        .eq("id", fixture.home_participant_id)
+        .single<{ season_number: number }>()
+        .then((r) => r.data?.season_number ?? 1),
+    );
+
+    const POINTS_MODE_WIN = 3;
+    const POINTS_MODE_DRAW = 1;
+
+    const { data: winnerStanding } = await supabase
+      .from("season_standings")
+      .select("wins, draws, match_points")
+      .eq("participant_id", winnerParticipantId)
+      .eq("season_number", seasonNumber)
+      .single<{ wins: number; draws: number; match_points: number }>();
+
+    const { data: loserStanding } = await supabase
+      .from("season_standings")
+      .select("draws, match_points")
+      .eq("participant_id", loserParticipantId)
+      .eq("season_number", seasonNumber)
+      .single<{ draws: number; match_points: number }>();
+
+    if (winnerStanding) {
+      await supabase.from("season_standings").update({
+        wins: (winnerStanding.wins ?? 0) + 1,
+        draws: Math.max(0, (winnerStanding.draws ?? 0) - 1),
+        match_points: (winnerStanding.match_points ?? 0) + POINTS_MODE_WIN - POINTS_MODE_DRAW,
+      })
+        .eq("participant_id", winnerParticipantId)
+        .eq("season_number", seasonNumber);
+    }
+
+    if (loserStanding) {
+      await supabase.from("season_standings").update({
+        draws: Math.max(0, (loserStanding.draws ?? 0) - 1),
+        match_points: Math.max(0, (loserStanding.match_points ?? 0) - POINTS_MODE_DRAW),
+      })
+        .eq("participant_id", loserParticipantId)
+        .eq("season_number", seasonNumber);
+    }
+  }
+
+  await touchGameSave(supabase, gameId, userId);
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}`);
 }

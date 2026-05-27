@@ -10,7 +10,10 @@ export type LineupPowerPlayer = {
   current_zone: LineupZone | string;
   injured?: boolean | null;
   lineup_slot?: number | null;
+  /** Primary DB position (single string) */
   position?: string | null;
+  /** All eligible positions — takes precedence over `position` when present */
+  positions?: string[] | null;
 };
 
 export type LineupPowerSummary = {
@@ -87,8 +90,10 @@ export function calculateLineupPower(
 function getBaseStars(players: LineupPowerPlayer[], zone: LineupZone) {
   return getZonePlayers(players, zone).reduce((total, player) => {
     const raw = Number(player.current_stars);
-    const naturalPos = player.position ?? zone;
-    const penalty = getPositionPenalty(naturalPos, zone);
+    // Prefer the full eligible-positions array; fall back to single position string
+    const naturalPositions: string | string[] =
+      player.positions?.length ? player.positions : (player.position ?? zone);
+    const penalty = getPositionPenalty(naturalPositions, zone);
     return total + applyPositionPenalty(raw, penalty);
   }, 0);
 }

@@ -242,14 +242,20 @@ export type StaffOfferSnapshot = {
   offered_cards: StaffCardRow[];
 };
 
+export type GameChangerCategory = "good_news" | "bad_news" | "secret_weapon";
+
 export type ClubGameChangerSnapshot = {
   id: string;
   game_changer_card_id: string;
   used_at?: string | null;
+  fixture_id?: string | null;
+  applied_third?: number | null;
   card: {
     id: string;
     content_key?: string | null;
     display_name: string;
+    description: string;
+    category: GameChangerCategory;
     timing: string;
     effects: unknown[];
     visibility?: string | null;
@@ -352,6 +358,17 @@ export type ManagerStandingSnapshot = {
   status: string;
 };
 
+export type MatchNewsSnapshot = {
+  id: string;
+  game_id: string;
+  fixture_id?: string | null;
+  club_id?: string | null;
+  category: GameChangerCategory | "injury";
+  headline: string;
+  detail?: string | null;
+  created_at: string;
+};
+
 export type SeasonFixtureSnapshot = {
   away_cpu_lineup?: {
     att_stars: number;
@@ -387,6 +404,11 @@ export type SeasonFixtureSnapshot = {
   home_third_points?: number | null;
   id: string;
   matchday: number;
+  match_state: "scheduled" | "in_progress" | "completed";
+  current_third: number;
+  home_ready_for_next_third: boolean;
+  away_ready_for_next_third: boolean;
+  partial_result?: Record<string, unknown> | null;
   result?: Record<string, unknown> | null;
   season_number: number;
   status: "completed" | "scheduled";
@@ -409,6 +431,7 @@ export type LobbySnapshot = {
   season: SeasonSnapshot | null;
   scouting: ScoutingSnapshot | null;
   club_overview: ClubOverviewSnapshot | null;
+  match_news: MatchNewsSnapshot[];
 };
 
 export type SavedGameSummary = {

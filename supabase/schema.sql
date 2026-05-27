@@ -236,6 +236,9 @@ create table public.game_changer_cards (
   id uuid primary key default gen_random_uuid(),
   content_key text not null unique,
   display_name text not null,
+  description text not null default '',
+  category text not null default 'secret_weapon'
+    check (category in ('good_news', 'bad_news', 'secret_weapon')),
   timing text not null default 'after_match',
   effects jsonb not null default '[]'::jsonb,
   visibility public.card_visibility not null default 'private'
@@ -245,7 +248,9 @@ create table public.club_game_changers (
   id uuid primary key default gen_random_uuid(),
   club_id uuid not null references public.clubs(id) on delete cascade,
   game_changer_card_id uuid not null references public.game_changer_cards(id) on delete restrict,
-  used_at timestamptz
+  used_at timestamptz,
+  fixture_id uuid references public.fixtures(id) on delete set null,
+  applied_third int
 );
 
 create table public.investments (
@@ -383,6 +388,11 @@ create table public.fixtures (
   away_locked_mid int,
   away_locked_att int,
   status text not null default 'scheduled' check (status in ('scheduled', 'completed')),
+  match_state text not null default 'scheduled' check (match_state in ('scheduled', 'in_progress', 'completed')),
+  current_third int not null default 0,
+  home_ready_for_next_third boolean not null default false,
+  away_ready_for_next_third boolean not null default false,
+  partial_result jsonb,
   home_score int,
   away_score int,
   home_third_points numeric(3,1),
@@ -411,6 +421,24 @@ create table public.season_standings (
   updated_at timestamptz not null default now(),
   primary key (game_id, season_number, participant_id)
 );
+
+create table public.match_news (
+  id uuid primary key default gen_random_uuid(),
+  game_id uuid not null references public.games(id) on delete cascade,
+  fixture_id uuid references public.fixtures(id) on delete cascade,
+  club_id uuid references public.clubs(id) on delete cascade,
+  category text not null check (category in ('good_news', 'bad_news', 'secret_weapon', 'injury')),
+  headline text not null,
+  detail text,
+  created_at timestamptz not null default now()
+);
+
+alter table public.match_news enable row level security;
+
+create policy "Authenticated users can read match_news"
+  on public.match_news for select
+  to authenticated
+  using (true);
 
 create table public.transactions (
   id uuid primary key default gen_random_uuid(),
@@ -1378,6 +1406,14 @@ begin
       and tablename = 'staff_offers'
   ) then
     alter publication supabase_realtime add table public.staff_offers;
+  exception when duplicate_object then null;
+  end;
+  begin
+    alter publication supabase_realtime add table public.match_news;
+  exception when duplicate_object then null;
+  end;
+  begin
+    alter publication supabase_realtime add table public.club_game_changers;
   end if;
 end;
 $$;

@@ -18,6 +18,7 @@ import type {
   LobbyMember,
   LobbySnapshot,
   ManagerStandingSnapshot,
+  MatchNewsSnapshot,
   SavedGameSummary,
   ScoutingDrawSnapshot,
   ScoutingSnapshot,
@@ -92,6 +93,7 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string) {
   const season = await getSeasonSnapshot(game);
   const ownClub = clubsWithStars.find((club) => club.clerk_user_id === userId);
   const clubOverview = ownClub ? await getClubOverviewSnapshot(game, ownClub, clubsWithStars.length) : null;
+  const matchNews = await getMatchNewsSnapshot(game);
 
   const snapshot: LobbySnapshot = {
     game,
@@ -102,6 +104,7 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string) {
     season,
     scouting,
     club_overview: clubOverview,
+    match_news: matchNews,
   };
 
   return { snapshot, currentUserId: userId };
@@ -224,6 +227,7 @@ async function getSeasonSnapshot(game: LobbyGame): Promise<SeasonSnapshot | null
       .from("fixtures")
       .select(
         `id, game_id, season_number, matchday, home_participant_id, away_participant_id, status,
+        match_state, current_third, home_ready_for_next_third, away_ready_for_next_third, partial_result,
         home_lineup_locked, away_lineup_locked,
         home_locked_def, home_locked_mid, home_locked_att,
         away_locked_def, away_locked_mid, away_locked_att,
@@ -270,6 +274,21 @@ async function getSeasonSnapshot(game: LobbyGame): Promise<SeasonSnapshot | null
     manager_standings: managerStandings,
     standings: standings ?? [],
   };
+}
+
+async function getMatchNewsSnapshot(game: LobbyGame): Promise<MatchNewsSnapshot[]> {
+  const supabase = createSupabaseServiceClient();
+  if (!supabase) return [];
+
+  const { data } = await supabase
+    .from("match_news")
+    .select("id, game_id, fixture_id, club_id, category, headline, detail, created_at")
+    .eq("game_id", game.id)
+    .order("created_at", { ascending: false })
+    .limit(50)
+    .returns<MatchNewsSnapshot[]>();
+
+  return data ?? [];
 }
 
 async function getManagerStandings(game: LobbyGame, standings: SeasonStandingSnapshot[]): Promise<ManagerStandingSnapshot[]> {
@@ -434,7 +453,7 @@ async function getClubOverviewSnapshot(
       .returns<ClubStaffSnapshot[]>(),
     supabase
       .from("club_game_changers")
-      .select("id, game_changer_card_id, used_at, card:game_changer_cards(id, content_key, display_name, timing, effects, visibility)")
+      .select("id, game_changer_card_id, used_at, fixture_id, applied_third, card:game_changer_cards(id, content_key, display_name, description, category, timing, effects, visibility)")
       .eq("club_id", club.id)
       .order("id", { ascending: true })
       .returns<ClubGameChangerSnapshot[]>(),

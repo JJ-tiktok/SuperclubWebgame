@@ -333,7 +333,7 @@ export function GameLineupBoard({
             const player = playerId ? cardById.get(playerId) : undefined;
             const isDragged = drag?.fromSlotId === slot.id;
             const offPosPenalty = player && !player.injured
-              ? getPositionPenalty(player.positions[0] ?? "MID", slot.zone)
+              ? getPositionPenalty(player.positions.length ? player.positions : ["MID"], slot.zone)
               : 0;
             const isOffPosition = isFinite(offPosPenalty) ? offPosPenalty > 0 : true;
 
@@ -624,8 +624,8 @@ function getLineupSummary(
       continue;
     }
 
-    const naturalPos = card.positions[0] ?? "MID";
-    const penalty = getPositionPenalty(naturalPos, slot.zone);
+    const naturalPositions = card.positions.length ? card.positions : ["MID"];
+    const penalty = getPositionPenalty(naturalPositions, slot.zone);
     const value = applyPositionPenalty(getTotalSkillValue(card), penalty);
     summary.players += 1;
 

@@ -45,9 +45,11 @@ import {
   initializeDeadlineDayAction,
   lockFixtureLineupAction,
   makeDraftPickAction,
+  markReadyForNextThirdAction,
   passDeadlineBidAction,
   passScoutedPlayerAction,
   placeDeadlineBidAction,
+  playSecretWeaponAction,
   recruitStaffOpenAction,
   recruitStaffResolveAction,
   triggerDrawRerollAction,
@@ -57,11 +59,14 @@ import {
   setPhaseDoneAction,
   setReadyFromDashboardAction,
   startGameFromDashboardAction,
+  startMatchAction,
   trainPlayerAction,
   upgradeInvestmentAction,
 } from "@/app/games/actions";
+import { GameChangerPopup } from "@/components/game/game-changer-popup";
 import { GameLineupBoard } from "@/components/game/game-lineup-board";
 import { GameRealtimeRefresh } from "@/components/game/game-realtime-refresh";
+import { MatchNewsTicker } from "@/components/game/match-news-ticker";
 import { PlayerCard } from "@/components/player-card/PlayerCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -163,6 +168,7 @@ export function GameDashboard({ activeView, currentUserId, snapshot }: GameDashb
       }
     >
       <GameRealtimeRefresh gameId={snapshot.game.id} />
+      <GameChangerPopup news={snapshot.match_news} ownClubId={ownClub?.id} />
       <div
         className={cn(
           "mx-auto grid w-full max-w-[1480px] gap-5 transition-[grid-template-columns]",
@@ -199,6 +205,7 @@ export function GameDashboard({ activeView, currentUserId, snapshot }: GameDashb
           })}
         </section>
       </div>
+      <MatchNewsTicker news={snapshot.match_news} />
     </main>
   );
 }
@@ -2179,12 +2186,14 @@ function ClubCardsPanel({
           <Sparkles size={18} className="text-[var(--club-color)]" aria-hidden />
         </PanelHeader>
         <CardList
-          empty="Noch keine Game-Changer."
-          items={overview.game_changers.map((gameChanger) => ({
-            detail: formatEffects(gameChanger.card.effects),
-            meta: gameChanger.used_at ? "genutzt" : gameChanger.card.timing,
-            title: gameChanger.card.display_name,
-          }))}
+          empty="Keine Geheimwaffen im Bestand."
+          items={overview.game_changers
+            .filter((gc) => gc.card.category === "secret_weapon" && !gc.used_at)
+            .map((gameChanger) => ({
+              detail: gameChanger.card.description || formatEffects(gameChanger.card.effects),
+              meta: "Geheimwaffe",
+              title: gameChanger.card.display_name,
+            }))}
         />
       </Panel>
     </div>
@@ -2463,6 +2472,20 @@ function FixtureCard({
   const hasIncompleteLineup = healthyStarters < 9;
   const hasLineupWarning = hasInjuredInLineup || hasIncompleteLineup;
 
+  // PvP state machine
+  const isPvP = !hasCpu && home.kind === "human" && away.kind === "human";
+  const matchState = fixture.match_state ?? "scheduled";
+  const currentThird = fixture.current_third ?? 0;
+  const ownReady = ownSide === "home" ? fixture.home_ready_for_next_third : ownSide === "away" ? fixture.away_ready_for_next_third : false;
+  const opponentReady = ownSide === "home" ? fixture.away_ready_for_next_third : ownSide === "away" ? fixture.home_ready_for_next_third : false;
+  const secretWeapons = (snapshot.club_overview?.game_changers ?? []).filter(
+    (gc) => gc.card.category === "secret_weapon" && !gc.used_at,
+  );
+  const partialThirds = ((fixture.partial_result as { thirds?: unknown[] } | null)?.thirds ?? []) as Array<{ index: number; home: { total: number; zone: string }; away: { total: number; zone: string }; winner_participant_id?: string | null }>;
+
+  // For PvP, suppress the old "Host resolves PvP" button — the new state machine handles it
+  const canHostResolvePvpMatchLegacy = canHostResolvePvpMatch && !isPvP;
+
   const isOwnDraw = fixture.status === "completed" && ownSide && fixture.home_score != null && fixture.away_score != null && fixture.home_score === fixture.away_score;
   const tippyThreshold = snapshot.club_overview?.staff.reduce((min, s) => {
     const e = (s.card.effects as Array<{ type: string; threshold?: number }>).find((eff) => eff.type === "draw_reroll");
@@ -2643,7 +2666,89 @@ function FixtureCard({
                 )}
               </>
             ) : null}
-            {canResolveOwnCpuMatch || canHostResolveCpuOnlyMatch || canHostResolvePvpMatch ? (
+
+            {/* PvP Pre-Match: both lineups locked, match not started yet */}
+            {isPvP && bothHumanLineupsLocked && matchState === "scheduled" && ownSide ? (
+              <div className="space-y-2">
+                <p className="text-xs text-zinc-400">Beide Aufstellungen sind gelockt. Du kannst jetzt Geheimwaffen vor dem Anpfiff einsetzen.</p>
+                {secretWeapons.length > 0 ? (
+                  <div className="space-y-1">
+                    <p className="text-xs font-medium text-violet-300">Geheimwaffen</p>
+                    {secretWeapons.map((gc) => (
+                      <form action={playSecretWeaponAction} key={gc.id}>
+                        <input name="game_id" type="hidden" value={snapshot.game.id} />
+                        <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                        <input name="fixture_id" type="hidden" value={fixture.id} />
+                        <input name="club_game_changer_id" type="hidden" value={gc.id} />
+                        <Button className="w-full border-violet-700 text-violet-100 hover:bg-violet-950" type="submit" variant="outline">
+                          {gc.card.display_name}
+                        </Button>
+                      </form>
+                    ))}
+                  </div>
+                ) : null}
+                <form action={startMatchAction}>
+                  <input name="game_id" type="hidden" value={snapshot.game.id} />
+                  <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                  <input name="fixture_id" type="hidden" value={fixture.id} />
+                  <Button className="w-full" type="submit" variant="primary">
+                    Match starten
+                  </Button>
+                </form>
+              </div>
+            ) : null}
+
+            {/* PvP In Progress */}
+            {isPvP && matchState === "in_progress" && ownSide ? (
+              <div className="space-y-3">
+                {/* Partial thirds summary */}
+                {partialThirds.length > 0 ? (
+                  <div className="space-y-1">
+                    <p className="text-xs font-medium uppercase text-zinc-500">Bisherige Drittel</p>
+                    {partialThirds.map((t) => (
+                      <div className="flex items-center justify-between rounded bg-zinc-800/50 px-2 py-1 text-xs" key={t.index}>
+                        <span className="text-zinc-400">Drittel {t.index}</span>
+                        <span className={t.winner_participant_id === (ownSide === "home" ? home.id : away.id) ? "text-green-300" : t.winner_participant_id == null ? "text-zinc-300" : "text-rose-300"}>
+                          {t.home.total} – {t.away.total}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+                {secretWeapons.length > 0 ? (
+                  <div className="space-y-1">
+                    <p className="text-xs font-medium text-violet-300">Geheimwaffe einsetzen</p>
+                    {secretWeapons.map((gc) => (
+                      <form action={playSecretWeaponAction} key={gc.id}>
+                        <input name="game_id" type="hidden" value={snapshot.game.id} />
+                        <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                        <input name="fixture_id" type="hidden" value={fixture.id} />
+                        <input name="club_game_changer_id" type="hidden" value={gc.id} />
+                        <Button className="w-full border-violet-700 text-violet-100 hover:bg-violet-950" type="submit" variant="outline">
+                          {gc.card.display_name}
+                        </Button>
+                      </form>
+                    ))}
+                  </div>
+                ) : null}
+                {!ownReady ? (
+                  <form action={markReadyForNextThirdAction}>
+                    <input name="game_id" type="hidden" value={snapshot.game.id} />
+                    <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                    <input name="fixture_id" type="hidden" value={fixture.id} />
+                    <Button className="w-full" type="submit" variant="primary">
+                      {currentThird < 3 ? `Bereit fuer Drittel ${currentThird + 1}` : "Ergebnis bestaetigen"}
+                    </Button>
+                  </form>
+                ) : (
+                  <div className="rounded-md border border-zinc-700 bg-zinc-800/50 p-2 text-center text-xs text-zinc-400">
+                    {opponentReady ? "Beide bereit – Drittel laeuft..." : "Warte auf Gegner..."}
+                  </div>
+                )}
+              </div>
+            ) : null}
+
+            {canResolveOwnCpuMatch || canHostResolveCpuOnlyMatch || canHostResolvePvpMatchLegacy ? (
               <form action={resolveFixtureAction}>
                 <input name="game_id" type="hidden" value={snapshot.game.id} />
                 <input name="room_code" type="hidden" value={snapshot.game.room_code} />
@@ -2653,7 +2758,7 @@ function FixtureCard({
                 </Button>
               </form>
             ) : null}
-            {!canLock && !canResolveOwnCpuMatch && !canHostResolveCpuOnlyMatch && !canHostResolvePvpMatch ? (
+            {!canLock && !canResolveOwnCpuMatch && !canHostResolveCpuOnlyMatch && !canHostResolvePvpMatchLegacy && !(isPvP && matchState !== "completed" && ownSide) ? (
               <Button className="w-full" disabled variant="outline">
                 {fixture.status === "completed" ? "Fertig" : "Warten"}
               </Button>
@@ -3521,6 +3626,11 @@ function getOwnLineupPowerSummary(snapshot: LobbySnapshot): LineupPowerSummary |
       injured: owned.injured,
       lineup_slot: owned.lineup_slot,
       position: owned.player.position,
+      positions: owned.player.eligible_positions?.length
+        ? owned.player.eligible_positions
+        : owned.player.position
+          ? [owned.player.position]
+          : undefined,
     })),
     staffEffects,
   );

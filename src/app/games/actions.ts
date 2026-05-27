@@ -19,15 +19,27 @@ import { calculateLineupPower } from "@/lib/lobby/lineup-power";
 import { getNextLobbyPhase, getSettingsForNextPhase, isInvestmentPhase } from "@/lib/lobby/phases";
 import {
   buildSeasonFixtures,
+  getMatchPoints,
   getMatchPointsMode,
   getRequiredCpuCount,
   getSeasonMode,
   getTargetLeagueSize,
   resolveFixture,
+  resolveOneThird,
   type FixtureSideInput,
   type SeasonParticipant,
   type TacticalZone,
+  type ThirdResult,
 } from "@/lib/lobby/season";
+import {
+  applyImmediateEffect,
+  buildZoneModifiers,
+  consumePendingModifiers,
+  mergeModifiersIntoPartialResult,
+  parseEffects,
+  type PartialResult,
+} from "@/lib/game/game-changer-effects";
+import type { GameChangerCategory } from "@/lib/lobby/types";
 import {
   canBuyScoutedPlayer,
   canDrawScoutingPlayer,
@@ -1225,7 +1237,7 @@ export async function lockFixtureLineupAction(formData: FormData) {
   const [{ data: playerData }, { data: staffData }] = await Promise.all([
     supabase
       .from("club_players")
-      .select("current_stars, current_zone, lineup_slot, injured, player:players(chemistry_left, chemistry_right, position)")
+      .select("current_stars, current_zone, lineup_slot, injured, player:players(chemistry_left, chemistry_right, position, eligible_positions)")
       .eq("club_id", ownClub.id)
       .neq("current_zone", "bench")
       .eq("injured", false)
@@ -1234,7 +1246,7 @@ export async function lockFixtureLineupAction(formData: FormData) {
         current_zone: string;
         lineup_slot: number | null;
         injured: boolean;
-        player: { chemistry_left?: boolean | null; chemistry_right?: boolean | null; position?: string | null } | null;
+        player: { chemistry_left?: boolean | null; chemistry_right?: boolean | null; position?: string | null; eligible_positions?: string[] | null } | null;
       }>>(),
     supabase
       .from("club_staff")
@@ -1252,6 +1264,11 @@ export async function lockFixtureLineupAction(formData: FormData) {
       current_zone: p.current_zone,
       lineup_slot: p.lineup_slot,
       position: p.player?.position,
+      positions: p.player?.eligible_positions?.length
+        ? p.player.eligible_positions
+        : p.player?.position
+          ? [p.player.position]
+          : undefined,
     })),
     staffEffects,
   );
@@ -1559,12 +1576,17 @@ type FixtureActionRow = {
   away_cpu_lineup_id?: string | null;
   away_lineup_locked: boolean;
   away_participant_id: string;
+  away_ready_for_next_third: boolean;
+  current_third: number;
   game_id: string;
   home_cpu_lineup_id?: string | null;
   home_lineup_locked: boolean;
   home_participant_id: string;
+  home_ready_for_next_third: boolean;
   id: string;
+  match_state: "scheduled" | "in_progress" | "completed";
   matchday: number;
+  partial_result?: Record<string, unknown> | null;
   season_number: number;
   status: "completed" | "scheduled";
 };
@@ -1747,7 +1769,7 @@ async function getCpuLineupsByTeamId(supabase: SupabaseServiceClient, participan
 async function getFixtureForAction(supabase: SupabaseServiceClient, fixtureId: string, gameId: string) {
   const { data, error } = await supabase
     .from("fixtures")
-    .select("id, game_id, season_number, matchday, home_participant_id, away_participant_id, home_cpu_lineup_id, away_cpu_lineup_id, home_lineup_locked, away_lineup_locked, status")
+    .select("id, game_id, season_number, matchday, home_participant_id, away_participant_id, home_cpu_lineup_id, away_cpu_lineup_id, home_lineup_locked, away_lineup_locked, status, match_state, current_third, home_ready_for_next_third, away_ready_for_next_third, partial_result")
     .eq("id", fixtureId)
     .eq("game_id", gameId)
     .maybeSingle<FixtureActionRow>();
@@ -1883,7 +1905,7 @@ async function buildFixtureSide(supabase: SupabaseServiceClient, participant: Fi
   const [{ data, error }, { data: staffData }] = await Promise.all([
     supabase
       .from("club_players")
-      .select("id, current_stars, current_zone, lineup_slot, player:players(chemistry_left, chemistry_right, position)")
+      .select("id, current_stars, current_zone, lineup_slot, player:players(chemistry_left, chemistry_right, position, eligible_positions)")
       .eq("club_id", participant.club_id)
       .neq("current_zone", "bench")
       .eq("injured", false)
@@ -1894,7 +1916,7 @@ async function buildFixtureSide(supabase: SupabaseServiceClient, participant: Fi
           current_zone: string;
           id: string;
           lineup_slot: number | null;
-          player: { chemistry_left?: boolean | null; chemistry_right?: boolean | null; position?: string | null };
+          player: { chemistry_left?: boolean | null; chemistry_right?: boolean | null; position?: string | null; eligible_positions?: string[] | null };
         }>
       >(),
     supabase
@@ -1924,6 +1946,11 @@ async function buildFixtureSide(supabase: SupabaseServiceClient, participant: Fi
       current_zone: player.current_zone,
       lineup_slot: player.lineup_slot,
       position: player.player?.position,
+      positions: player.player?.eligible_positions?.length
+        ? player.player.eligible_positions
+        : player.player?.position
+          ? [player.player.position]
+          : undefined,
     })),
     staffEffects,
   );
@@ -1948,22 +1975,402 @@ function getZoneIds(players: Array<{ current_zone: string; id: string; lineup_sl
     .map((player) => player.id);
 }
 
-async function assignRandomGameChanger(supabase: SupabaseServiceClient, clubId: string) {
-  const { data: cards, error } = await supabase
+async function assignRandomGameChanger(
+  supabase: SupabaseServiceClient,
+  clubId: string,
+  category?: GameChangerCategory,
+) {
+  let query = supabase
     .from("game_changer_cards")
-    .select("id")
-    .limit(20)
-    .returns<Array<{ id: string }>>();
+    .select("id, category, effects, display_name, description")
+    .limit(20);
+
+  if (category) {
+    query = query.eq("category", category) as typeof query;
+  }
+
+  const { data: cards, error } = await query.returns<
+    Array<{ id: string; category: GameChangerCategory; effects: unknown[]; display_name: string; description: string }>
+  >();
 
   if (error || !cards?.length) {
-    return;
+    return null;
   }
 
   const card = cards[Math.floor(Math.random() * cards.length)];
-  await supabase.from("club_game_changers").insert({
-    club_id: clubId,
-    game_changer_card_id: card.id,
+
+  const { data: inserted } = await supabase
+    .from("club_game_changers")
+    .insert({ club_id: clubId, game_changer_card_id: card.id })
+    .select("id")
+    .single<{ id: string }>();
+
+  return { card, clubGameChangerId: inserted?.id ?? null };
+}
+
+async function writeMatchNews(
+  supabase: SupabaseServiceClient,
+  params: {
+    gameId: string;
+    fixtureId: string;
+    clubId?: string | null;
+    category: GameChangerCategory | "injury";
+    headline: string;
+    detail?: string;
+  },
+) {
+  await supabase.from("match_news").insert({
+    game_id: params.gameId,
+    fixture_id: params.fixtureId,
+    club_id: params.clubId ?? null,
+    category: params.category,
+    headline: params.headline,
+    detail: params.detail ?? null,
   });
+}
+
+// ---------------------------------------------------------------------------
+// PvP Match Actions
+// ---------------------------------------------------------------------------
+
+export async function startMatchAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const fixtureId = String(formData.get("fixture_id") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !fixtureId || !supabase) {
+    redirect(`/games/${roomCode}?view=matchday`);
+  }
+
+  const { game, ownClub } = await getGameClubContext(supabase, gameId, userId);
+  if (game.phase !== "prematch" && game.phase !== "match") {
+    redirect(`/games/${roomCode}?view=matchday`);
+  }
+
+  const fixture = await getFixtureForAction(supabase, fixtureId, gameId);
+  if (fixture.match_state !== "scheduled") {
+    redirect(`/games/${roomCode}?view=matchday`);
+  }
+
+  const side = await getHumanFixtureSide(supabase, fixture, ownClub.id);
+  if (!side) {
+    throw new Error("Nicht dein Match.");
+  }
+
+  if (!fixture.home_lineup_locked || !fixture.away_lineup_locked) {
+    redirect(`/games/${roomCode}?view=matchday`);
+  }
+
+  await supabase
+    .from("fixtures")
+    .update({ match_state: "in_progress", current_third: 0 })
+    .eq("id", fixtureId);
+
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=matchday`);
+}
+
+export async function markReadyForNextThirdAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const fixtureId = String(formData.get("fixture_id") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !fixtureId || !supabase) {
+    redirect(`/games/${roomCode}?view=matchday`);
+  }
+
+  const { game, ownClub } = await getGameClubContext(supabase, gameId, userId);
+  if (game.phase !== "prematch" && game.phase !== "match") {
+    redirect(`/games/${roomCode}?view=matchday`);
+  }
+
+  const { data: fixture, error: fetchError } = await supabase
+    .from("fixtures")
+    .select("id, game_id, season_number, matchday, home_participant_id, away_participant_id, home_cpu_lineup_id, away_cpu_lineup_id, home_lineup_locked, away_lineup_locked, status, match_state, current_third, home_ready_for_next_third, away_ready_for_next_third, partial_result")
+    .eq("id", fixtureId)
+    .eq("game_id", gameId)
+    .maybeSingle<FixtureActionRow>();
+
+  if (fetchError) throw fetchError;
+  if (!fixture || fixture.status === "completed") {
+    redirect(`/games/${roomCode}?view=matchday`);
+  }
+
+  if (fixture.match_state !== "in_progress") {
+    redirect(`/games/${roomCode}?view=matchday`);
+  }
+
+  const side = await getHumanFixtureSide(supabase, fixture, ownClub.id);
+  if (!side) {
+    throw new Error("Nicht dein Match.");
+  }
+
+  // Mark own side as ready
+  const readyField = side === "home" ? "home_ready_for_next_third" : "away_ready_for_next_third";
+  await supabase.from("fixtures").update({ [readyField]: true }).eq("id", fixtureId);
+
+  // Re-fetch to see if both are now ready
+  const { data: refreshed } = await supabase
+    .from("fixtures")
+    .select("home_ready_for_next_third, away_ready_for_next_third, current_third, partial_result")
+    .eq("id", fixtureId)
+    .single<{ home_ready_for_next_third: boolean; away_ready_for_next_third: boolean; current_third: number; partial_result: unknown }>();
+
+  const bothReady =
+    (side === "home" ? true : refreshed?.home_ready_for_next_third ?? false) &&
+    (side === "away" ? true : refreshed?.away_ready_for_next_third ?? false);
+
+  if (!bothReady) {
+    revalidatePath(`/games/${roomCode}`);
+    redirect(`/games/${roomCode}?view=matchday`);
+  }
+
+  // Both ready → simulate next third
+  const participants = await getFixtureParticipants(supabase, fixture);
+  const [homeSide, awaySide] = await Promise.all([
+    buildFixtureSide(supabase, participants.home, fixture.home_cpu_lineup_id),
+    buildFixtureSide(supabase, participants.away, fixture.away_cpu_lineup_id),
+  ]);
+
+  const currentPartial = (refreshed?.partial_result ?? { thirds: [], pending_modifiers: [] }) as PartialResult;
+  const { modifiers, updated: partialAfterConsume } = consumePendingModifiers({
+    thirds: currentPartial.thirds ?? [],
+    pending_modifiers: currentPartial.pending_modifiers ?? [],
+  });
+
+  const priorThirds = (partialAfterConsume.thirds as unknown as ThirdResult[]) ?? [];
+  const nextIndex = (priorThirds.length + 1) as 1 | 2 | 3;
+
+  const { third, events } = resolveOneThird({
+    index: nextIndex,
+    home: homeSide,
+    away: awaySide,
+    homeDice: [rollDie(), rollDie()],
+    awayDice: [rollDie(), rollDie()],
+    priorThirds,
+    zoneModifiers: modifiers,
+  });
+
+  const newThirds: ThirdResult[] = [...priorThirds, third];
+
+  // Process events: injuries + game changers
+  for (const event of events) {
+    if (event.event_type === "injury" && event.club_id) {
+      await supabase.from("club_players").update({ injured: true }).eq("id", event.player_id).eq("club_id", event.club_id);
+      const { data: injuredPlayer } = await supabase
+        .from("club_players")
+        .select("player:players(display_name)")
+        .eq("id", event.player_id)
+        .maybeSingle<{ player: { display_name: string } | null }>();
+      await writeMatchNews(supabase, {
+        gameId,
+        fixtureId,
+        clubId: event.club_id,
+        category: "injury",
+        headline: `Verletzung in Zone ${event.zone}`,
+        detail: injuredPlayer?.player?.display_name ? `${injuredPlayer.player.display_name} verletzt` : undefined,
+      });
+    }
+
+    if (event.event_type === "game_changer" && event.club_id) {
+      // Determine club participant kind to pick right category
+      const participantKind = event.participant_id === participants.home.id ? participants.home.kind : participants.away.kind;
+      // CPU does not collect Secret Weapons — only humans do
+      const category: GameChangerCategory = participantKind === "cpu" ? "good_news" : (["good_news", "bad_news", "secret_weapon"][Math.floor(Math.random() * 3)] as GameChangerCategory);
+      const result = await assignRandomGameChanger(supabase, event.club_id, category);
+
+      if (result) {
+        const { card, clubGameChangerId } = result;
+        const effects = parseEffects(card.effects);
+
+        if (category !== "secret_weapon") {
+          // Immediate effect
+          for (const effect of effects) {
+            await applyImmediateEffect(supabase, event.club_id, effect);
+          }
+          // Mark as used immediately
+          if (clubGameChangerId) {
+            await supabase
+              .from("club_game_changers")
+              .update({ used_at: new Date().toISOString(), fixture_id: fixtureId, applied_third: nextIndex })
+              .eq("id", clubGameChangerId);
+          }
+        }
+
+        await writeMatchNews(supabase, {
+          gameId,
+          fixtureId,
+          clubId: event.club_id,
+          category,
+          headline: `Game Changer: ${card.display_name}`,
+          detail: card.description || undefined,
+        });
+      }
+    }
+  }
+
+  const newPartial: PartialResult = { ...partialAfterConsume, thirds: newThirds as unknown[] };
+  const newThirdCount = newThirds.length;
+  const isComplete = newThirdCount >= 3;
+
+  if (isComplete) {
+    // Finalize match
+    const scores = newThirds.reduce(
+      (total, t) => {
+        if (!t.winner_participant_id) {
+          total.home += 0.5;
+          total.away += 0.5;
+        } else if (t.winner_participant_id === participants.home.id) {
+          total.home += 1;
+        } else {
+          total.away += 1;
+        }
+        return total;
+      },
+      { away: 0, home: 0 },
+    );
+    const winnerSide = scores.home === scores.away ? "draw" : scores.home > scores.away ? "home" : "away";
+    const matchPoints = getMatchPoints(winnerSide, getMatchPointsMode(game.settings));
+    const allEvents = newThirds.flatMap((t) => getDoubleDiceEventsFromThird(t, homeSide, awaySide));
+
+    const { error: updateError } = await supabase
+      .from("fixtures")
+      .update({
+        match_state: "completed",
+        status: "completed",
+        current_third: 3,
+        home_ready_for_next_third: false,
+        away_ready_for_next_third: false,
+        home_score: matchPoints.home,
+        away_score: matchPoints.away,
+        home_third_points: scores.home,
+        away_third_points: scores.away,
+        result: { thirds: newThirds, events: allEvents, home_match_points: matchPoints.home, away_match_points: matchPoints.away },
+        partial_result: newPartial,
+        completed_at: new Date().toISOString(),
+      })
+      .eq("id", fixtureId);
+
+    if (updateError) throw updateError;
+    await rebuildSeasonStandings(supabase, gameId, fixture.season_number);
+    await touchGameSave(supabase, gameId, userId);
+  } else {
+    await supabase
+      .from("fixtures")
+      .update({
+        current_third: newThirdCount,
+        home_ready_for_next_third: false,
+        away_ready_for_next_third: false,
+        partial_result: newPartial,
+      })
+      .eq("id", fixtureId);
+  }
+
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=matchday`);
+}
+
+export async function playSecretWeaponAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const fixtureId = String(formData.get("fixture_id") || "");
+  const clubGameChangerId = String(formData.get("club_game_changer_id") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !fixtureId || !clubGameChangerId || !supabase) {
+    redirect(`/games/${roomCode}?view=matchday`);
+  }
+
+  const { ownClub } = await getGameClubContext(supabase, gameId, userId);
+
+  // Fetch the club_game_changer + card
+  const { data: cgc, error: cgcError } = await supabase
+    .from("club_game_changers")
+    .select("id, club_id, used_at, game_changer_card:game_changer_cards(id, category, effects, display_name, description)")
+    .eq("id", clubGameChangerId)
+    .eq("club_id", ownClub.id)
+    .maybeSingle<{
+      id: string;
+      club_id: string;
+      used_at: string | null;
+      game_changer_card: { id: string; category: GameChangerCategory; effects: unknown[]; display_name: string; description: string } | null;
+    }>();
+
+  if (cgcError) throw cgcError;
+  if (!cgc || cgc.used_at !== null || cgc.game_changer_card?.category !== "secret_weapon") {
+    redirect(`/games/${roomCode}?view=matchday`);
+  }
+
+  // Fetch fixture to check state
+  const { data: fixture } = await supabase
+    .from("fixtures")
+    .select("id, match_state, current_third, partial_result, home_participant_id, away_participant_id")
+    .eq("id", fixtureId)
+    .eq("game_id", gameId)
+    .maybeSingle<{
+      id: string;
+      match_state: string;
+      current_third: number;
+      partial_result: unknown;
+      home_participant_id: string;
+      away_participant_id: string;
+    }>();
+
+  if (!fixture || (fixture.match_state !== "in_progress" && fixture.match_state !== "scheduled")) {
+    redirect(`/games/${roomCode}?view=matchday`);
+  }
+
+  // Determine which side the club is on
+  const { data: participants } = await supabase
+    .from("season_participants")
+    .select("id, club_id")
+    .in("id", [fixture.home_participant_id, fixture.away_participant_id])
+    .returns<Array<{ id: string; club_id: string | null }>>();
+
+  const homeParticipant = participants?.find((p) => p.id === fixture.home_participant_id);
+  const forSide: "home" | "away" = homeParticipant?.club_id === ownClub.id ? "home" : "away";
+
+  const effects = parseEffects(cgc.game_changer_card?.effects ?? []);
+  const mods = buildZoneModifiers(cgc.id, forSide, effects);
+
+  const currentPartial = (fixture.partial_result ?? { thirds: [], pending_modifiers: [] }) as PartialResult;
+  const updatedPartial = mergeModifiersIntoPartialResult(currentPartial, mods);
+
+  await Promise.all([
+    supabase.from("fixtures").update({ partial_result: updatedPartial }).eq("id", fixtureId),
+    supabase.from("club_game_changers").update({
+      used_at: new Date().toISOString(),
+      fixture_id: fixtureId,
+      applied_third: fixture.current_third,
+    }).eq("id", clubGameChangerId),
+    writeMatchNews(supabase, {
+      gameId,
+      fixtureId,
+      clubId: ownClub.id,
+      category: "secret_weapon",
+      headline: `Geheimwaffe eingesetzt: ${cgc.game_changer_card?.display_name ?? "Unbekannt"}`,
+      detail: cgc.game_changer_card?.description || undefined,
+    }),
+  ]);
+
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=matchday`);
+}
+
+function getDoubleDiceEventsFromThird(third: ThirdResult, home: FixtureSideInput, away: FixtureSideInput) {
+  const events = [];
+  if (home.canReceiveEvents && third.home.dice[0] === third.home.dice[1]) {
+    events.push({ participant_id: home.participantId, club_id: home.clubId, event_type: "game_changer", zone: third.home.zone, dice: third.home.dice, third_index: third.index });
+  }
+  if (away.canReceiveEvents && third.away.dice[0] === third.away.dice[1]) {
+    events.push({ participant_id: away.participantId, club_id: away.clubId, event_type: "game_changer", zone: third.away.zone, dice: third.away.dice, third_index: third.index });
+  }
+  return events;
 }
 
 async function rebuildSeasonStandings(supabase: SupabaseServiceClient, gameId: string, seasonNumber: number) {

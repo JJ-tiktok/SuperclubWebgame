@@ -1,4 +1,5 @@
 import type { LobbySettings } from "@/lib/lobby/types";
+import type { ZoneModifier } from "@/lib/game/game-changer-effects";
 
 export type SeasonMode = "double_round_robin" | "five_match";
 export type MatchPointsMode = "classic_6_2_0" | "football_3_1_0";
@@ -203,6 +204,85 @@ export function resolveFixture(params: {
     thirds,
     winner_participant_id: winnerSide === "draw" ? null : winnerSide === "home" ? params.home.participantId : params.away.participantId,
   };
+}
+
+/**
+ * Resolves a single third of a PvP match.
+ * For index 1 both sides use MID.
+ * For index 2/3 the zone assignment depends on who won index 1.
+ * Optional zone modifiers (from played Secret Weapons) are applied to zone_stars.
+ */
+export function resolveOneThird(params: {
+  index: 1 | 2 | 3;
+  home: FixtureSideInput;
+  away: FixtureSideInput;
+  homeDice: DicePair;
+  awayDice: DicePair;
+  /** Required for index 2 and 3 — pass the result of index 1 */
+  priorThirds?: ThirdResult[];
+  zoneModifiers?: ZoneModifier[];
+}): { third: ThirdResult; events: MatchEventResult[] } {
+  const { index, home, away, homeDice, awayDice, priorThirds = [], zoneModifiers = [] } = params;
+
+  let homeZone: TacticalZone;
+  let awayZone: TacticalZone;
+  let label: ThirdResult["label"];
+
+  if (index === 1) {
+    homeZone = "MID";
+    awayZone = "MID";
+    label = "midfield";
+  } else {
+    // Attacker for second third = winner of midfield (index 1), or home by default
+    const midfieldWinner = priorThirds[0]?.winner_participant_id ?? home.participantId;
+    const homeAttacksSecond = midfieldWinner === home.participantId;
+    // index 2 → second attack phase, index 3 → third attack phase (reversed)
+    const homeAttacksThisThird = index === 2 ? homeAttacksSecond : !homeAttacksSecond;
+
+    homeZone = homeAttacksThisThird ? "ATT" : "DEF";
+    awayZone = homeAttacksThisThird ? "DEF" : "ATT";
+    label = homeAttacksThisThird ? "home_attack" : "away_attack";
+  }
+
+  // Apply zone modifiers from Secret Weapons
+  const getModifierDelta = (side: "home" | "away", zone: TacticalZone) =>
+    zoneModifiers
+      .filter((m) => m.for === side && m.zone === zone)
+      .reduce((sum, m) => sum + m.delta, 0);
+
+  const homePower = Math.max(0, home.powers[homeZone] + getModifierDelta("home", homeZone));
+  const awayPower = Math.max(0, away.powers[awayZone] + getModifierDelta("away", awayZone));
+
+  const homeResult: ThirdSideResult = {
+    dice: homeDice,
+    participant_id: home.participantId,
+    total: homePower + homeDice[0] + homeDice[1],
+    zone: homeZone,
+    zone_stars: homePower,
+  };
+  const awayResult: ThirdSideResult = {
+    dice: awayDice,
+    participant_id: away.participantId,
+    total: awayPower + awayDice[0] + awayDice[1],
+    zone: awayZone,
+    zone_stars: awayPower,
+  };
+
+  const third: ThirdResult = {
+    away: awayResult,
+    home: homeResult,
+    index,
+    label,
+    winner_participant_id:
+      homeResult.total === awayResult.total
+        ? null
+        : homeResult.total > awayResult.total
+          ? home.participantId
+          : away.participantId,
+  };
+
+  const events = getDoubleDiceEvents(third, home, away);
+  return { third, events };
 }
 
 function buildSingleRoundRobin(participants: SeasonParticipant[]): FixturePair[] {

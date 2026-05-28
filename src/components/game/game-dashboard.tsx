@@ -2557,11 +2557,9 @@ function FixtureCard({
   const ownSide = ownClub?.id === home.club_id ? "home" : ownClub?.id === away.club_id ? "away" : null;
   const ownLocked = ownSide === "home" ? fixture.home_lineup_locked : ownSide === "away" ? fixture.away_lineup_locked : false;
   const hasCpu = home.kind === "cpu" || away.kind === "cpu";
-  const bothCpu = home.kind === "cpu" && away.kind === "cpu";
   const bothHumanLineupsLocked = home.kind === "human" && away.kind === "human" && fixture.home_lineup_locked && fixture.away_lineup_locked;
   const canLock = Boolean(ownSide && fixture.status !== "completed" && !ownLocked);
   const canResolveOwnCpuMatch = Boolean(ownSide && hasCpu && ownLocked && fixture.status !== "completed");
-  const canHostResolveCpuOnlyMatch = Boolean(isHost && bothCpu && fixture.status !== "completed");
   const canHostResolvePvpMatch = Boolean(isHost && !hasCpu && bothHumanLineupsLocked && fixture.status !== "completed");
   const ownPowerSummary = getOwnLineupPowerSummary(snapshot);
   const result = parseFixtureResult(fixture.result);
@@ -2876,17 +2874,17 @@ function FixtureCard({
               </div>
             ) : null}
 
-            {canResolveOwnCpuMatch || canHostResolveCpuOnlyMatch || canHostResolvePvpMatchLegacy ? (
+            {canResolveOwnCpuMatch || canHostResolvePvpMatchLegacy ? (
               <form action={resolveFixtureAction}>
                 <input name="game_id" type="hidden" value={snapshot.game.id} />
                 <input name="room_code" type="hidden" value={snapshot.game.room_code} />
                 <input name="fixture_id" type="hidden" value={fixture.id} />
                 <Button className="w-full" type="submit">
-                  {canHostResolveCpuOnlyMatch ? "CPU-Spiel simulieren" : "Match simulieren"}
+                  Match simulieren
                 </Button>
               </form>
             ) : null}
-            {!canLock && !canResolveOwnCpuMatch && !canHostResolveCpuOnlyMatch && !canHostResolvePvpMatchLegacy && !(isPvP && matchState !== "completed" && ownSide) ? (
+            {!canLock && !canResolveOwnCpuMatch && !canHostResolvePvpMatchLegacy && !(isPvP && matchState !== "completed" && ownSide) ? (
               <Button className="w-full" disabled variant="outline">
                 {fixture.status === "completed" ? "Fertig" : "Warten"}
               </Button>

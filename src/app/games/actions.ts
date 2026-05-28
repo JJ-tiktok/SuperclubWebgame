@@ -1357,6 +1357,8 @@ export async function resolveFixtureAction(formData: FormData) {
     userId,
   });
 
+  await autoSimulateCpuOnlyFixtures(supabase, gameId, game, userId);
+
   revalidatePath(`/games/${roomCode}`);
   redirect(`/games/${roomCode}?view=matchday`);
 }
@@ -1557,6 +1559,11 @@ export async function advancePhaseAction(formData: FormData) {
 
   if (resetError) {
     throw resetError;
+  }
+
+  // Auto-simulate CPU-vs-CPU fixtures when entering the season phase
+  if (nextPhase === "season" || nextPhase === "prematch") {
+    await autoSimulateCpuOnlyFixtures(supabase, gameId, { ...game, phase: nextPhase }, userId);
   }
 
   revalidatePath(`/games/${roomCode}`);
@@ -1977,6 +1984,31 @@ async function resolveFixtureServer(params: {
   await touchGameSave(supabase, fixture.game_id, userId);
 }
 
+/**
+ * Finds all pending CPU-vs-CPU fixtures in the game and resolves them automatically.
+ * Called after any action that might complete a matchday, so no manual button press is needed.
+ */
+async function autoSimulateCpuOnlyFixtures(
+  supabase: SupabaseServiceClient,
+  gameId: string,
+  game: LobbyGame,
+  userId: string,
+) {
+  const { data: pendingFixtures } = await supabase
+    .from("fixtures")
+    .select("id, game_id, season_number, matchday, home_participant_id, away_participant_id, home_cpu_lineup_id, away_cpu_lineup_id, home_lineup_locked, away_lineup_locked, status, match_state, current_third, home_ready_for_next_third, away_ready_for_next_third, partial_result")
+    .eq("game_id", gameId)
+    .neq("status", "completed")
+    .returns<FixtureActionRow[]>();
+
+  for (const fixture of pendingFixtures ?? []) {
+    const participants = await getFixtureParticipants(supabase, fixture);
+    if (participants.home.kind === "cpu" && participants.away.kind === "cpu") {
+      await resolveFixtureServer({ fixture, game, participants, supabase, userId });
+    }
+  }
+}
+
 async function buildFixtureSide(supabase: SupabaseServiceClient, participant: FixtureParticipantRow, cpuLineupId?: string | null): Promise<FixtureSideInput> {
   if (participant.kind === "cpu") {
     const { data, error } = await supabase
@@ -2369,6 +2401,7 @@ export async function markReadyForNextThirdAction(formData: FormData) {
     if (updateError) throw updateError;
     await rebuildSeasonStandings(supabase, gameId, fixture.season_number);
     await touchGameSave(supabase, gameId, userId);
+    await autoSimulateCpuOnlyFixtures(supabase, gameId, game, userId);
   } else {
     await supabase
       .from("fixtures")

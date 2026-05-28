@@ -10,9 +10,11 @@ create type public.game_phase as enum (
   'offseason_training',
   'offseason_scouting',
   'offseason_investments',
+  'off_season',
   'deadline_day',
   'prematch',
   'match',
+  'season',
   'season_end',
   'completed'
 );

@@ -29,11 +29,13 @@ export const MAX_SQUAD_SIZE = 23;
 export const PHASE_LABELS: Record<string, string> = {
   lobby: "Lobby",
   draft: "Draft",
+  off_season: "Off-Season",
   offseason_finance: "Offseason: Finanzen",
   offseason_training: "Offseason: Training",
   offseason_scouting: "Offseason: Scouting",
   offseason_investments: "Offseason: Investments",
   deadline_day: "Deadline Day",
+  season: "Saison",
   prematch: "Taktik",
   match: "Matchday",
   season_end: "Saisonende",

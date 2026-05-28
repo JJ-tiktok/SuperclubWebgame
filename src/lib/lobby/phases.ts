@@ -1,6 +1,10 @@
 import type { LobbyPhase, LobbySettings } from "@/lib/lobby/types";
 
+// Phases in which a manager is doing off-season management (training/scouting/investments + deadline day).
+// off_season is the new consolidated phase. Legacy phases remain in the union so existing DB rows
+// keep working until they get migrated by phase_consolidation_upgrade.sql.
 export const OFFSEASON_MANAGEMENT_PHASES: LobbyPhase[] = [
+  "off_season",
   "offseason_finance",
   "offseason_training",
   "offseason_scouting",
@@ -15,23 +19,26 @@ export function getSeasonNumber(settings: Pick<LobbySettings, "seasonNumber"> | 
 export function getNextLobbyPhase(phase: LobbyPhase): LobbyPhase {
   const nextByPhase: Partial<Record<LobbyPhase, LobbyPhase>> = {
     completed: "completed",
-    deadline_day: "prematch",
-    draft: "offseason_finance",
     lobby: "draft",
-    match: "season_end",
-    offseason_finance: "offseason_training",
+    draft: "off_season",
+    off_season: "deadline_day",
+    deadline_day: "season",
+    season: "season_end",
+    season_end: "off_season",
+    // Legacy fallbacks (until DB migration runs)
+    offseason_finance: "off_season",
+    offseason_training: "off_season",
+    offseason_scouting: "off_season",
     offseason_investments: "deadline_day",
-    offseason_scouting: "offseason_investments",
-    offseason_training: "offseason_scouting",
-    prematch: "match",
-    season_end: "offseason_finance",
+    prematch: "season",
+    match: "season_end",
   };
 
   return nextByPhase[phase] ?? "completed";
 }
 
 export function shouldAdvanceSeason(previousPhase: LobbyPhase, nextPhase: LobbyPhase) {
-  return previousPhase === "season_end" && nextPhase === "offseason_finance";
+  return previousPhase === "season_end" && nextPhase === "off_season";
 }
 
 export function getSettingsForNextPhase(settings: LobbySettings, previousPhase: LobbyPhase, nextPhase: LobbyPhase): LobbySettings {
@@ -50,5 +57,37 @@ export function isOffseasonManagementPhase(phase: string) {
 }
 
 export function isInvestmentPhase(phase: string) {
-  return phase === "offseason_investments";
+  return phase === "off_season" || phase === "offseason_investments";
+}
+
+export function isTrainingPhase(phase: string) {
+  return phase === "off_season" || phase === "offseason_training";
+}
+
+export function isScoutingPhase(phase: string) {
+  return phase === "off_season" || phase === "offseason_scouting";
+}
+
+export function isSeasonPhase(phase: string) {
+  return phase === "season" || phase === "prematch" || phase === "match";
+}
+
+export function getPhaseLabel(phase: LobbyPhase): string {
+  const labels: Record<LobbyPhase, string> = {
+    lobby: "Lobby",
+    draft: "Draft",
+    off_season: "Off-Season",
+    deadline_day: "Deadline Day",
+    season: "Saison",
+    season_end: "Saisonabschluss",
+    completed: "Abgeschlossen",
+    // Legacy fallbacks
+    offseason_finance: "Off-Season",
+    offseason_training: "Off-Season",
+    offseason_scouting: "Off-Season",
+    offseason_investments: "Off-Season",
+    prematch: "Saison",
+    match: "Saison",
+  };
+  return labels[phase] ?? phase;
 }

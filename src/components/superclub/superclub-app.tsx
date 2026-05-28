@@ -221,13 +221,9 @@ function PhaseRail({ activePhase }: { activePhase: string }) {
   const phaseKeys = [
     "lobby",
     "draft",
-    "offseason_finance",
-    "offseason_training",
-    "offseason_scouting",
-    "offseason_investments",
+    "off_season",
     "deadline_day",
-    "prematch",
-    "match",
+    "season",
     "season_end",
   ];
 

@@ -75,7 +75,7 @@ import { DEADLINE_BID_STEP, DEADLINE_TURN_SECONDS, getDeadlineActionLabel, getMi
 import { mapDbPlayerToPlayerCardData } from "@/lib/lobby/draft";
 import { canRecruitStaff, canUpgradeFacility, getStaffRecruitReasonLabel, getUpgradeCost, getUpgradeReasonLabel, type UpgradeAction } from "@/lib/lobby/investments";
 import { calculateLineupPower } from "@/lib/lobby/lineup-power";
-import { isInvestmentPhase } from "@/lib/lobby/phases";
+import { getPhaseLabel, isInvestmentPhase, isSeasonPhase } from "@/lib/lobby/phases";
 import { getManagerScoreBand, getPlacementReward, getScoutingCapacity, getStadiumIncome, getTrainingCapacity, MAX_SQUAD_SIZE } from "@/lib/game/rules";
 import { canStartLobby } from "@/lib/lobby/rules";
 import {
@@ -132,8 +132,8 @@ const mainMenu: Array<{ id: GameView; label: string; icon: typeof Home }> = [
 
 const phaseMenu: Array<{ id: GameView; label: string; icon: typeof Home; phases: string[] }> = [
   { id: "draft", label: "Draft", icon: ClipboardList, phases: ["draft"] },
-  { id: "training", label: "Training", icon: Dumbbell, phases: ["offseason_training"] },
-  { id: "scouting", label: "Scouting", icon: MapIcon, phases: ["offseason_scouting"] },
+  { id: "training", label: "Training", icon: Dumbbell, phases: ["off_season", "offseason_training"] },
+  { id: "scouting", label: "Scouting", icon: MapIcon, phases: ["off_season", "offseason_scouting"] },
   { id: "deadline", label: "Deadline Day", icon: Gavel, phases: ["deadline_day"] },
 ];
 
@@ -197,6 +197,9 @@ export function GameDashboard({ activeView, currentUserId, snapshot }: GameDashb
             snapshot={snapshot}
             startState={startState}
           />
+          {snapshot.game.phase === "off_season" && ownClub ? (
+            <OffSeasonChecklist ownClub={ownClub} snapshot={snapshot} />
+          ) : null}
           {renderView(view, {
             currentTurnClub,
             isHost,
@@ -277,7 +280,7 @@ function AppSidebar({
             <>
               <div className="flex items-center justify-between gap-3 rounded-md bg-zinc-900/70 px-3 py-2 text-sm">
                 <span className="text-zinc-400">Phase</span>
-                <Badge>{snapshot.game.phase}</Badge>
+                <Badge>{getPhaseLabel(snapshot.game.phase)}</Badge>
               </div>
               {isHost ? <p className="mt-3 px-2 text-xs text-zinc-500">Host-Tools sind oben rechts verfuegbar.</p> : null}
             </>
@@ -319,6 +322,84 @@ function MenuLink({
       </span>
       {badge && !collapsed ? <span className="text-[11px] opacity-80">{badge}</span> : null}
     </Link>
+  );
+}
+
+function OffSeasonChecklist({ ownClub, snapshot }: { ownClub: LobbyClub; snapshot: LobbySnapshot }) {
+  const seasonNumber = Number(snapshot.game.settings?.seasonNumber ?? 1);
+  const overview = snapshot.club_overview;
+
+  // Training erledigt: alle Versuche aufgebraucht
+  const trainingStatus = overview?.training.status;
+  const trainingDone = trainingStatus
+    ? trainingStatus.attempts_used >= trainingStatus.capacity_players
+    : false;
+
+  // Scouting erledigt: alle gezogenen Karten resolved und nichts mehr ziehbar
+  const ownDraws = snapshot.scouting?.draws.filter((d) => d.club_id === ownClub.id) ?? [];
+  const hasUnresolvedDraw = ownDraws.some((d) => d.status === "drawn");
+  const scoutingStatus = snapshot.scouting?.status_by_club_id?.[ownClub.id];
+  const scoutingCapacity = scoutingStatus?.capacity ?? 0;
+  const scoutingDone = scoutingStatus?.finished ?? (!hasUnresolvedDraw && scoutingCapacity > 0 && ownDraws.length >= scoutingCapacity);
+
+  // Investment erledigt: Eintrag in investments fuer aktuelle Saison existiert
+  const investmentDone = (overview?.investments ?? []).some((inv) => inv.season_number === seasonNumber);
+
+  const items: Array<{ id: string; label: string; done: boolean; view: GameView; help: string }> = [
+    {
+      id: "training",
+      label: "Training",
+      done: trainingDone,
+      view: "training",
+      help: trainingStatus
+        ? `${trainingStatus.attempts_used}/${trainingStatus.capacity_players} Versuche genutzt`
+        : "Trainingsstatus nicht verfuegbar",
+    },
+    {
+      id: "scouting",
+      label: "Scouting",
+      done: scoutingDone,
+      view: "scouting",
+      help: scoutingCapacity > 0
+        ? `${ownDraws.length}/${scoutingCapacity} Karten gezogen${hasUnresolvedDraw ? " (offene Auswahl)" : ""}`
+        : "Kein Scouting verfuegbar",
+    },
+    {
+      id: "investment",
+      label: "Investition",
+      done: investmentDone,
+      view: "grounds",
+      help: investmentDone ? "Investiert" : "Noch nicht investiert",
+    },
+  ];
+
+  return (
+    <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+      <div className="p-4">
+        <p className="text-xs font-medium uppercase text-zinc-500">Off-Season Checkliste</p>
+        <p className="mt-1 text-sm text-zinc-400">Bearbeite die drei Bereiche in beliebiger Reihenfolge. Wenn du fertig bist, druecke unten im Header auf &quot;Fertig&quot;.</p>
+        <div className="mt-3 grid gap-2 md:grid-cols-3">
+          {items.map((item) => (
+            <Link
+              className={cn(
+                "flex items-center justify-between rounded-md border p-3 text-sm transition",
+                item.done
+                  ? "border-emerald-700/60 bg-emerald-950/30 hover:bg-emerald-950/50"
+                  : "border-amber-700/60 bg-amber-950/20 hover:bg-amber-950/40",
+              )}
+              href={`/games/${snapshot.game.room_code}?view=${item.view}`}
+              key={item.id}
+            >
+              <div>
+                <p className="font-semibold text-zinc-100">{item.label}</p>
+                <p className="mt-0.5 text-xs text-zinc-400">{item.help}</p>
+              </div>
+              <Badge tone={item.done ? "green" : "amber"}>{item.done ? "erledigt" : "offen"}</Badge>
+            </Link>
+          ))}
+        </div>
+      </div>
+    </Panel>
   );
 }
 
@@ -767,7 +848,7 @@ function TrainingView({
   }
 
   const status = overview.training.status;
-  const trainingEnabled = snapshot.game.phase === "offseason_training" || (isHost && testMode);
+  const trainingEnabled = snapshot.game.phase === "off_season" || snapshot.game.phase === "offseason_training" || (isHost && testMode);
   const trainedClubPlayerIds = new Set(overview.training.events.map((event) => event.club_player_id));
   const latestEvents = [...overview.training.events].slice(0, 8);
   const diceCounts = [1, 2, 3, 4, 5, 6].map((roll) => ({
@@ -804,7 +885,7 @@ function TrainingView({
               {trainingEnabled ? "Training ist aktiv" : "Training ist in dieser Phase gesperrt"}
             </p>
             <p className="mt-1 text-xs text-zinc-500">
-              Regulär aktiv in `offseason_training`. Host-Testmodus erlaubt Smoke-Tests im aktuellen Spielstand.
+              Regulär aktiv in der Off-Season. Host-Testmodus erlaubt Smoke-Tests im aktuellen Spielstand.
             </p>
           </div>
           {isHost ? (
@@ -964,7 +1045,7 @@ function ScoutingView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub:
           <MapIcon size={18} className="text-[var(--club-color)]" aria-hidden />
         </PanelHeader>
         <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-4 text-sm text-zinc-400">
-          Scouting ist aktiv, sobald die Phase `offseason_scouting` erreicht ist.
+          Scouting ist aktiv in der Off-Season.
         </div>
       </Panel>
     );
@@ -2481,6 +2562,9 @@ function FixtureCard({
   const secretWeapons = (snapshot.club_overview?.game_changers ?? []).filter(
     (gc) => gc.card.category === "secret_weapon" && !gc.used_at,
   );
+  const hasPlayedSecretWeaponForFixture = (snapshot.club_overview?.game_changers ?? []).some(
+    (gc) => gc.card.category === "secret_weapon" && gc.fixture_id === fixture.id,
+  );
   const partialThirds = ((fixture.partial_result as { thirds?: unknown[] } | null)?.thirds ?? []) as Array<{ index: number; home: { total: number; zone: string }; away: { total: number; zone: string }; winner_participant_id?: string | null }>;
 
   // For PvP, suppress the old "Host resolves PvP" button — the new state machine handles it
@@ -2674,17 +2758,21 @@ function FixtureCard({
                 {secretWeapons.length > 0 ? (
                   <div className="space-y-1">
                     <p className="text-xs font-medium text-violet-300">Geheimwaffen</p>
-                    {secretWeapons.map((gc) => (
-                      <form action={playSecretWeaponAction} key={gc.id}>
-                        <input name="game_id" type="hidden" value={snapshot.game.id} />
-                        <input name="room_code" type="hidden" value={snapshot.game.room_code} />
-                        <input name="fixture_id" type="hidden" value={fixture.id} />
-                        <input name="club_game_changer_id" type="hidden" value={gc.id} />
-                        <Button className="w-full border-violet-700 text-violet-100 hover:bg-violet-950" type="submit" variant="outline">
-                          {gc.card.display_name}
-                        </Button>
-                      </form>
-                    ))}
+                    {hasPlayedSecretWeaponForFixture ? (
+                      <p className="rounded bg-violet-950/50 px-2 py-1.5 text-xs text-violet-400">Fuer dieses Match bereits eine Geheimwaffe eingesetzt.</p>
+                    ) : (
+                      secretWeapons.map((gc) => (
+                        <form action={playSecretWeaponAction} key={gc.id}>
+                          <input name="game_id" type="hidden" value={snapshot.game.id} />
+                          <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                          <input name="fixture_id" type="hidden" value={fixture.id} />
+                          <input name="club_game_changer_id" type="hidden" value={gc.id} />
+                          <Button className="w-full border-violet-700 text-violet-100 hover:bg-violet-950" type="submit" variant="outline">
+                            {gc.card.display_name}
+                          </Button>
+                        </form>
+                      ))
+                    )}
                   </div>
                 ) : null}
                 <form action={startMatchAction}>
@@ -2718,17 +2806,21 @@ function FixtureCard({
                 {secretWeapons.length > 0 ? (
                   <div className="space-y-1">
                     <p className="text-xs font-medium text-violet-300">Geheimwaffe einsetzen</p>
-                    {secretWeapons.map((gc) => (
-                      <form action={playSecretWeaponAction} key={gc.id}>
-                        <input name="game_id" type="hidden" value={snapshot.game.id} />
-                        <input name="room_code" type="hidden" value={snapshot.game.room_code} />
-                        <input name="fixture_id" type="hidden" value={fixture.id} />
-                        <input name="club_game_changer_id" type="hidden" value={gc.id} />
-                        <Button className="w-full border-violet-700 text-violet-100 hover:bg-violet-950" type="submit" variant="outline">
-                          {gc.card.display_name}
-                        </Button>
-                      </form>
-                    ))}
+                    {hasPlayedSecretWeaponForFixture ? (
+                      <p className="rounded bg-violet-950/50 px-2 py-1.5 text-xs text-violet-400">Fuer dieses Match bereits eine Geheimwaffe eingesetzt.</p>
+                    ) : (
+                      secretWeapons.map((gc) => (
+                        <form action={playSecretWeaponAction} key={gc.id}>
+                          <input name="game_id" type="hidden" value={snapshot.game.id} />
+                          <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                          <input name="fixture_id" type="hidden" value={fixture.id} />
+                          <input name="club_game_changer_id" type="hidden" value={gc.id} />
+                          <Button className="w-full border-violet-700 text-violet-100 hover:bg-violet-950" type="submit" variant="outline">
+                            {gc.card.display_name}
+                          </Button>
+                        </form>
+                      ))
+                    )}
                   </div>
                 ) : null}
                 {!ownReady ? (

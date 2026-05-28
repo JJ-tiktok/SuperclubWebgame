@@ -164,6 +164,32 @@ export function consumePendingModifiers(partial: PartialResult): {
   };
 }
 
+/**
+ * Splits pending modifiers into those that match the current third's zones
+ * (active — passed to resolveOneThird) and those that don't match yet
+ * (kept in partial_result for a later third).
+ *
+ * This ensures a "ATT-Boost" played before the MID-third is NOT consumed there
+ * but fires automatically when the ATT-third comes around.
+ */
+export function applyAndKeepUnmatchedModifiers(
+  partial: PartialResult,
+  homeZone: "ATT" | "DEF" | "MID",
+  awayZone: "ATT" | "DEF" | "MID",
+): { active: ZoneModifier[]; updated: PartialResult } {
+  const pending = partial.pending_modifiers ?? [];
+  const active = pending.filter(
+    (m) => (m.for === "home" && m.zone === homeZone) || (m.for === "away" && m.zone === awayZone),
+  );
+  const remaining = pending.filter(
+    (m) => !((m.for === "home" && m.zone === homeZone) || (m.for === "away" && m.zone === awayZone)),
+  );
+  return {
+    active,
+    updated: { ...partial, pending_modifiers: remaining },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Utility: parse effects stored as JSON in the DB
 // ---------------------------------------------------------------------------

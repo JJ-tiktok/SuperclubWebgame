@@ -127,7 +127,7 @@ type ScoutingDrawRow = {
 async function getScoutingSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promise<ScoutingSnapshot | null> {
   const supabase = createSupabaseServiceClient();
 
-  if (!supabase || game.phase !== "offseason_scouting") {
+  if (!supabase || (game.phase !== "off_season" && game.phase !== "offseason_scouting")) {
     return null;
   }
 
@@ -217,7 +217,7 @@ async function getScoutingSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promise
 async function getSeasonSnapshot(game: LobbyGame): Promise<SeasonSnapshot | null> {
   const supabase = createSupabaseServiceClient();
 
-  if (!supabase || !["prematch", "match", "season_end"].includes(game.phase)) {
+  if (!supabase || !["season", "prematch", "match", "season_end"].includes(game.phase)) {
     return null;
   }
 

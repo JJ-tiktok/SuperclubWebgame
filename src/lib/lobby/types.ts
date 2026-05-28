@@ -5,9 +5,11 @@ export type LobbyPhase =
   | "offseason_training"
   | "offseason_scouting"
   | "offseason_investments"
+  | "off_season"
   | "deadline_day"
   | "prematch"
   | "match"
+  | "season"
   | "season_end"
   | "completed";
 

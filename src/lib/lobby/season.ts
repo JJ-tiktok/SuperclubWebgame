@@ -212,6 +212,25 @@ export function resolveFixture(params: {
  * For index 2/3 the zone assignment depends on who won index 1.
  * Optional zone modifiers (from played Secret Weapons) are applied to zone_stars.
  */
+/**
+ * Computes which tactical zone each side uses for a given third index.
+ * Exported so callers can pre-filter zone modifiers before calling resolveOneThird.
+ */
+export function getThirdZones(
+  index: 1 | 2 | 3,
+  firstThirdWinnerParticipantId: string | null | undefined,
+  homeParticipantId: string,
+): { homeZone: TacticalZone; awayZone: TacticalZone } {
+  if (index === 1) return { homeZone: "MID", awayZone: "MID" };
+  const midfieldWinner = firstThirdWinnerParticipantId ?? homeParticipantId;
+  const homeAttacksSecond = midfieldWinner === homeParticipantId;
+  const homeAttacksThisThird = index === 2 ? homeAttacksSecond : !homeAttacksSecond;
+  return {
+    homeZone: homeAttacksThisThird ? "ATT" : "DEF",
+    awayZone: homeAttacksThisThird ? "DEF" : "ATT",
+  };
+}
+
 export function resolveOneThird(params: {
   index: 1 | 2 | 3;
   home: FixtureSideInput;

@@ -24,6 +24,7 @@ import {
   getRequiredCpuCount,
   getSeasonMode,
   getTargetLeagueSize,
+  getThirdZones,
   resolveFixture,
   resolveOneThird,
   type FixtureSideInput,
@@ -32,9 +33,9 @@ import {
   type ThirdResult,
 } from "@/lib/lobby/season";
 import {
+  applyAndKeepUnmatchedModifiers,
   applyImmediateEffect,
   buildZoneModifiers,
-  consumePendingModifiers,
   mergeModifiersIntoPartialResult,
   parseEffects,
   type PartialResult,
@@ -441,7 +442,7 @@ export async function trainPlayerAction(formData: FormData) {
   }
 
   const isHostTestMode = allowTestMode && game.host_clerk_user_id === userId;
-  if (game.phase !== "offseason_training" && !isHostTestMode) {
+  if (game.phase !== "off_season" && game.phase !== "offseason_training" && !isHostTestMode) {
     redirect(`/games/${roomCode}?view=training`);
   }
 
@@ -565,7 +566,7 @@ export async function drawScoutingPlayerAction(formData: FormData) {
   }
 
   const { game, ownClub, clubs } = await getGameClubContext(supabase, gameId, userId);
-  if (game.phase !== "offseason_scouting" || ownClub.id !== clubId) {
+  if ((game.phase !== "off_season" && game.phase !== "offseason_scouting") || ownClub.id !== clubId) {
     redirect(`/games/${roomCode}?view=scouting`);
   }
 
@@ -635,7 +636,7 @@ export async function buyScoutedPlayerAction(formData: FormData) {
   }
 
   const { game, ownClub } = await getGameClubContext(supabase, gameId, userId);
-  if (game.phase !== "offseason_scouting") {
+  if (game.phase !== "off_season" && game.phase !== "offseason_scouting") {
     redirect(`/games/${roomCode}?view=scouting`);
   }
 
@@ -750,7 +751,7 @@ export async function passScoutedPlayerAction(formData: FormData) {
   }
 
   const { game, ownClub } = await getGameClubContext(supabase, gameId, userId);
-  if (game.phase !== "offseason_scouting") {
+  if (game.phase !== "off_season" && game.phase !== "offseason_scouting") {
     redirect(`/games/${roomCode}?view=scouting`);
   }
 
@@ -795,7 +796,7 @@ export async function passAllScoutedPlayersAction(formData: FormData) {
   }
 
   const { game, ownClub } = await getGameClubContext(supabase, gameId, userId);
-  if (game.phase !== "offseason_scouting") {
+  if (game.phase !== "off_season" && game.phase !== "offseason_scouting") {
     redirect(`/games/${roomCode}?view=scouting`);
   }
 
@@ -1222,7 +1223,7 @@ export async function lockFixtureLineupAction(formData: FormData) {
   }
 
   const { game, ownClub } = await getGameClubContext(supabase, gameId, userId);
-  if (game.phase !== "prematch" && game.phase !== "match") {
+  if (game.phase !== "season" && game.phase !== "prematch" && game.phase !== "match") {
     redirect(`/games/${roomCode}?view=matchday`);
   }
 
@@ -1304,7 +1305,7 @@ export async function resolveFixtureAction(formData: FormData) {
   }
 
   const { game, ownClub } = await getGameClubContext(supabase, gameId, userId);
-  if (game.phase !== "prematch" && game.phase !== "match") {
+  if (game.phase !== "season" && game.phase !== "prematch" && game.phase !== "match") {
     redirect(`/games/${roomCode}?view=matchday`);
   }
 
@@ -1357,7 +1358,7 @@ export async function initializeSeasonScheduleAction(formData: FormData) {
     throw gameError;
   }
 
-  if (!game || game.host_clerk_user_id !== userId || (game.phase !== "prematch" && game.phase !== "match")) {
+  if (!game || game.host_clerk_user_id !== userId || (game.phase !== "season" && game.phase !== "prematch" && game.phase !== "match")) {
     redirect(`/games/${roomCode}?view=matchday`);
   }
 
@@ -1443,7 +1444,7 @@ export async function advancePhaseAction(formData: FormData) {
     }
   }
 
-  if (game.phase === "match") {
+  if (game.phase === "season" || game.phase === "match") {
     const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
     const seasonComplete = await areSeasonFixturesComplete(supabase, gameId, seasonNumber);
 
@@ -1458,15 +1459,15 @@ export async function advancePhaseAction(formData: FormData) {
   const nextTurnClubId = null;
   const nextSettings = getSettingsForNextPhase(game.settings, game.phase, nextPhase);
 
-  if (nextPhase === "prematch") {
+  if (nextPhase === "season" || nextPhase === "prematch") {
     await ensureSeasonSchedule(supabase, gameId, nextSettings);
   }
 
-  if (game.phase === "match" && nextPhase === "season_end") {
+  if ((game.phase === "season" || game.phase === "match") && nextPhase === "season_end") {
     await finalizeSeasonEnd(supabase, gameId, Number(game.settings?.seasonNumber ?? 1));
   }
 
-  if (game.phase === "season_end" && nextPhase === "offseason_finance") {
+  if (game.phase === "season_end" && (nextPhase === "off_season" || nextPhase === "offseason_finance")) {
     await bookSeasonFinance(supabase, gameId, Number(game.settings?.seasonNumber ?? 1));
   }
 
@@ -1839,16 +1840,57 @@ async function resolveFixtureServer(params: {
   });
 
   for (const event of resolution.events) {
-    if (event.event_type === "injury") {
+    if (event.event_type === "injury" && event.club_id) {
       await supabase
         .from("club_players")
         .update({ injured: true })
         .eq("id", event.player_id)
         .eq("club_id", event.club_id);
+      const { data: injuredPlayer } = await supabase
+        .from("club_players")
+        .select("player:players(display_name)")
+        .eq("id", event.player_id)
+        .maybeSingle<{ player: { display_name: string } | null }>();
+      await writeMatchNews(supabase, {
+        gameId: fixture.game_id,
+        fixtureId: fixture.id,
+        clubId: event.club_id,
+        category: "injury",
+        headline: `Verletzung in Zone ${event.zone}`,
+        detail: injuredPlayer?.player?.display_name ? `${injuredPlayer.player.display_name} verletzt` : undefined,
+      });
     }
 
     if (event.event_type === "game_changer" && event.club_id) {
-      await assignRandomGameChanger(supabase, event.club_id);
+      const participantKind = event.participant_id === participants.home.id ? participants.home.kind : participants.away.kind;
+      const category: GameChangerCategory = participantKind === "cpu" ? "good_news" : (["good_news", "bad_news", "secret_weapon"][Math.floor(Math.random() * 3)] as GameChangerCategory);
+      const result = await assignRandomGameChanger(supabase, event.club_id, category);
+
+      if (result) {
+        const { card, clubGameChangerId } = result;
+        const effects = parseEffects(card.effects);
+
+        if (category !== "secret_weapon") {
+          for (const effect of effects) {
+            await applyImmediateEffect(supabase, event.club_id, effect);
+          }
+          if (clubGameChangerId) {
+            await supabase
+              .from("club_game_changers")
+              .update({ used_at: new Date().toISOString(), fixture_id: fixture.id })
+              .eq("id", clubGameChangerId);
+          }
+        }
+
+        await writeMatchNews(supabase, {
+          gameId: fixture.game_id,
+          fixtureId: fixture.id,
+          clubId: event.club_id,
+          category,
+          headline: `Game Changer: ${card.display_name}`,
+          detail: card.description || undefined,
+        });
+      }
     }
   }
 
@@ -2045,7 +2087,7 @@ export async function startMatchAction(formData: FormData) {
   }
 
   const { game, ownClub } = await getGameClubContext(supabase, gameId, userId);
-  if (game.phase !== "prematch" && game.phase !== "match") {
+  if (game.phase !== "season" && game.phase !== "prematch" && game.phase !== "match") {
     redirect(`/games/${roomCode}?view=matchday`);
   }
 
@@ -2084,7 +2126,7 @@ export async function markReadyForNextThirdAction(formData: FormData) {
   }
 
   const { game, ownClub } = await getGameClubContext(supabase, gameId, userId);
-  if (game.phase !== "prematch" && game.phase !== "match") {
+  if (game.phase !== "season" && game.phase !== "prematch" && game.phase !== "match") {
     redirect(`/games/${roomCode}?view=matchday`);
   }
 
@@ -2137,13 +2179,20 @@ export async function markReadyForNextThirdAction(formData: FormData) {
   ]);
 
   const currentPartial = (refreshed?.partial_result ?? { thirds: [], pending_modifiers: [] }) as PartialResult;
-  const { modifiers, updated: partialAfterConsume } = consumePendingModifiers({
-    thirds: currentPartial.thirds ?? [],
-    pending_modifiers: currentPartial.pending_modifiers ?? [],
-  });
-
-  const priorThirds = (partialAfterConsume.thirds as unknown as ThirdResult[]) ?? [];
+  const priorThirds = ((currentPartial.thirds ?? []) as unknown as ThirdResult[]);
   const nextIndex = (priorThirds.length + 1) as 1 | 2 | 3;
+
+  // Only consume modifiers whose zone matches the current third — keep others for later thirds
+  const { homeZone: nextHomeZone, awayZone: nextAwayZone } = getThirdZones(
+    nextIndex,
+    (priorThirds[0]?.winner_participant_id) ?? null,
+    homeSide.participantId,
+  );
+  const { active: modifiers, updated: partialAfterSplit } = applyAndKeepUnmatchedModifiers(
+    currentPartial,
+    nextHomeZone,
+    nextAwayZone,
+  );
 
   const { third, events } = resolveOneThird({
     index: nextIndex,
@@ -2213,7 +2262,7 @@ export async function markReadyForNextThirdAction(formData: FormData) {
     }
   }
 
-  const newPartial: PartialResult = { ...partialAfterConsume, thirds: newThirds as unknown[] };
+  const newPartial: PartialResult = { ...partialAfterSplit, thirds: newThirds as unknown[] };
   const newThirdCount = newThirds.length;
   const isComplete = newThirdCount >= 3;
 
@@ -2303,6 +2352,16 @@ export async function playSecretWeaponAction(formData: FormData) {
 
   if (cgcError) throw cgcError;
   if (!cgc || cgc.used_at !== null || cgc.game_changer_card?.category !== "secret_weapon") {
+    redirect(`/games/${roomCode}?view=matchday`);
+  }
+
+  // Enforce 1 Secret Weapon per match per club
+  const { count: alreadyPlayedCount } = await supabase
+    .from("club_game_changers")
+    .select("id", { count: "exact", head: true })
+    .eq("club_id", ownClub.id)
+    .eq("fixture_id", fixtureId);
+  if ((alreadyPlayedCount ?? 0) > 0) {
     redirect(`/games/${roomCode}?view=matchday`);
   }
 

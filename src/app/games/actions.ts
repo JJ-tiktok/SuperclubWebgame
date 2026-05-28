@@ -4,7 +4,7 @@ import { auth } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { setReadyAction, startGameAction } from "@/app/lobby/actions";
-import { applyStatusTierUp, calculateManagerScore, getManagerScoreBand, getPlacementReward, getStadiumIncome } from "@/lib/game/rules";
+import { applyStatusTierUp, calculateManagerScore, getManagerScoreBand, getPlacementReward, getScoutingCapacity, getStadiumIncome, getTrainingCapacity } from "@/lib/game/rules";
 import {
   canPlaceDeadlineBid,
   DEADLINE_BID_STEP,
@@ -406,7 +406,7 @@ export async function trainPlayerAction(formData: FormData) {
       .from("club_players")
       .select(
         `id, club_id, player_id, current_stars, injured,
-        club:clubs(id, game_id, clerk_user_id, training_level),
+        club:clubs(id, game_id, clerk_user_id, training_level, offseason_training_capacity),
         player:players(id, skill_max)`,
       )
       .eq("id", clubPlayerId)
@@ -421,6 +421,7 @@ export async function trainPlayerAction(formData: FormData) {
           game_id: string;
           clerk_user_id: string;
           training_level: number;
+          offseason_training_capacity: number | null;
         };
         player: {
           id: string;
@@ -473,10 +474,16 @@ export async function trainPlayerAction(formData: FormData) {
     .map(parseTrainingEvent)
     .filter((event): event is NonNullable<ReturnType<typeof parseTrainingEvent>> => Boolean(event))
     .filter((event) => event.season_number === seasonNumber && event.game_phase === game.phase);
+
+  // Use the snapshotted capacity if available (set at off_season start), otherwise fall back to live calculation
+  const snapshotCap = ownedPlayer.club.offseason_training_capacity;
+  const effectiveExtraPlayers = snapshotCap != null
+    ? snapshotCap - getTrainingCapacity(ownedPlayer.club.training_level).players
+    : trainingPlayerBonus;
   const trainingStatus = getTrainingStatus({
     events: trainingEvents,
     trainingLevel: ownedPlayer.club.training_level,
-    extraPlayers: trainingPlayerBonus,
+    extraPlayers: Math.max(0, effectiveExtraPlayers),
   });
   const currentStars = Math.trunc(Number(ownedPlayer.current_stars));
   const skillMax = Math.trunc(Number(ownedPlayer.player.skill_max ?? currentStars));
@@ -553,6 +560,32 @@ export async function trainPlayerAction(formData: FormData) {
   redirect(`/games/${roomCode}?view=training`);
 }
 
+/**
+ * Returns the effective scouting draw capacity for the given club.
+ * During off_season, uses the snapshot stored at phase start so that
+ * facility upgrades and newly recruited staff don't immediately grant
+ * extra draws in the same off-season.
+ */
+async function getEffectiveScoutingCapacity(
+  supabase: SupabaseServiceClient,
+  club: LobbyClub,
+): Promise<number> {
+  if (club.offseason_scouting_capacity != null) {
+    return club.offseason_scouting_capacity;
+  }
+  // Fallback: live calculation (used before first off_season snapshot exists)
+  const { data: staffRows } = await supabase
+    .from("club_staff")
+    .select("card:staff_cards(effects)")
+    .eq("club_id", club.id)
+    .returns<Array<{ card: { effects: Array<Record<string, unknown>> } }>>();
+  const bonus = (staffRows ?? [])
+    .flatMap((s) => s.card?.effects ?? [])
+    .filter((e) => e.type === "scouting_extra_cards")
+    .reduce((sum, e) => sum + Number(e.cards ?? 0), 0);
+  return getClubScoutingCapacity(club) + bonus;
+}
+
 export async function drawScoutingPlayerAction(formData: FormData) {
   const { userId } = await auth();
   const gameId = String(formData.get("game_id") || "");
@@ -573,16 +606,7 @@ export async function drawScoutingPlayerAction(formData: FormData) {
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
   const draws = await getScoutingDraws(supabase, gameId, seasonNumber);
   const ownDraws = draws.filter((draw) => draw.club_id === ownClub.id);
-  const { data: scoutStaffRows } = await supabase
-    .from("club_staff")
-    .select("card:staff_cards(effects)")
-    .eq("club_id", ownClub.id)
-    .returns<Array<{ card: { effects: Array<Record<string, unknown>> } }>>();
-  const scoutingExtraCards = (scoutStaffRows ?? [])
-    .flatMap((s) => s.card?.effects ?? [])
-    .filter((e) => e.type === "scouting_extra_cards")
-    .reduce((sum, e) => sum + Number(e.cards ?? 0), 0);
-  const capacity = getClubScoutingCapacity(ownClub) + scoutingExtraCards;
+  const capacity = await getEffectiveScoutingCapacity(supabase, ownClub);
   const drawCheck = canDrawScoutingPlayer({
     drawnCount: ownDraws.length,
     ownClubId: ownClub.id,
@@ -641,7 +665,7 @@ export async function buyScoutedPlayerAction(formData: FormData) {
   }
 
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
-  const [draws, squadCount, buyStaffRows] = await Promise.all([
+  const [draws, squadCount, buyStaffRows, capacity] = await Promise.all([
     getScoutingDraws(supabase, gameId, seasonNumber),
     getClubSquadCount(supabase, ownClub.id),
     supabase
@@ -649,6 +673,7 @@ export async function buyScoutedPlayerAction(formData: FormData) {
       .select("card:staff_cards(effects)")
       .eq("club_id", ownClub.id)
       .returns<Array<{ card: { effects: Array<Record<string, unknown>> } }>>(),
+    getEffectiveScoutingCapacity(supabase, ownClub),
   ]);
   const draw = draws.find((item) => item.id === drawId);
 
@@ -657,11 +682,6 @@ export async function buyScoutedPlayerAction(formData: FormData) {
   }
 
   const ownDraws = draws.filter((item) => item.club_id === ownClub.id);
-  const scoutingExtraCards = (buyStaffRows.data ?? [])
-    .flatMap((s) => s.card?.effects ?? [])
-    .filter((e) => e.type === "scouting_extra_cards")
-    .reduce((sum, e) => sum + Number(e.cards ?? 0), 0);
-  const capacity = getClubScoutingCapacity(ownClub) + scoutingExtraCards;
   const price = Number(draw.player.scouting_price ?? 0);
   const buyCheck = canBuyScoutedPlayer({
     drawnCount: ownDraws.length,
@@ -756,13 +776,16 @@ export async function passScoutedPlayerAction(formData: FormData) {
   }
 
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
-  const draws = await getScoutingDraws(supabase, gameId, seasonNumber);
+  const [draws, capacity] = await Promise.all([
+    getScoutingDraws(supabase, gameId, seasonNumber),
+    getEffectiveScoutingCapacity(supabase, ownClub),
+  ]);
   const draw = draws.find((item) => item.id === drawId);
   const ownDraws = draws.filter((item) => item.club_id === ownClub.id);
   const resolveCheck = canResolveScoutedPlayer({
     drawnCount: ownDraws.length,
     ownClubId: ownClub.id,
-    scoutingCapacity: getClubScoutingCapacity(ownClub),
+    scoutingCapacity: capacity,
   });
 
   if (!draw || draw.club_id !== ownClub.id || draw.status !== "drawn" || !resolveCheck.ok) {
@@ -1396,6 +1419,41 @@ export async function setPhaseDoneAction(formData: FormData) {
   redirect(`/games/${roomCode}`);
 }
 
+async function snapshotOffseasonCapacities(supabase: SupabaseServiceClient, gameId: string) {
+  const { data: gameClubs } = await supabase
+    .from("clubs")
+    .select("id, scouting_level, training_level")
+    .eq("game_id", gameId)
+    .returns<Array<{ id: string; scouting_level: number; training_level: number }>>();
+
+  if (!gameClubs?.length) return;
+
+  const { data: staffRows } = await supabase
+    .from("club_staff")
+    .select("club_id, staff_card:staff_cards(effects)")
+    .in("club_id", gameClubs.map((c) => c.id))
+    .returns<Array<{ club_id: string; staff_card: { effects: Array<{ type: string; cards?: number; players?: number }> } | null }>>();
+
+  await Promise.all(
+    gameClubs.map((club) => {
+      const clubStaff = (staffRows ?? []).filter((s) => s.club_id === club.id);
+      const allEffects = clubStaff.flatMap((s) => s.staff_card?.effects ?? []);
+      const scoutingBonus = allEffects
+        .filter((e) => e.type === "scouting_extra_cards")
+        .reduce((sum, e) => sum + Number(e.cards ?? 0), 0);
+      const trainingBonus = allEffects
+        .filter((e) => e.type === "training_player_bonus")
+        .reduce((sum, e) => sum + Number(e.players ?? 0), 0);
+      const scoutingCap = getScoutingCapacity(club.scouting_level ?? 1).players + scoutingBonus;
+      const trainingCap = getTrainingCapacity(club.training_level ?? 1).players + trainingBonus;
+      return supabase
+        .from("clubs")
+        .update({ offseason_scouting_capacity: scoutingCap, offseason_training_capacity: trainingCap })
+        .eq("id", club.id);
+    }),
+  );
+}
+
 export async function advancePhaseAction(formData: FormData) {
   const { userId } = await auth();
   const gameId = String(formData.get("game_id") || "");
@@ -1469,6 +1527,10 @@ export async function advancePhaseAction(formData: FormData) {
 
   if (game.phase === "season_end" && (nextPhase === "off_season" || nextPhase === "offseason_finance")) {
     await bookSeasonFinance(supabase, gameId, Number(game.settings?.seasonNumber ?? 1));
+  }
+
+  if (nextPhase === "off_season") {
+    await snapshotOffseasonCapacities(supabase, gameId);
   }
 
   const { error: updateGameError } = await supabase

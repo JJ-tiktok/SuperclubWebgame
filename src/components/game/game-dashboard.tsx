@@ -1197,20 +1197,24 @@ function ScoutingDrawsPanel({
   scouting: NonNullable<LobbySnapshot["scouting"]>;
   snapshot: LobbySnapshot;
 }) {
-  const clubNames = new Map(snapshot.clubs.map((club) => [club.id, club.club_name]));
   const ownStatus = scouting.status_by_club_id[ownClub.id];
   const ownDraws = scouting.draws.filter((draw) => draw.club_id === ownClub.id);
   const allOwnCardsDrawn = ownStatus.draw_count >= ownStatus.capacity;
-
   const ownOpenDraws = ownDraws.filter((d) => d.status === "drawn");
   const canPassAll = allOwnCardsDrawn && ownOpenDraws.length > 1;
 
+  // Order clubs: own first, then others alphabetically
+  const orderedClubs = [
+    ownClub,
+    ...snapshot.clubs.filter((c) => c.id !== ownClub.id).sort((a, b) => a.club_name.localeCompare(b.club_name)),
+  ];
+
   return (
-    <Panel className="border-[var(--club-border)] bg-zinc-950/85">
-      <PanelHeader>
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
         <div>
-          <PanelTitle>Scouting-Auslagen</PanelTitle>
-          <PanelDescription>Alle Manager sehen die gescouteten Spieler.</PanelDescription>
+          <p className="text-sm font-semibold text-zinc-100">Scouting-Auslagen</p>
+          <p className="text-xs text-zinc-500">Jeder Verein hat seine eigene Auslage.</p>
         </div>
         <div className="flex items-center gap-3">
           {canPassAll ? (
@@ -1223,67 +1227,99 @@ function ScoutingDrawsPanel({
               </Button>
             </form>
           ) : null}
-          <Eye size={18} className="text-[var(--club-color)]" aria-hidden />
+          <Eye size={18} className="text-zinc-500" aria-hidden />
         </div>
-      </PanelHeader>
-      {scouting.draws.length === 0 ? (
-        <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-4 text-sm text-zinc-400">Noch keine Spieler gescoutet.</div>
-      ) : (
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          {scouting.draws.map((draw) => {
-            const card = mapDbPlayerToPlayerCardData(draw.player);
-            const isOwnDraw = draw.club_id === ownClub.id;
-            const buyCheck = canBuyScoutedPlayer({
-              drawnCount: ownDraws.length,
-              money: overview.finance.money,
-              ownClubId: ownClub.id,
-              playerPrice: Number(draw.player.scouting_price ?? 0),
-              scoutingCapacity: ownStatus.capacity,
-              squadSize: overview.squad.length,
-            });
-            const resolveCheck = canResolveScoutedPlayer({
-              drawnCount: ownDraws.length,
-              ownClubId: ownClub.id,
-              scoutingCapacity: ownStatus.capacity,
-            });
-            const canBuy = isOwnDraw && draw.status === "drawn" && buyCheck.ok;
-            const canPass = isOwnDraw && draw.status === "drawn" && resolveCheck.ok;
+      </div>
 
-            return (
-              <div className={cn("rounded-lg border border-zinc-800 bg-zinc-900/45 p-2", draw.status !== "drawn" ? "opacity-60" : "")} key={draw.id}>
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <Badge tone={draw.status === "bought" ? "green" : draw.status === "passed" ? "red" : "blue"}>{draw.status}</Badge>
-                  <span className="truncate text-xs text-zinc-500">{clubNames.get(draw.club_id) ?? "Club"}</span>
-                </div>
-                <PlayerCard disabled={draw.status !== "drawn"} player={card} variant="draft" />
-                {isOwnDraw && draw.status === "drawn" ? (
-                  <div className="mt-2 grid grid-cols-2 gap-2">
-                    <form action={buyScoutedPlayerAction}>
-                      <input name="game_id" type="hidden" value={snapshot.game.id} />
-                      <input name="room_code" type="hidden" value={snapshot.game.room_code} />
-                      <input name="draw_id" type="hidden" value={draw.id} />
-                      <Button className="w-full" disabled={!canBuy} size="sm" title={canBuy ? "Spieler kaufen" : getScoutingCheckLabel(buyCheck)} type="submit">
-                        <ShoppingCart size={14} aria-hidden />
-                        Kaufen
-                      </Button>
-                    </form>
-                    <form action={passScoutedPlayerAction}>
-                      <input name="game_id" type="hidden" value={snapshot.game.id} />
-                      <input name="room_code" type="hidden" value={snapshot.game.room_code} />
-                      <input name="draw_id" type="hidden" value={draw.id} />
-                      <Button className="w-full" disabled={!canPass || !allOwnCardsDrawn} size="sm" type="submit" variant="outline">
-                        <X size={14} aria-hidden />
-                        Passen
-                      </Button>
-                    </form>
-                  </div>
-                ) : null}
+      {orderedClubs.map((club) => {
+        const isOwn = club.id === ownClub.id;
+        const clubDraws = scouting.draws.filter((d) => d.club_id === club.id);
+        const clubStatus = scouting.status_by_club_id[club.id];
+
+        return (
+          <Panel
+            className={cn(
+              "overflow-hidden",
+              isOwn ? "border-[var(--club-border)] bg-zinc-950/85" : "border-zinc-800 bg-zinc-900/40",
+            )}
+            key={club.id}
+          >
+            <PanelHeader>
+              <div>
+                <PanelTitle className={isOwn ? "text-[var(--club-color)]" : undefined}>
+                  {club.club_name}
+                  {isOwn ? " (Du)" : ""}
+                </PanelTitle>
+                <PanelDescription>
+                  {clubStatus?.draw_count ?? 0}/{clubStatus?.capacity ?? 0} gezogen · {clubStatus?.bought_count ?? 0} gekauft · {clubStatus?.passed_count ?? 0} gepasst
+                </PanelDescription>
               </div>
-            );
-          })}
-        </div>
-      )}
-    </Panel>
+              <Badge tone={clubStatus?.finished ? "blue" : "neutral"}>
+                {clubStatus?.finished ? "fertig" : "laeuft"}
+              </Badge>
+            </PanelHeader>
+
+            {clubDraws.length === 0 ? (
+              <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3 text-xs text-zinc-500">
+                Noch keine Karten gezogen.
+              </div>
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                {clubDraws.map((draw) => {
+                  const card = mapDbPlayerToPlayerCardData(draw.player);
+                  const buyCheck = canBuyScoutedPlayer({
+                    drawnCount: ownDraws.length,
+                    money: overview.finance.money,
+                    ownClubId: ownClub.id,
+                    playerPrice: Number(draw.player.scouting_price ?? 0),
+                    scoutingCapacity: ownStatus.capacity,
+                    squadSize: overview.squad.length,
+                  });
+                  const resolveCheck = canResolveScoutedPlayer({
+                    drawnCount: ownDraws.length,
+                    ownClubId: ownClub.id,
+                    scoutingCapacity: ownStatus.capacity,
+                  });
+                  const canBuy = isOwn && draw.status === "drawn" && buyCheck.ok;
+                  const canPass = isOwn && draw.status === "drawn" && resolveCheck.ok;
+
+                  return (
+                    <div className={cn("rounded-lg border border-zinc-800 bg-zinc-900/45 p-2", draw.status !== "drawn" ? "opacity-60" : "")} key={draw.id}>
+                      <div className="mb-2">
+                        <Badge tone={draw.status === "bought" ? "green" : draw.status === "passed" ? "red" : "blue"}>{draw.status}</Badge>
+                      </div>
+                      <PlayerCard disabled={draw.status !== "drawn"} player={card} variant="draft" />
+                      {isOwn && draw.status === "drawn" ? (
+                        <div className="mt-2 grid grid-cols-2 gap-2">
+                          <form action={buyScoutedPlayerAction}>
+                            <input name="game_id" type="hidden" value={snapshot.game.id} />
+                            <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                            <input name="draw_id" type="hidden" value={draw.id} />
+                            <Button className="w-full" disabled={!canBuy} size="sm" title={canBuy ? "Spieler kaufen" : getScoutingCheckLabel(buyCheck)} type="submit">
+                              <ShoppingCart size={14} aria-hidden />
+                              Kaufen
+                            </Button>
+                          </form>
+                          <form action={passScoutedPlayerAction}>
+                            <input name="game_id" type="hidden" value={snapshot.game.id} />
+                            <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                            <input name="draw_id" type="hidden" value={draw.id} />
+                            <Button className="w-full" disabled={!canPass || !allOwnCardsDrawn} size="sm" type="submit" variant="outline">
+                              <X size={14} aria-hidden />
+                              Passen
+                            </Button>
+                          </form>
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Panel>
+        );
+      })}
+    </div>
   );
 }
 

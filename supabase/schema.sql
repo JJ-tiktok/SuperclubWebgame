@@ -109,6 +109,8 @@ create table public.clubs (
   stadium_level int not null default 1 check (stadium_level between 1 and 4),
   scouting_level int not null default 1 check (scouting_level between 1 and 4),
   training_level int not null default 1 check (training_level between 1 and 4),
+  offseason_scouting_capacity int,
+  offseason_training_capacity int,
   supercup_cards int not null default 0,
   captain_boost_rank int,
   created_at timestamptz not null default now(),

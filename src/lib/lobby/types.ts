@@ -65,6 +65,8 @@ export type LobbyClub = {
   stadium_level?: number;
   scouting_level?: number;
   training_level?: number;
+  offseason_scouting_capacity?: number | null;
+  offseason_training_capacity?: number | null;
   supercup_cards?: number;
   captain_boost_rank?: number | null;
   squad_stars?: number;

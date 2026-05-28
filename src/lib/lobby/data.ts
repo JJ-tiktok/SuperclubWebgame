@@ -28,7 +28,7 @@ import type {
   StaffCardRow,
   StaffOfferSnapshot,
 } from "./types";
-import { calculateManagerScore, getManagerScoreBand, getPlacementReward, getStadiumIncome } from "@/lib/game/rules";
+import { calculateManagerScore, getManagerScoreBand, getPlacementReward, getStadiumIncome, getTrainingCapacity } from "@/lib/game/rules";
 import { getDeadlineAuctionCount } from "@/lib/lobby/deadline";
 import { getClubScoutingCapacity, getNextPendingScoutingClubId } from "@/lib/lobby/scouting";
 import { getTrainingStatus, parseTrainingEvent } from "@/lib/lobby/training";
@@ -38,7 +38,7 @@ import { createSupabaseServiceClient } from "@/lib/supabase/server";
 const GAME_SELECT =
   "id, room_code, phase, host_clerk_user_id, current_turn_club_id, settings, save_name, save_status, save_version, last_saved_at, last_saved_by_clerk_user_id, created_at, updated_at";
 const CLUB_SELECT =
-  "id, game_id, clerk_user_id, club_template_id, club_name, club_slogan, club_color, manager_name, money, points, season_rank, status, stadium_level, scouting_level, training_level, supercup_cards, captain_boost_rank, is_ready, image_url, created_at";
+  "id, game_id, clerk_user_id, club_template_id, club_name, club_slogan, club_color, manager_name, money, points, season_rank, status, stadium_level, scouting_level, training_level, offseason_scouting_capacity, offseason_training_capacity, supercup_cards, captain_boost_rank, is_ready, image_url, created_at";
 
 export async function getLobbySnapshotByRoomCode(roomCodeParam: string) {
   const { userId } = await auth();
@@ -188,7 +188,10 @@ async function getScoutingSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promise
   for (const club of clubs) {
     const clubDraws = normalizedDraws.filter((draw) => draw.club_id === club.id);
     const openCount = clubDraws.filter((draw) => draw.status === "drawn").length;
-    const capacity = getClubScoutingCapacity(club) + (scoutingBonusByClubId[club.id] ?? 0);
+    // Prefer the snapshotted capacity (set at off_season start) so that upgrades/new staff
+    // don't grant extra draws in the same off-season.
+    const capacity = club.offseason_scouting_capacity
+      ?? (getClubScoutingCapacity(club) + (scoutingBonusByClubId[club.id] ?? 0));
 
     statusByClubId[club.id] = {
       bought_count: clubDraws.filter((draw) => draw.status === "bought").length,
@@ -554,10 +557,27 @@ async function getClubOverviewSnapshot(
     open_staff_offer: openStaffOffer,
     training: {
       events: trainingEvents,
-      status: getTrainingStatus({
-        events: trainingEvents,
-        trainingLevel: club.training_level ?? 1,
-      }),
+      status: (() => {
+        if (club.offseason_training_capacity != null) {
+          // Use snapshot: back-calculate extraPlayers from the stored total
+          const baseCapacity = getTrainingCapacity(club.training_level ?? 1).players;
+          return getTrainingStatus({
+            events: trainingEvents,
+            trainingLevel: club.training_level ?? 1,
+            extraPlayers: Math.max(0, club.offseason_training_capacity - baseCapacity),
+          });
+        }
+        // Fallback: live staff bonus (before first snapshot exists)
+        const trainingBonus = (staffRows ?? [])
+          .flatMap((s) => (s.card?.effects ?? []) as Array<Record<string, unknown>>)
+          .filter((e) => e.type === "training_player_bonus")
+          .reduce((sum, e) => sum + Number(e.players ?? 0), 0);
+        return getTrainingStatus({
+          events: trainingEvents,
+          trainingLevel: club.training_level ?? 1,
+          extraPlayers: trainingBonus,
+        });
+      })(),
     },
     finance: {
       money: Number(club.money),

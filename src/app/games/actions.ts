@@ -1563,7 +1563,7 @@ export async function advancePhaseAction(formData: FormData) {
 
   // Auto-simulate CPU-vs-CPU fixtures when entering the season phase
   if (nextPhase === "season" || nextPhase === "prematch") {
-    await autoSimulateCpuOnlyFixtures(supabase, gameId, { ...game, phase: nextPhase }, userId);
+    await autoSimulateCpuOnlyFixtures(supabase, gameId, { ...game, phase: nextPhase, room_code: roomCode }, userId);
   }
 
   revalidatePath(`/games/${roomCode}`);

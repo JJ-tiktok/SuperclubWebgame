@@ -2,7 +2,10 @@
 
 import { UserButton } from "@clerk/nextjs";
 import {
+  ArrowDownRight,
   ArrowLeft,
+  ArrowLeftRight,
+  ArrowUpRight,
   Banknote,
   Building2,
   CalendarDays,
@@ -36,33 +39,64 @@ import { useRef, useState } from "react";
 import {
   advancePhaseAction,
   deleteGameAction,
-  buyScoutedPlayerAction,
-  dismissStaffAction,
-  drawScoutingPlayerAction,
-  healInjuredPlayerAction,
-  passAllScoutedPlayersAction,
-  initializeSeasonScheduleAction,
-  initializeDeadlineDayAction,
-  lockFixtureLineupAction,
-  makeDraftPickAction,
-  markReadyForNextThirdAction,
-  passDeadlineBidAction,
-  passScoutedPlayerAction,
-  placeDeadlineBidAction,
-  playSecretWeaponAction,
-  recruitStaffOpenAction,
-  recruitStaffResolveAction,
-  triggerDrawRerollAction,
-  resolveDeadlineAuctionAction,
-  resolveFixtureAction,
-  sellClubPlayerAction,
   setPhaseDoneAction,
   setReadyFromDashboardAction,
   startGameFromDashboardAction,
-  startMatchAction,
+} from "@/app/games/actions/lobby";
+import { makeDraftPickAction } from "@/app/games/actions/draft";
+import {
   trainPlayerAction,
   upgradeInvestmentAction,
-} from "@/app/games/actions";
+} from "@/app/games/actions/offseason";
+import {
+  buyScoutedPlayerAction,
+  drawScoutingPlayerAction,
+  passAllScoutedPlayersAction,
+  passScoutedPlayerAction,
+  sellClubPlayerAction,
+} from "@/app/games/actions/scouting";
+import {
+  initializeDeadlineDayAction,
+  passDeadlineBidAction,
+  placeDeadlineBidAction,
+  resolveDeadlineAuctionAction,
+} from "@/app/games/actions/deadline";
+import {
+  dismissStaffAction,
+  recruitStaffOpenAction,
+  recruitStaffResolveAction,
+} from "@/app/games/actions/staff";
+import {
+  initializeSeasonScheduleAction,
+  lockFixtureLineupAction,
+  markReadyForNextThirdAction,
+  playSecretWeaponAction,
+  resolveFixtureAction,
+  startMatchAction,
+  triggerDrawRerollAction,
+} from "@/app/games/actions/match";
+import { healInjuredPlayerAction } from "@/app/games/actions/game-changers";
+import {
+  formatMoney,
+  formatSavedAt,
+  formatSavedLine,
+  formatStars,
+  getAuctionBadgeTone,
+  getAuctionStatusLabel,
+  getClubStatusLabel,
+  getDeadlineBidTitle,
+  getInvestmentLabel,
+  getScoutingCheckLabel,
+  getThirdLabel,
+  getTrainingDisabledLabel,
+  getTurnFallback,
+  normalizeView,
+  type GameView,
+} from "@/components/game/lib/dashboard-helpers";
+import { Metric, SmallInfo } from "@/components/game/shared/metric";
+import { SquadPositionBreakdown } from "@/components/game/shared/squad-breakdown";
+import { ActiveCardEffectsPanel } from "@/components/game/active-card-effects-panel";
+import { GameChangerChoiceModal } from "@/components/game/game-changer-choice-modal";
 import { GameChangerPopup } from "@/components/game/game-changer-popup";
 import { GameLineupBoard } from "@/components/game/game-lineup-board";
 import { GameRealtimeRefresh } from "@/components/game/game-realtime-refresh";
@@ -71,11 +105,11 @@ import { PlayerCard } from "@/components/player-card/PlayerCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelDescription, PanelHeader, PanelTitle } from "@/components/ui/panel";
-import { DEADLINE_BID_STEP, DEADLINE_TURN_SECONDS, getDeadlineActionLabel, getMinimumNextBid } from "@/lib/lobby/deadline";
+import { DEADLINE_BID_STEP, DEADLINE_TURN_SECONDS, getMinimumNextBid } from "@/lib/lobby/deadline";
 import { mapDbPlayerToPlayerCardData } from "@/lib/lobby/draft";
 import { canRecruitStaff, canUpgradeFacility, getStaffRecruitReasonLabel, getUpgradeCost, getUpgradeReasonLabel, type UpgradeAction } from "@/lib/lobby/investments";
 import { calculateLineupPower } from "@/lib/lobby/lineup-power";
-import { getPhaseLabel, isInvestmentPhase, isSeasonPhase } from "@/lib/lobby/phases";
+import { getPhaseLabel, isInvestmentPhase } from "@/lib/lobby/phases";
 import { getManagerScoreBand, getPlacementReward, getScoutingCapacity, getStadiumIncome, getTrainingCapacity, MAX_SQUAD_SIZE } from "@/lib/game/rules";
 import { canStartLobby } from "@/lib/lobby/rules";
 import {
@@ -83,29 +117,14 @@ import {
   canDrawScoutingPlayer,
   canResolveScoutedPlayer,
   canSellClubPlayer,
-  getScoutingActionLabel,
   isOffseasonPhase,
   SCOUTING_PILES,
 } from "@/lib/lobby/scouting";
 import { getClubTheme } from "@/lib/lobby/theme";
-import { canTrainOwnedPlayer, getTrainingReasonLabel } from "@/lib/lobby/training";
+import { canTrainOwnedPlayer } from "@/lib/lobby/training";
 import type { DraftPlayerRow, LobbyClub, LobbySnapshot, SeasonFixtureSnapshot, StaffOfferSnapshot } from "@/lib/lobby/types";
 import { cn } from "@/lib/utils";
 import { getPositionLabel, type PlayerCardData, type PlayerCardPosition } from "@/types/player-card";
-
-type GameView =
-  | "dashboard"
-  | "squad"
-  | "grounds"
-  | "lineup"
-  | "matchday"
-  | "table"
-  | "transfer"
-  | "settings"
-  | "draft"
-  | "training"
-  | "scouting"
-  | "deadline";
 
 type GameDashboardProps = {
   activeView?: string;
@@ -169,6 +188,15 @@ export function GameDashboard({ activeView, currentUserId, snapshot }: GameDashb
     >
       <GameRealtimeRefresh gameId={snapshot.game.id} />
       <GameChangerPopup news={snapshot.match_news} ownClubId={ownClub?.id} />
+      {(snapshot.club_overview?.pending_game_changer_choices ?? []).slice(0, 1).map((choice) => (
+        <GameChangerChoiceModal
+          key={choice.id}
+          choice={choice}
+          gameId={snapshot.game.id}
+          roomCode={snapshot.game.room_code}
+          squad={snapshot.club_overview?.squad ?? []}
+        />
+      ))}
       <div
         className={cn(
           "mx-auto grid w-full max-w-[1480px] gap-5 transition-[grid-template-columns]",
@@ -569,6 +597,8 @@ function DashboardView({
         </Panel>
         <ClubSummaryPanel ownClub={ownClub} />
       </div>
+
+      <ActiveCardEffectsPanel effects={snapshot.club_overview?.pending_effects ?? []} />
 
       <ManagersPanel snapshot={snapshot} />
     </div>
@@ -2203,7 +2233,7 @@ function SquadPanel({
       {miraHealCharges > 0 && (
         <div className="rounded-md border border-amber-800 bg-amber-950/30 p-3 text-xs text-amber-300">
           <p className="font-semibold">Mira Cleure aktiv — {miraHealCharges} Heilung(en) verfuegbar</p>
-          <p className="mt-0.5 text-amber-400">Klicke auf "Heilen" bei einem verletzten Spieler.</p>
+          <p className="mt-0.5 text-amber-400">Klicke auf &quot;Heilen&quot; bei einem verletzten Spieler.</p>
         </div>
       )}
       {overview.squad.length === 0 ? (
@@ -2599,7 +2629,7 @@ function FixtureCard({
   const hasPlayedSecretWeaponForFixture = (snapshot.club_overview?.game_changers ?? []).some(
     (gc) => gc.card.category === "secret_weapon" && gc.fixture_id === fixture.id,
   );
-  const partialThirds = ((fixture.partial_result as { thirds?: unknown[] } | null)?.thirds ?? []) as Array<{ index: number; home: { total: number; zone: string }; away: { total: number; zone: string }; winner_participant_id?: string | null }>;
+  const partialThirds = ((fixture.partial_result as { thirds?: unknown[] } | null)?.thirds ?? []) as FixtureThird[];
 
   // For PvP, suppress the old "Host resolves PvP" button — the new state machine handles it
   const canHostResolvePvpMatchLegacy = canHostResolvePvpMatch && !isPvP;
@@ -2651,71 +2681,15 @@ function FixtureCard({
             />
           </div>
 
-          {result ? (
-            <div className="mt-4 rounded-md border border-zinc-800 bg-zinc-900/70 p-3">
-              <p className="text-xs font-medium uppercase text-zinc-500">Matchlog</p>
-              <div className="mt-2 grid gap-2 md:grid-cols-3">
-                {result.thirds.map((third) => (
-                  <div className="rounded-md border border-zinc-800 bg-zinc-950/70 p-3" key={third.index}>
-                    <p className="text-xs font-semibold text-zinc-200">Drittel {third.index}: {getThirdLabel(third.label)}</p>
-                    <p className="mt-1 text-xs text-zinc-400">
-                      Heim {third.home.total} ({third.home.zone_stars} Zone inkl. Links + {third.home.dice.join("+")}) - Auswaerts {third.away.total} ({third.away.zone_stars} Zone inkl. Links + {third.away.dice.join("+")})
-                    </p>
-                  </div>
-                ))}
-              </div>
-              {result.events.length > 0 ? (
-                <div className="mt-3 space-y-2">
-                  <p className="text-xs font-medium uppercase text-zinc-500">Ereignisse</p>
-                  {result.events.map((event, index) => {
-                    const eventClubName =
-                      home.club_id === event.club_id
-                        ? home.display_name
-                        : away.club_id === event.club_id
-                          ? away.display_name
-                          : "Unbekannt";
-                    const ownSquad = snapshot.club_overview?.squad ?? [];
-                    const injuredPlayer =
-                      event.event_type === "injury"
-                        ? ownSquad.find((p) => p.id === event.player_id)?.player.display_name ?? null
-                        : null;
-                    const zoneLabel = event.zone === "ATT" ? "Angriff" : event.zone === "MID" ? "Mittelfeld" : event.zone === "DEF" ? "Abwehr" : event.zone;
-
-                    return (
-                      <div
-                        className={`flex items-start gap-3 rounded-md border p-2 text-xs ${event.event_type === "injury" ? "border-rose-800/60 bg-rose-950/30" : "border-violet-800/60 bg-violet-950/30"}`}
-                        key={`${event.event_type}-${index}`}
-                      >
-                        <span className="mt-0.5 text-base leading-none">
-                          {event.event_type === "injury" ? "🚑" : "🎯"}
-                        </span>
-                        <div>
-                          <p className={`font-semibold ${event.event_type === "injury" ? "text-rose-200" : "text-violet-200"}`}>
-                            {event.event_type === "injury" ? "Verletzung" : "Game Changer"}
-                            {" "}
-                            <span className="font-normal text-zinc-400">— {eventClubName}</span>
-                          </p>
-                          <p className="mt-0.5 text-zinc-400">
-                            {event.event_type === "injury" ? (
-                              <>
-                                {injuredPlayer ? (
-                                  <span className="font-medium text-rose-300">{injuredPlayer}</span>
-                                ) : (
-                                  <span>Spieler verletzt</span>
-                                )}{" "}
-                                in Zone {zoneLabel} · Wurf {event.dice.join("+")}
-                              </>
-                            ) : (
-                              <>Zone {zoneLabel} · Wurf {event.dice.join("+")}</>
-                            )}
-                          </p>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : null}
-            </div>
+          {(home.kind === "human" || away.kind === "human") && (result ?? partialThirds.length > 0) ? (
+            <MatchResultDetail
+              away={away}
+              events={result?.events ?? []}
+              fixture={fixture}
+              home={home}
+              snapshot={snapshot}
+              thirds={result?.thirds ?? partialThirds}
+            />
           ) : null}
         </div>
 
@@ -2823,20 +2797,6 @@ function FixtureCard({
             {/* PvP In Progress */}
             {isPvP && matchState === "in_progress" && ownSide ? (
               <div className="space-y-3">
-                {/* Partial thirds summary */}
-                {partialThirds.length > 0 ? (
-                  <div className="space-y-1">
-                    <p className="text-xs font-medium uppercase text-zinc-500">Bisherige Drittel</p>
-                    {partialThirds.map((t) => (
-                      <div className="flex items-center justify-between rounded bg-zinc-800/50 px-2 py-1 text-xs" key={t.index}>
-                        <span className="text-zinc-400">Drittel {t.index}</span>
-                        <span className={t.winner_participant_id === (ownSide === "home" ? home.id : away.id) ? "text-green-300" : t.winner_participant_id == null ? "text-zinc-300" : "text-rose-300"}>
-                          {t.home.total} – {t.away.total}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
                 {secretWeapons.length > 0 ? (
                   <div className="space-y-1">
                     <p className="text-xs font-medium text-violet-300">Geheimwaffe einsetzen</p>
@@ -3441,100 +3401,7 @@ function renderView(
   return null;
 }
 
-function normalizeView(value: string | undefined): GameView {
-  const views: GameView[] = ["dashboard", "squad", "grounds", "lineup", "matchday", "transfer", "table", "settings", "draft", "training", "scouting", "deadline"];
 
-  return views.includes(value as GameView) ? (value as GameView) : "dashboard";
-}
-
-function Metric({
-  detail,
-  icon: Icon,
-  label,
-  value,
-}: {
-  detail: string;
-  icon: typeof Home;
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-xs font-medium uppercase text-zinc-500">{label}</p>
-          <p className="mt-2 text-xl font-semibold text-zinc-50">{value}</p>
-          <p className="mt-1 text-xs text-zinc-500">{detail}</p>
-        </div>
-        <Icon size={16} className="text-[var(--club-color)]" aria-hidden />
-      </div>
-    </div>
-  );
-}
-
-function SmallInfo({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-md border border-zinc-800 bg-zinc-950/50 p-2">
-      <p className="font-medium uppercase text-zinc-500">{label}</p>
-      <p className="mt-1 truncate text-zinc-200">{value}</p>
-    </div>
-  );
-}
-
-function getTrainingDisabledLabel(
-  trainingEnabled: boolean,
-  check: ReturnType<typeof canTrainOwnedPlayer>,
-) {
-  if (!trainingEnabled) {
-    return "Phase gesperrt";
-  }
-
-  return check.ok ? "Trainieren" : getTrainingReasonLabel(check.reason);
-}
-
-function getScoutingCheckLabel(check: { ok: true } | { ok: false; reason: string }) {
-  return check.ok ? "OK" : getScoutingActionLabel(check.reason);
-}
-
-function getDeadlineBidTitle(money: number, nextBid: number, squadSize: number) {
-  if (squadSize >= 23) {
-    return getDeadlineActionLabel("squad_full");
-  }
-
-  if (money < nextBid) {
-    return getDeadlineActionLabel("insufficient_money");
-  }
-
-  return "Gebot abgeben";
-}
-
-function getAuctionStatusLabel(status: string) {
-  const labels: Record<string, string> = {
-    open: "aktiv",
-    passed: "nicht verkauft",
-    resolved: "verkauft",
-    resolving: "wird aufgeloest",
-    scheduled: "wartet",
-  };
-
-  return labels[status] ?? status;
-}
-
-function getAuctionBadgeTone(status: string): "neutral" | "green" | "blue" | "red" {
-  if (status === "open") {
-    return "green";
-  }
-
-  if (status === "resolved") {
-    return "blue";
-  }
-
-  if (status === "passed") {
-    return "red";
-  }
-
-  return "neutral";
-}
 
 function getSortedSquadPlayers(squad: NonNullable<LobbySnapshot["club_overview"]>["squad"]) {
   return [...squad].sort((a, b) => {
@@ -3623,17 +3490,6 @@ function getPlayerPositionLabel(player: DraftPlayerRow) {
   return getPositionLabel((player.eligible_positions?.length ? player.eligible_positions : [player.position]) as PlayerCardPosition[]);
 }
 
-function getInvestmentLabel(action: string) {
-  const labels: Record<string, string> = {
-    scouting: "Scouting",
-    stadium: "Stadion",
-    staff: "Mitarbeiter",
-    training: "Training",
-  };
-
-  return labels[action] ?? action;
-}
-
 function formatEffects(effects: unknown[]) {
   if (!effects.length) {
     return "Keine Effekte hinterlegt.";
@@ -3680,6 +3536,252 @@ function describeStaffEffects(effects: unknown[]): string {
     .join(" · ");
 }
 
+type FixtureThird = {
+  away: { dice: [number, number]; total: number; zone_stars: number };
+  home: { dice: [number, number]; total: number; zone_stars: number };
+  index: number;
+  label: "away_attack" | "home_attack" | "midfield";
+};
+
+type FixtureEvent = {
+  club_id?: string | null;
+  dice: [number, number];
+  event_type: "game_changer" | "injury";
+  participant_id: string;
+  player_id?: string;
+  third_index: number;
+  zone: string;
+};
+
+function MatchResultDetail({
+  away,
+  events,
+  fixture,
+  home,
+  snapshot,
+  thirds,
+}: {
+  away: SeasonFixtureSnapshot["away_participant"];
+  events: FixtureEvent[];
+  fixture: SeasonFixtureSnapshot;
+  home: SeasonFixtureSnapshot["home_participant"];
+  snapshot: LobbySnapshot;
+  thirds: FixtureThird[];
+}) {
+  // Compute live score from the thirds data so the header updates after each third,
+  // even during an in-progress PvP match (fixture.home_third_points is only set on completion).
+  const liveHomeThirdPoints = thirds.reduce((sum, t) => {
+    if (t.home.total > t.away.total) return sum + 1;
+    if (t.home.total === t.away.total) return sum + 0.5;
+    return sum;
+  }, 0);
+  const liveAwayThirdPoints = thirds.reduce((sum, t) => {
+    if (t.away.total > t.home.total) return sum + 1;
+    if (t.away.total === t.home.total) return sum + 0.5;
+    return sum;
+  }, 0);
+  const isCompleted = fixture.status === "completed";
+  const displayHomeThirdPoints = isCompleted ? (fixture.home_third_points ?? liveHomeThirdPoints) : liveHomeThirdPoints;
+  const displayAwayThirdPoints = isCompleted ? (fixture.away_third_points ?? liveAwayThirdPoints) : liveAwayThirdPoints;
+  const homeWins = displayHomeThirdPoints > displayAwayThirdPoints;
+  const awayWins = displayAwayThirdPoints > displayHomeThirdPoints;
+
+  function ThirdIcon({ label }: { label: FixtureThird["label"] }) {
+    if (label === "midfield") return <ArrowLeftRight className="h-4 w-4 text-zinc-500" />;
+    if (label === "home_attack") return <ArrowUpRight className="h-4 w-4 text-emerald-400 rotate-45" />;
+    return <ArrowDownRight className="h-4 w-4 text-sky-400 -rotate-45" />;
+  }
+
+  function ThirdRow({
+    diceSum,
+    isWinner,
+    label,
+    side,
+    stars,
+    total,
+  }: {
+    diceSum: string;
+    isWinner: boolean;
+    label: string;
+    side: "Heim" | "Ausw";
+    stars: number;
+    total: number;
+  }) {
+    return (
+      <div className={cn(
+        "flex items-center justify-between rounded px-3 py-2 text-xs",
+        isWinner
+          ? "border border-emerald-700/40 bg-emerald-950/30"
+          : "bg-zinc-800/40",
+      )}>
+        <div className="flex items-center gap-2">
+          <span className={cn("w-8 font-mono font-semibold", isWinner ? "text-emerald-300" : "text-zinc-500")}>{side}</span>
+          <span className={cn("font-semibold", isWinner ? "text-zinc-100" : "text-zinc-400")}>{stars}</span>
+          <span className="text-zinc-600">+ {label}</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-zinc-600">+</span>
+          <span className={cn(
+            "flex h-7 w-7 items-center justify-center rounded font-bold",
+            isWinner ? "border border-emerald-600/50 bg-emerald-900/50 text-emerald-300" : "border border-zinc-700 bg-zinc-800 text-zinc-300",
+          )}>{diceSum}</span>
+          <span className="text-zinc-600">=</span>
+          <span className={cn("min-w-[2rem] text-right font-bold tabular-nums text-base", isWinner ? "text-emerald-300" : "text-zinc-300")}>{total}</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-5 space-y-4">
+      {/* Big score header — only for manager matches */}
+      <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
+        <div className="flex items-center justify-between gap-3">
+          {/* Home side */}
+          <div className={cn("min-w-0 flex-1 rounded-lg p-3", homeWins ? "border border-emerald-700/40 bg-emerald-950/30" : "border border-zinc-800 bg-zinc-900/50")}>
+            <p className={cn("truncate text-sm font-semibold", homeWins ? "text-emerald-200" : "text-zinc-300")}>{home.display_name}</p>
+            <p className="mt-0.5 text-xs text-zinc-600">{home.kind === "cpu" ? "CPU" : "Manager"}</p>
+            <div className="mt-2 flex gap-2 text-xs">
+              {[
+                { z: "DEF", v: fixture.home_locked_def },
+                { z: "MID", v: fixture.home_locked_mid },
+                { z: "ATT", v: fixture.home_locked_att },
+              ].map(({ z, v }) => v != null ? (
+                <div className="flex flex-col items-center rounded bg-zinc-800/60 px-2 py-1" key={z}>
+                  <span className="text-zinc-500">{z}</span>
+                  <span className={cn("font-bold", homeWins ? "text-emerald-300" : "text-zinc-200")}>{v}</span>
+                </div>
+              ) : null)}
+            </div>
+            <div className="mt-2 flex gap-2">
+              <div className={cn("rounded px-2 py-1 text-xs", homeWins ? "bg-emerald-900/40 text-emerald-300" : "bg-zinc-800 text-zinc-400")}>
+                <span className="text-zinc-600">Drittel </span>{displayHomeThirdPoints}
+              </div>
+              <div className={cn("rounded px-2 py-1 text-xs font-semibold", homeWins ? "bg-emerald-900/40 text-emerald-300" : "bg-zinc-800 text-zinc-400")}>
+                <span className="text-zinc-600">Punkte </span>{isCompleted ? (fixture.home_score ?? 0) : "–"}
+              </div>
+            </div>
+          </div>
+
+          {/* Score */}
+          <div className="flex shrink-0 flex-col items-center">
+            <div className="flex items-center gap-1 text-3xl font-black tabular-nums">
+              <span className={cn(homeWins ? "text-emerald-400" : "text-zinc-500")}>{displayHomeThirdPoints}</span>
+              <span className="text-zinc-700">:</span>
+              <span className={cn(awayWins ? "text-emerald-400" : "text-zinc-500")}>{displayAwayThirdPoints}</span>
+            </div>
+            <span className="mt-0.5 text-[10px] uppercase tracking-wide text-zinc-600">
+              {isCompleted ? "Final" : `${thirds.length}/3 Drittel`}
+            </span>
+          </div>
+
+          {/* Away side */}
+          <div className={cn("min-w-0 flex-1 rounded-lg p-3 text-right", awayWins ? "border border-emerald-700/40 bg-emerald-950/30" : "border border-zinc-800 bg-zinc-900/50")}>
+            <p className={cn("truncate text-sm font-semibold", awayWins ? "text-emerald-200" : "text-zinc-300")}>{away.display_name}</p>
+            <p className="mt-0.5 text-xs text-zinc-600">{away.kind === "cpu" ? "CPU" : "Manager"}</p>
+            <div className="mt-2 flex justify-end gap-2 text-xs">
+              {[
+                { z: "DEF", v: fixture.away_locked_def },
+                { z: "MID", v: fixture.away_locked_mid },
+                { z: "ATT", v: fixture.away_locked_att },
+              ].map(({ z, v }) => v != null ? (
+                <div className="flex flex-col items-center rounded bg-zinc-800/60 px-2 py-1" key={z}>
+                  <span className="text-zinc-500">{z}</span>
+                  <span className={cn("font-bold", awayWins ? "text-emerald-300" : "text-zinc-200")}>{v}</span>
+                </div>
+              ) : null)}
+            </div>
+            <div className="mt-2 flex justify-end gap-2">
+              <div className={cn("rounded px-2 py-1 text-xs", awayWins ? "bg-emerald-900/40 text-emerald-300" : "bg-zinc-800 text-zinc-400")}>
+                <span className="text-zinc-600">Drittel </span>{displayAwayThirdPoints}
+              </div>
+              <div className={cn("rounded px-2 py-1 text-xs font-semibold", awayWins ? "bg-emerald-900/40 text-emerald-300" : "bg-zinc-800 text-zinc-400")}>
+                <span className="text-zinc-600">Punkte </span>{isCompleted ? (fixture.away_score ?? 0) : "–"}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Drittel breakdown */}
+      <div className="grid gap-3 md:grid-cols-3">
+        {thirds.map((third) => {
+          const homeWinsThird = third.home.total > third.away.total;
+          const awayWinsThird = third.away.total > third.home.total;
+          const topBorderClass = homeWinsThird || awayWinsThird ? "border-t-emerald-600" : "border-t-zinc-700";
+          return (
+            <div className={cn("rounded-lg border border-zinc-800 bg-zinc-900/50 p-3 border-t-2", topBorderClass)} key={third.index}>
+              <div className="mb-3 flex items-center justify-between">
+                <p className="text-xs font-semibold text-zinc-200">Drittel {third.index}: {getThirdLabel(third.label)}</p>
+                <ThirdIcon label={third.label} />
+              </div>
+              <div className="space-y-1.5">
+                <ThirdRow
+                  diceSum={third.home.dice.join("+")}
+                  isWinner={homeWinsThird}
+                  label={`Links ${third.home.dice[0] + third.home.dice[1]}`}
+                  side="Heim"
+                  stars={third.home.zone_stars}
+                  total={third.home.total}
+                />
+                <ThirdRow
+                  diceSum={third.away.dice.join("+")}
+                  isWinner={awayWinsThird}
+                  label={`Links ${third.away.dice[0] + third.away.dice[1]}`}
+                  side="Ausw"
+                  stars={third.away.zone_stars}
+                  total={third.away.total}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Events */}
+      {events.length > 0 ? (
+        <div className="space-y-2">
+          <p className="text-xs font-medium uppercase tracking-wide text-zinc-600">Ereignisse</p>
+          {events.map((event, index) => {
+            const eventClubName = home.club_id === event.club_id
+              ? home.display_name
+              : away.club_id === event.club_id
+                ? away.display_name
+                : "Unbekannt";
+            const ownSquad = snapshot.club_overview?.squad ?? [];
+            const injuredPlayer = event.event_type === "injury"
+              ? ownSquad.find((p) => p.id === event.player_id)?.player.display_name ?? null
+              : null;
+            const zoneLabel = event.zone === "ATT" ? "Angriff" : event.zone === "MID" ? "Mittelfeld" : event.zone === "DEF" ? "Abwehr" : event.zone;
+            return (
+              <div
+                className={cn("flex items-start gap-3 rounded-md border p-2.5 text-xs",
+                  event.event_type === "injury" ? "border-rose-800/60 bg-rose-950/30" : "border-violet-800/60 bg-violet-950/30")}
+                key={`${event.event_type}-${index}`}
+              >
+                <span className="mt-0.5 text-base leading-none">{event.event_type === "injury" ? "🚑" : "🎯"}</span>
+                <div>
+                  <p className={cn("font-semibold", event.event_type === "injury" ? "text-rose-200" : "text-violet-200")}>
+                    {event.event_type === "injury" ? "Verletzung" : "Game Changer"}
+                    {" "}<span className="font-normal text-zinc-400">— {eventClubName}</span>
+                  </p>
+                  <p className="mt-0.5 text-zinc-400">
+                    {event.event_type === "injury" ? (
+                      <>{injuredPlayer ? <span className="font-medium text-rose-300">{injuredPlayer}</span> : "Spieler verletzt"}{" "}in Zone {zoneLabel} · Wurf {event.dice.join("+")}</>
+                    ) : (
+                      <>Zone {zoneLabel} · Wurf {event.dice.join("+")}</>
+                    )}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function parseFixtureResult(value: Record<string, unknown> | null | undefined) {
   if (!value || !Array.isArray(value.thirds)) {
     return null;
@@ -3720,16 +3822,6 @@ function parseFixtureResult(value: Record<string, unknown> | null | undefined) {
       label: "away_attack" | "home_attack" | "midfield";
     }>;
   };
-}
-
-function getThirdLabel(label: "away_attack" | "home_attack" | "midfield") {
-  const labels = {
-    away_attack: "Auswaerts greift an",
-    home_attack: "Heim greift an",
-    midfield: "Mittelfeld",
-  };
-
-  return labels[label];
 }
 
 function getOwnLineupPowerSummary(snapshot: LobbySnapshot): LineupPowerSummary | null {
@@ -3779,75 +3871,4 @@ function getClubLogoSrc(participant: NonNullable<LobbySnapshot["season"]>["fixtu
   return logoByName[participant.display_name] ?? null;
 }
 
-function formatSavedAt(value: string) {
-  return new Intl.DateTimeFormat("de-DE", {
-    dateStyle: "short",
-    timeStyle: "short",
-  }).format(new Date(value));
-}
 
-function formatSavedLine(value: string | null | undefined) {
-  return value ? `Zuletzt gespeichert: ${formatSavedAt(value)}` : "Spielstand geladen";
-}
-
-function formatMoney(value: number) {
-  return new Intl.NumberFormat("de-DE", {
-    currency: "EUR",
-    maximumFractionDigits: 0,
-    notation: "compact",
-    style: "currency",
-  }).format(value);
-}
-
-function formatStars(value: number) {
-  return Number.isInteger(value) ? String(value) : value.toFixed(1);
-}
-
-function SquadPositionBreakdown({ squad }: { squad: NonNullable<LobbySnapshot["club_overview"]>["squad"] }) {
-  const POSITIONS = [
-    { key: "GK", label: "TW" },
-    { key: "DEF", label: "ABW" },
-    { key: "MID", label: "MIT" },
-    { key: "ATT", label: "ANG" },
-  ] as const;
-
-  const counts = Object.fromEntries(
-    POSITIONS.map(({ key }) => [
-      key,
-      squad.filter((p) => {
-        const positions = p.player.eligible_positions?.length ? p.player.eligible_positions : [p.player.position];
-        return positions.includes(key);
-      }).length,
-    ]),
-  ) as Record<string, number>;
-
-  return (
-    <div className="flex flex-wrap gap-2">
-      {POSITIONS.map(({ key, label }) => (
-        <div key={key} className="flex items-center gap-1.5 rounded-md border border-zinc-800 bg-zinc-900/60 px-2.5 py-1.5">
-          <span className="text-[10px] font-semibold uppercase tracking-widest text-zinc-500">{label}</span>
-          <span className="text-sm font-bold text-zinc-100">{counts[key]}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function getClubStatusLabel(status: LobbyClub["status"]) {
-  const labels: Record<string, string> = {
-    established: "Established",
-    mid_table: "Mid Table",
-    newly_promoted: "Newly Promoted",
-    title_contender: "Title Contender",
-  };
-
-  return labels[status ?? "newly_promoted"] ?? "Newly Promoted";
-}
-
-function getTurnFallback(phase: string, isHost: boolean) {
-  if (phase === "lobby") {
-    return isHost ? "Host" : "Wartet";
-  }
-
-  return "Noch offen";
-}

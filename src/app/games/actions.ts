@@ -35,10 +35,19 @@ import {
 import {
   applyAndKeepUnmatchedModifiers,
   applyImmediateEffect,
+  buildPendingChoice,
   buildZoneModifiers,
+  effectToPendingScope,
+  enqueuePendingEffect,
+  injuryDurationMatchday,
   mergeModifiersIntoPartialResult,
   parseEffects,
+  selectInjuryTarget,
+  type GameChangerEffect,
+  type ImmediateContext,
+  type InjuryCandidate,
   type PartialResult,
+  type PendingChoice,
 } from "@/lib/game/game-changer-effects";
 import type { GameChangerCategory } from "@/lib/lobby/types";
 import {
@@ -58,7 +67,7 @@ import {
   type TrainingEventMetadata,
 } from "@/lib/lobby/training";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
-import type { DraftPickSnapshot, DraftPlayerRow, LobbyClub, LobbyGame, LobbyPhase, ScoutingDrawSnapshot, StaffCardRow } from "@/lib/lobby/types";
+import type { DraftPickSnapshot, DraftPlayerRow, LobbyClub, LobbyGame, LobbyPhase, ScoutingDrawSnapshot } from "@/lib/lobby/types";
 
 export async function setReadyFromDashboardAction(formData: FormData) {
   const gameId = String(formData.get("game_id") || "");
@@ -476,10 +485,28 @@ export async function trainPlayerAction(formData: FormData) {
     .filter((event) => event.season_number === seasonNumber && event.game_phase === game.phase);
 
   // Use the snapshotted capacity if available (set at off_season start), otherwise fall back to live calculation
+  const baseCapacity = getTrainingCapacity(ownedPlayer.club.training_level).players;
   const snapshotCap = ownedPlayer.club.offseason_training_capacity;
-  const effectiveExtraPlayers = snapshotCap != null
-    ? snapshotCap - getTrainingCapacity(ownedPlayer.club.training_level).players
+  const baseExtraPlayers = snapshotCap != null
+    ? snapshotCap - baseCapacity
     : trainingPlayerBonus;
+
+  // Apply training_capacity_delta from active pending effects (Good/Bad News cards).
+  const trainingPendingEffects = await getActivePendingEffects(supabase, ownedPlayer.club_id, "current_offseason");
+  let pendingExtra = 0;
+  let doubleTraining = false;
+  for (const eff of trainingPendingEffects) {
+    if (eff.effect_type !== "training_capacity_delta") continue;
+    const delta = eff.payload.delta;
+    if (delta === "double") {
+      doubleTraining = true;
+    } else if (typeof delta === "number") {
+      pendingExtra += delta;
+    }
+  }
+  const effectiveBase = doubleTraining ? baseCapacity * 2 : baseCapacity;
+  const effectiveExtraPlayers = effectiveBase - baseCapacity + Math.max(0, baseExtraPlayers) + pendingExtra;
+
   const trainingStatus = getTrainingStatus({
     events: trainingEvents,
     trainingLevel: ownedPlayer.club.training_level,
@@ -603,18 +630,48 @@ export async function drawScoutingPlayerAction(formData: FormData) {
     redirect(`/games/${roomCode}?view=scouting`);
   }
 
+  // Block when an Illegaler-Jugendtransfer-style offseason lock is active.
+  const scoutingPendingEffects = await getActivePendingEffects(supabase, ownClub.id, "current_offseason");
+  const scoutingBlocked = scoutingPendingEffects.some((eff) => {
+    if (eff.effect_type !== "offseason_lock") return false;
+    const blocks = ((eff.payload as { blocks?: string[] }).blocks ?? []);
+    return blocks.includes("scouting");
+  });
+  // Free draws bump effective capacity by their count; we consume the first matching effect on draw.
+  const freeDrawEffect = scoutingPendingEffects.find((eff) => eff.effect_type === "free_scouting_draw" && Number((eff.payload as { count?: number }).count ?? 0) > 0);
+  const freeDrawCount = freeDrawEffect ? Number((freeDrawEffect.payload as { count?: number }).count ?? 0) : 0;
+
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
   const draws = await getScoutingDraws(supabase, gameId, seasonNumber);
   const ownDraws = draws.filter((draw) => draw.club_id === ownClub.id);
-  const capacity = await getEffectiveScoutingCapacity(supabase, ownClub);
+  const baseCapacity = await getEffectiveScoutingCapacity(supabase, ownClub);
+  const effectiveCapacity = baseCapacity + freeDrawCount;
   const drawCheck = canDrawScoutingPlayer({
     drawnCount: ownDraws.length,
     ownClubId: ownClub.id,
-    scoutingCapacity: capacity,
+    scoutingCapacity: effectiveCapacity,
   });
+
+  if (scoutingBlocked && ownDraws.length >= baseCapacity && freeDrawCount === 0) {
+    redirect(`/games/${roomCode}?view=scouting`);
+  }
 
   if (!drawCheck.ok) {
     redirect(`/games/${roomCode}?view=scouting`);
+  }
+
+  // Consume one free_scouting_draw use if the draw goes beyond base capacity
+  let consumeFreeDrawId: string | null = null;
+  if (freeDrawEffect && ownDraws.length >= baseCapacity) {
+    const remaining = freeDrawCount - 1;
+    if (remaining <= 0) {
+      consumeFreeDrawId = freeDrawEffect.id;
+    } else {
+      await supabase
+        .from("club_pending_effects")
+        .update({ payload: { ...(freeDrawEffect.payload as object), count: remaining } })
+        .eq("id", freeDrawEffect.id);
+    }
   }
 
   const selectedPlayer = await pickAvailableScoutingPlayer({
@@ -641,6 +698,10 @@ export async function drawScoutingPlayerAction(formData: FormData) {
 
   if (insertError) {
     throw insertError;
+  }
+
+  if (consumeFreeDrawId) {
+    await consumePendingEffects(supabase, [consumeFreeDrawId]);
   }
 
   await touchGameSave(supabase, gameId, userId);
@@ -682,7 +743,26 @@ export async function buyScoutedPlayerAction(formData: FormData) {
   }
 
   const ownDraws = draws.filter((item) => item.club_id === ownClub.id);
-  const price = Number(draw.player.scouting_price ?? 0);
+  const baseScoutingPrice = Number(draw.player.scouting_price ?? 0);
+
+  // Apply offseason lock + next_transfer price delta + free_scouting_buy_next
+  const buyPendingEffects = await getActivePendingEffects(supabase, ownClub.id);
+  const transfersBlocked = buyPendingEffects.some((eff) => {
+    if (eff.effect_type !== "offseason_lock") return false;
+    if (eff.scope !== "current_offseason") return false;
+    const blocks = ((eff.payload as { blocks?: string[] }).blocks ?? []);
+    return blocks.includes("transfers");
+  });
+  if (transfersBlocked) {
+    redirect(`/games/${roomCode}?view=scouting`);
+  }
+
+  const transferDeltaEffect = buyPendingEffects.find((eff) => eff.effect_type === "next_transfer_price_delta" && eff.scope === "next_transfer");
+  const transferDelta = transferDeltaEffect ? Number((transferDeltaEffect.payload as { amount?: number }).amount ?? 0) : 0;
+  const freeBuyEffect = buyPendingEffects.find((eff) => eff.effect_type === "free_scouting_buy_next" && eff.scope === "next_transfer" && Number((eff.payload as { count?: number }).count ?? 0) > 0);
+  const adjustedPrice = freeBuyEffect ? 0 : Math.max(0, baseScoutingPrice + transferDelta);
+  const price = adjustedPrice;
+
   const buyCheck = canBuyScoutedPlayer({
     drawnCount: ownDraws.length,
     money: Number(ownClub.money),
@@ -752,6 +832,14 @@ export async function buyScoutedPlayerAction(formData: FormData) {
 
   if (transactionError) {
     throw transactionError;
+  }
+
+  // Consume one-shot transfer effects after a successful buy
+  const toConsume: string[] = [];
+  if (freeBuyEffect) toConsume.push(freeBuyEffect.id);
+  if (transferDeltaEffect) toConsume.push(transferDeltaEffect.id);
+  if (toConsume.length > 0) {
+    await consumePendingEffects(supabase, toConsume);
   }
 
   await touchGameSave(supabase, gameId, userId);
@@ -880,6 +968,17 @@ export async function sellClubPlayerAction(formData: FormData) {
   }
 
   if (ownedPlayer.club_id !== ownClub.id || !isOffseasonPhase(game.phase)) {
+    redirect(`/games/${roomCode}?view=${returnView}`);
+  }
+
+  // Block when an offseason_lock with transfers is active
+  const sellPendingEffects = await getActivePendingEffects(supabase, ownClub.id, "current_offseason");
+  const sellBlocked = sellPendingEffects.some((eff) => {
+    if (eff.effect_type !== "offseason_lock") return false;
+    const blocks = ((eff.payload as { blocks?: string[] }).blocks ?? []);
+    return blocks.includes("transfers");
+  });
+  if (sellBlocked) {
     redirect(`/games/${roomCode}?view=${returnView}`);
   }
 
@@ -1191,6 +1290,13 @@ export async function saveLineupAction(formData: FormData) {
   }
 
   const { ownClub } = await getGameClubContext(supabase, gameId, userId);
+
+  // If a "next_match_lineup_locked" pending effect is active for this club, refuse to save changes.
+  const lineupLockedEffects = await getActivePendingEffects(supabase, ownClub.id, "next_match");
+  if (lineupLockedEffects.some((eff) => eff.effect_type === "next_match_lineup_locked")) {
+    redirect(`/games/${roomCode}?view=lineup&locked=1`);
+  }
+
   const submitted = parseLineupPayload(lineupPayload);
   const { data: ownedRows, error: ownedError } = await supabase
     .from("club_players")
@@ -1257,7 +1363,11 @@ export async function lockFixtureLineupAction(formData: FormData) {
     throw new Error("Du kannst nur deine eigenen Fixtures locken.");
   }
 
-  // Calculate locked lineup power including staff bonuses
+  // Check for next_match pending effects that affect locked-power computation
+  const nextMatchEffects = await getActivePendingEffects(supabase, ownClub.id, "next_match");
+  const staffDisabled = nextMatchEffects.some((eff) => eff.effect_type === "next_match_staff_disabled");
+
+  // Calculate locked lineup power including staff bonuses (unless disabled by Bad News)
   const [{ data: playerData }, { data: staffData }] = await Promise.all([
     supabase
       .from("club_players")
@@ -1279,7 +1389,7 @@ export async function lockFixtureLineupAction(formData: FormData) {
       .returns<Array<{ staff_card: { effects: Array<{ type: string; zone?: string; stars?: number; factor?: number }> } | null }>>(),
   ]);
 
-  const staffEffects = (staffData ?? []).flatMap((s) => s.staff_card?.effects ?? []);
+  const staffEffects = staffDisabled ? [] : (staffData ?? []).flatMap((s) => s.staff_card?.effects ?? []);
   const powers = calculateLineupPower(
     (playerData ?? []).map((p) => ({
       chemistry_left: p.player?.chemistry_left,
@@ -1532,7 +1642,14 @@ export async function advancePhaseAction(formData: FormData) {
   }
 
   if (nextPhase === "off_season") {
+    // Promote next_offseason pending effects to current_offseason for the new offseason
+    await transitionPendingEffectsToOffseason(supabase, gameId);
     await snapshotOffseasonCapacities(supabase, gameId);
+  }
+
+  // Consume any remaining current_offseason effects when leaving off_season
+  if (game.phase === "off_season" && nextPhase !== "off_season") {
+    await expireCurrentOffseasonEffects(supabase, gameId);
   }
 
   const { error: updateGameError } = await supabase
@@ -1897,6 +2014,15 @@ async function resolveFixtureServer(params: {
   userId: string;
 }) {
   const { fixture, game, participants, supabase, userId } = params;
+
+  // Apply next_match pending effects (zone deltas, staff disable) before resolving CPU-only fixtures.
+  const { consumedIds: preMatchConsumed } = await injectNextMatchEffects(supabase, {
+    fixtureId: fixture.id,
+    homeClubId: participants.home.club_id ?? null,
+    awayClubId: participants.away.club_id ?? null,
+    currentPartial: (fixture.partial_result ?? null) as PartialResult | null,
+  });
+
   const [homeSide, awaySide] = await Promise.all([
     buildFixtureSide(supabase, participants.home, fixture.home_cpu_lineup_id),
     buildFixtureSide(supabase, participants.away, fixture.away_cpu_lineup_id),
@@ -1908,11 +2034,13 @@ async function resolveFixtureServer(params: {
     matchPointsMode: getMatchPointsMode(game.settings),
   });
 
+  const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
   for (const event of resolution.events) {
     if (event.event_type === "injury" && event.club_id) {
+      const untilMatchday = Math.max(1, Math.trunc(fixture.matchday)) + 1;
       await supabase
         .from("club_players")
-        .update({ injured: true })
+        .update({ injured: true, injured_until_matchday: untilMatchday })
         .eq("id", event.player_id)
         .eq("club_id", event.club_id);
       const { data: injuredPlayer } = await supabase
@@ -1940,15 +2068,17 @@ async function resolveFixtureServer(params: {
         const effects = parseEffects(card.effects);
 
         if (category !== "secret_weapon") {
-          for (const effect of effects) {
-            await applyImmediateEffect(supabase, event.club_id, effect);
-          }
-          if (clubGameChangerId) {
-            await supabase
-              .from("club_game_changers")
-              .update({ used_at: new Date().toISOString(), fixture_id: fixture.id })
-              .eq("id", clubGameChangerId);
-          }
+          await dispatchGameChangerEffects({
+            supabase,
+            clubId: event.club_id,
+            clubGameChangerId,
+            effects,
+            ctx: {
+              fixtureId: fixture.id,
+              matchday: fixture.matchday,
+              seasonNumber,
+            },
+          });
         }
 
         await writeMatchNews(supabase, {
@@ -1980,6 +2110,8 @@ async function resolveFixtureServer(params: {
     throw fixtureError;
   }
 
+  await consumePendingEffects(supabase, preMatchConsumed);
+  await healExpiredInjuries(supabase, fixture.game_id, fixture.matchday);
   await rebuildSeasonStandings(supabase, fixture.game_id, fixture.season_number);
   await touchGameSave(supabase, fixture.game_id, userId);
 }
@@ -2119,7 +2251,7 @@ async function assignRandomGameChanger(
   let query = supabase
     .from("game_changer_cards")
     .select("id, category, effects, display_name, description")
-    .limit(20);
+    .limit(60);
 
   if (category) {
     query = query.eq("category", category) as typeof query;
@@ -2137,11 +2269,292 @@ async function assignRandomGameChanger(
 
   const { data: inserted } = await supabase
     .from("club_game_changers")
-    .insert({ club_id: clubId, game_changer_card_id: card.id })
+    .insert({ club_id: clubId, game_changer_card_id: card.id, status: "resolved" })
     .select("id")
     .single<{ id: string }>();
 
   return { card, clubGameChangerId: inserted?.id ?? null };
+}
+
+/**
+ * Loads injury candidates (non-bench, non-injured) for a club so we can apply
+ * targeted_injury cards. Returns at most a few hundred rows.
+ */
+async function loadInjuryCandidates(
+  supabase: SupabaseServiceClient,
+  clubId: string,
+): Promise<InjuryCandidate[]> {
+  const { data } = await supabase
+    .from("club_players")
+    .select("id, current_stars, current_zone, injured, player:players(display_name, position)")
+    .eq("club_id", clubId)
+    .eq("injured", false)
+    .returns<Array<{ id: string; current_stars: number | string; current_zone: string; injured: boolean; player: { display_name: string; position: string | null } | null }>>();
+  return (data ?? []).map((row) => ({
+    id: row.id,
+    current_stars: Number(row.current_stars),
+    current_zone: row.current_zone,
+    position: row.player?.position ?? null,
+    display_name: row.player?.display_name ?? "Spieler",
+  }));
+}
+
+async function applyTargetedInjury(
+  supabase: SupabaseServiceClient,
+  clubId: string,
+  effect: Extract<GameChangerEffect, { type: "targeted_injury" }>,
+  ctx: { matchday: number },
+): Promise<{ applied: boolean; detail?: string; clubPlayerId?: string }> {
+  const candidates = await loadInjuryCandidates(supabase, clubId);
+  const target = selectInjuryTarget(effect, candidates);
+  if (!target) return { applied: false };
+  const until = injuryDurationMatchday(effect, ctx.matchday);
+  await supabase
+    .from("club_players")
+    .update({ injured: true, injured_until_matchday: until })
+    .eq("id", target.id);
+  const durationLabel = effect.duration === "season" ? "Rest der Saison" : "naechstes Spiel";
+  return { applied: true, detail: `${target.display_name} verletzt (${durationLabel})`, clubPlayerId: target.id };
+}
+
+/**
+ * Central dispatcher for a newly drawn Good/Bad News card. Decides per effect:
+ *   - persistent  -> insert into club_pending_effects
+ *   - choice      -> set club_game_changers.status='pending' with choice_payload
+ *   - immediate   -> apply now (money_change, status_tier_change, etc.)
+ *   - targeted_injury -> resolve via selector, apply injury, no choice
+ */
+async function dispatchGameChangerEffects(params: {
+  supabase: SupabaseServiceClient;
+  clubId: string;
+  clubGameChangerId: string | null;
+  effects: GameChangerEffect[];
+  ctx: ImmediateContext & { matchday: number };
+}): Promise<{ status: "resolved" | "pending"; choice: PendingChoice | null; details: string[] }> {
+  const { supabase, clubId, clubGameChangerId, effects, ctx } = params;
+  const details: string[] = [];
+  let pendingChoice: PendingChoice | null = null;
+  let pendingChoiceEffectIdx = -1;
+
+  // Find first effect that requires a player/zone choice. Only one choice per card.
+  for (let i = 0; i < effects.length; i++) {
+    const choice = buildPendingChoice(effects[i]);
+    if (choice) {
+      pendingChoice = choice;
+      pendingChoiceEffectIdx = i;
+      break;
+    }
+  }
+
+  for (let i = 0; i < effects.length; i++) {
+    if (i === pendingChoiceEffectIdx) continue;
+    const effect = effects[i];
+
+    if (effect.type === "targeted_injury") {
+      const result = await applyTargetedInjury(supabase, clubId, effect, { matchday: ctx.matchday });
+      if (result.detail) details.push(result.detail);
+      continue;
+    }
+
+    const persistent = effectToPendingScope(effect);
+    if (persistent) {
+      await enqueuePendingEffect(supabase, clubId, effect, {
+        ...ctx,
+        sourceClubGameChangerId: clubGameChangerId ?? undefined,
+      });
+      continue;
+    }
+
+    const result = await applyImmediateEffect(supabase, clubId, effect, ctx);
+    if (result.detail) details.push(result.detail);
+  }
+
+  if (pendingChoice && clubGameChangerId) {
+    await supabase
+      .from("club_game_changers")
+      .update({ status: "pending", choice_payload: pendingChoice as unknown as Record<string, unknown> })
+      .eq("id", clubGameChangerId);
+    return { status: "pending", choice: pendingChoice, details };
+  }
+
+  if (clubGameChangerId) {
+    await supabase
+      .from("club_game_changers")
+      .update({
+        status: "resolved",
+        used_at: new Date().toISOString(),
+        fixture_id: ctx.fixtureId ?? null,
+      })
+      .eq("id", clubGameChangerId);
+  }
+
+  return { status: "resolved", choice: null, details };
+}
+
+/**
+ * Health-check after a matchday: any player whose injury duration has expired is healed.
+ * injured_until_matchday: > 0 means injured up to and including that matchday. So if
+ * the just-finished matchday equals or exceeds the marker, the player heals.
+ * Season-long injuries (value = -1) only heal at season end.
+ */
+async function healExpiredInjuries(
+  supabase: SupabaseServiceClient,
+  gameId: string,
+  currentMatchday: number,
+): Promise<void> {
+  await supabase
+    .from("club_players")
+    .update({ injured: false, injured_until_matchday: null })
+    .gt("injured_until_matchday", 0)
+    .lte("injured_until_matchday", currentMatchday)
+    .in("club_id", await listClubIds(supabase, gameId));
+}
+
+async function listClubIds(supabase: SupabaseServiceClient, gameId: string): Promise<string[]> {
+  const { data } = await supabase
+    .from("clubs")
+    .select("id")
+    .eq("game_id", gameId)
+    .returns<Array<{ id: string }>>();
+  return (data ?? []).map((row) => row.id);
+}
+
+type PendingEffectRow = {
+  id: string;
+  club_id: string;
+  effect_type: string;
+  payload: Record<string, unknown>;
+  scope: string;
+  consumed_at: string | null;
+};
+
+async function getActivePendingEffects(
+  supabase: SupabaseServiceClient,
+  clubId: string,
+  scope?: string,
+): Promise<PendingEffectRow[]> {
+  let query = supabase
+    .from("club_pending_effects")
+    .select("id, club_id, effect_type, payload, scope, consumed_at")
+    .eq("club_id", clubId)
+    .is("consumed_at", null);
+  if (scope) {
+    query = query.eq("scope", scope) as typeof query;
+  }
+  const { data, error } = await query.returns<PendingEffectRow[]>();
+  if (error) return [];
+  return data ?? [];
+}
+
+async function consumePendingEffects(
+  supabase: SupabaseServiceClient,
+  effectIds: string[],
+): Promise<void> {
+  if (effectIds.length === 0) return;
+  await supabase
+    .from("club_pending_effects")
+    .update({ consumed_at: new Date().toISOString() })
+    .in("id", effectIds);
+}
+
+/**
+ * Promotes next_offseason → current_offseason for all clubs of a game when entering off_season.
+ */
+async function transitionPendingEffectsToOffseason(
+  supabase: SupabaseServiceClient,
+  gameId: string,
+): Promise<void> {
+  const clubIds = await listClubIds(supabase, gameId);
+  if (clubIds.length === 0) return;
+  await supabase
+    .from("club_pending_effects")
+    .update({ scope: "current_offseason" })
+    .in("club_id", clubIds)
+    .eq("scope", "next_offseason")
+    .is("consumed_at", null);
+}
+
+/**
+ * Expires all current_offseason pending effects when leaving off_season.
+ */
+async function expireCurrentOffseasonEffects(
+  supabase: SupabaseServiceClient,
+  gameId: string,
+): Promise<void> {
+  const clubIds = await listClubIds(supabase, gameId);
+  if (clubIds.length === 0) return;
+  await supabase
+    .from("club_pending_effects")
+    .update({ consumed_at: new Date().toISOString() })
+    .in("club_id", clubIds)
+    .eq("scope", "current_offseason")
+    .is("consumed_at", null);
+}
+
+/**
+ * Loads next_match effects for both clubs participating in a fixture and translates
+ * them into zone modifiers / partial_result flags. Used at match start.
+ */
+async function injectNextMatchEffects(
+  supabase: SupabaseServiceClient,
+  params: {
+    fixtureId: string;
+    homeClubId: string | null;
+    awayClubId: string | null;
+    currentPartial: PartialResult | null;
+  },
+): Promise<{ updatedPartial: PartialResult; staffDisabled: { home: boolean; away: boolean }; drawDiceBonus: { home: number; away: number }; lineupLocked: { home: boolean; away: boolean }; consumedIds: string[] }> {
+  const base: PartialResult = params.currentPartial ?? { thirds: [], pending_modifiers: [] };
+  const consumedIds: string[] = [];
+  const newMods = [...base.pending_modifiers];
+  const staffDisabled = { home: false, away: false };
+  const drawDiceBonus = { home: 0, away: 0 };
+  const lineupLocked = { home: false, away: false };
+
+  for (const side of ["home", "away"] as const) {
+    const clubId = side === "home" ? params.homeClubId : params.awayClubId;
+    if (!clubId) continue;
+    const effects = await getActivePendingEffects(supabase, clubId, "next_match");
+    for (const eff of effects) {
+      consumedIds.push(eff.id);
+      switch (eff.effect_type) {
+        case "next_match_zone_delta": {
+          const zone = (eff.payload.zone ?? null) as "ATT" | "MID" | "DEF" | null;
+          const delta = Number(eff.payload.delta ?? 0);
+          if (zone) {
+            newMods.push({ zone, delta, for: side, source_club_game_changer_id: "" });
+          }
+          break;
+        }
+        case "next_match_staff_disabled":
+          staffDisabled[side] = true;
+          break;
+        case "next_match_draw_dice_bonus":
+          drawDiceBonus[side] += Number(eff.payload.bonus ?? 0);
+          break;
+        case "next_match_lineup_locked":
+          lineupLocked[side] = true;
+          break;
+        default:
+          break;
+      }
+    }
+  }
+
+  const meta = ((base as unknown) as Record<string, unknown>).meta ?? {};
+  const updatedPartial: PartialResult = {
+    ...base,
+    pending_modifiers: newMods,
+  };
+  (updatedPartial as unknown as Record<string, unknown>).meta = {
+    ...(meta as Record<string, unknown>),
+    staff_disabled_home: staffDisabled.home,
+    staff_disabled_away: staffDisabled.away,
+    draw_dice_bonus_home: drawDiceBonus.home,
+    draw_dice_bonus_away: drawDiceBonus.away,
+  };
+
+  return { updatedPartial, staffDisabled, drawDiceBonus, lineupLocked, consumedIds };
 }
 
 async function writeMatchNews(
@@ -2199,10 +2612,26 @@ export async function startMatchAction(formData: FormData) {
     redirect(`/games/${roomCode}?view=matchday`);
   }
 
+  // Pull and apply next_match pending effects (zone deltas, staff disable, etc.) for both clubs.
+  const participants = await getFixtureParticipants(supabase, fixture);
+  const { updatedPartial, consumedIds } = await injectNextMatchEffects(supabase, {
+    fixtureId,
+    homeClubId: participants.home.club_id ?? null,
+    awayClubId: participants.away.club_id ?? null,
+    currentPartial: (fixture.partial_result ?? null) as PartialResult | null,
+  });
+  // Stamp the source_club_game_changer_id for zone modifiers without one (would be empty string)
+  for (const mod of updatedPartial.pending_modifiers) {
+    if (!mod.source_club_game_changer_id) {
+      mod.source_club_game_changer_id = "pending_effect";
+    }
+  }
+
   await supabase
     .from("fixtures")
-    .update({ match_state: "in_progress", current_third: 0 })
+    .update({ match_state: "in_progress", current_third: 0, partial_result: updatedPartial })
     .eq("id", fixtureId);
+  await consumePendingEffects(supabase, consumedIds);
 
   revalidatePath(`/games/${roomCode}`);
   redirect(`/games/${roomCode}?view=matchday`);
@@ -2300,10 +2729,16 @@ export async function markReadyForNextThirdAction(formData: FormData) {
 
   const newThirds: ThirdResult[] = [...priorThirds, third];
 
+  const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
   // Process events: injuries + game changers
   for (const event of events) {
     if (event.event_type === "injury" && event.club_id) {
-      await supabase.from("club_players").update({ injured: true }).eq("id", event.player_id).eq("club_id", event.club_id);
+      const untilMatchday = Math.max(1, Math.trunc(fixture.matchday)) + 1;
+      await supabase
+        .from("club_players")
+        .update({ injured: true, injured_until_matchday: untilMatchday })
+        .eq("id", event.player_id)
+        .eq("club_id", event.club_id);
       const { data: injuredPlayer } = await supabase
         .from("club_players")
         .select("player:players(display_name)")
@@ -2331,17 +2766,17 @@ export async function markReadyForNextThirdAction(formData: FormData) {
         const effects = parseEffects(card.effects);
 
         if (category !== "secret_weapon") {
-          // Immediate effect
-          for (const effect of effects) {
-            await applyImmediateEffect(supabase, event.club_id, effect);
-          }
-          // Mark as used immediately
-          if (clubGameChangerId) {
-            await supabase
-              .from("club_game_changers")
-              .update({ used_at: new Date().toISOString(), fixture_id: fixtureId, applied_third: nextIndex })
-              .eq("id", clubGameChangerId);
-          }
+          await dispatchGameChangerEffects({
+            supabase,
+            clubId: event.club_id,
+            clubGameChangerId,
+            effects,
+            ctx: {
+              fixtureId,
+              matchday: fixture.matchday,
+              seasonNumber,
+            },
+          });
         }
 
         await writeMatchNews(supabase, {
@@ -2399,6 +2834,7 @@ export async function markReadyForNextThirdAction(formData: FormData) {
       .eq("id", fixtureId);
 
     if (updateError) throw updateError;
+    await healExpiredInjuries(supabase, gameId, fixture.matchday);
     await rebuildSeasonStandings(supabase, gameId, fixture.season_number);
     await touchGameSave(supabase, gameId, userId);
     await autoSimulateCpuOnlyFixtures(supabase, gameId, game, userId);
@@ -2711,13 +3147,13 @@ async function bookSeasonFinance(supabase: SupabaseServiceClient, gameId: string
       continue;
     }
 
-    const [{ data: club, error: clubError }, { data: staffRows }] = await Promise.all([
+    const [clubResultV3, { data: staffRows }] = await Promise.all([
       supabase
         .from("clubs")
-        .select("id, money, stadium_level, status, season_rank")
+        .select("id, money, stadium_level, status, status_override, status_override_until_season, stadium_level_cap, stadium_level_cap_until_season, season_rank")
         .eq("id", row.club_id)
         .eq("game_id", gameId)
-        .single<{ id: string; money: number | string; season_rank: number | null; stadium_level: number | null; status: string | null }>(),
+        .single<{ id: string; money: number | string; season_rank: number | null; stadium_level: number | null; status: string | null; status_override: string | null; status_override_until_season: number | null; stadium_level_cap: number | null; stadium_level_cap_until_season: number | null }>(),
       supabase
         .from("club_staff")
         .select("id, card:staff_cards(effects)")
@@ -2725,8 +3161,28 @@ async function bookSeasonFinance(supabase: SupabaseServiceClient, gameId: string
         .returns<Array<{ id: string; card: { effects: unknown[] } }>>(),
     ]);
 
+    let club = clubResultV3.data;
+    let clubError = clubResultV3.error;
+    if (clubError && (clubError as { code?: string }).code === "42703") {
+      const legacy = await supabase
+        .from("clubs")
+        .select("id, money, stadium_level, status, season_rank")
+        .eq("id", row.club_id)
+        .eq("game_id", gameId)
+        .single<{ id: string; money: number | string; season_rank: number | null; stadium_level: number | null; status: string | null }>();
+      if (legacy.data) {
+        club = { ...legacy.data, status_override: null, status_override_until_season: null, stadium_level_cap: null, stadium_level_cap_until_season: null };
+        clubError = null;
+      } else {
+        clubError = legacy.error;
+      }
+    }
+
     if (clubError) {
       throw clubError;
+    }
+    if (!club) {
+      throw new Error("Club not found while booking season finance");
     }
 
     const staffEffects = (staffRows ?? []).flatMap((s) => s.card?.effects ?? []) as Array<Record<string, unknown>>;
@@ -2735,10 +3191,18 @@ async function bookSeasonFinance(supabase: SupabaseServiceClient, gameId: string
     const staffAttrBonus = staffEffects.filter((e) => e.type === "attractiveness_bonus").reduce((sum, e) => sum + Number(e.stars ?? 0), 0);
     const wageMultiplier = staffEffects.filter((e) => e.type === "wage_multiplier").reduce((min, e) => Math.min(min, Number(e.factor ?? 1)), 1);
 
-    const baseStatus = row.status as "established" | "mid_table" | "newly_promoted" | "title_contender";
-    const effectiveStatus = applyStatusTierUp(baseStatus, tierUp);
+    // Game Changer effects: status_override (Fanmarsch / Pressekonferenz) and stadium_level_cap (Sicherheitsluecke)
+    const statusOverrideActive = club.status_override && (club.status_override_until_season == null || club.status_override_until_season >= seasonNumber);
+    const stadiumCapActive = club.stadium_level_cap != null && (club.stadium_level_cap_until_season == null || club.stadium_level_cap_until_season >= seasonNumber);
 
-    const stadiumIncome = getStadiumIncome(Number(club.stadium_level ?? 1), effectiveStatus);
+    const baseStatusKey = (statusOverrideActive ? club.status_override : row.status) as "established" | "mid_table" | "newly_promoted" | "title_contender";
+    const baseStatus = baseStatusKey ?? (row.status as "established" | "mid_table" | "newly_promoted" | "title_contender");
+    const effectiveStatus = applyStatusTierUp(baseStatus, tierUp);
+    const stadiumLevelEffective = stadiumCapActive
+      ? Math.min(Number(club.stadium_level ?? 1), Number(club.stadium_level_cap ?? 1))
+      : Number(club.stadium_level ?? 1);
+
+    const stadiumIncome = getStadiumIncome(stadiumLevelEffective, effectiveStatus);
     const placementReward = getPlacementReward(row.rank, humanClubCount);
     const wages = Math.round(row.squad_stars * 1_000_000 * wageMultiplier);
     const net = stadiumIncome + placementReward + staffIncomeBonus - wages;
@@ -3375,22 +3839,6 @@ function shuffle<T>(items: T[]) {
   return copy;
 }
 
-async function getFirstClubId(supabase: SupabaseServiceClient, gameId: string) {
-  const { data, error } = await supabase
-    .from("clubs")
-    .select("id")
-    .eq("game_id", gameId)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle<{ id: string }>();
-
-  if (error) {
-    throw error;
-  }
-
-  return data?.id ?? null;
-}
-
 async function touchGameSave(supabase: SupabaseServiceClient, gameId: string, userId: string) {
   const { error } = await supabase
     .from("games")
@@ -3443,8 +3891,13 @@ export async function recruitStaffOpenAction(formData: FormData) {
     .filter((e) => e.type === "investment_action_bonus")
     .reduce((sum, e) => sum + Number(e.extra ?? 0), 0);
 
+  // Free staff offer Pending-Effect: allows opening an additional staff offer
+  // without consuming an investment action this offseason.
+  const staffPendingEffects = await getActivePendingEffects(supabase, clubId, "current_offseason");
+  const freeOfferEffect = staffPendingEffects.find((eff) => eff.effect_type === "free_staff_offer");
+
   const check = canRecruitStaff({
-    actionsThisSeason: (investments ?? []).map((i) => i.action),
+    actionsThisSeason: freeOfferEffect ? [] : (investments ?? []).map((i) => i.action),
     currentStaffCount: existingStaff?.length ?? 0,
     hasOpenOffer: (openOffer?.length ?? 0) > 0,
     extraActionBonus: extraBonus,
@@ -3486,15 +3939,20 @@ export async function recruitStaffOpenAction(formData: FormData) {
 
   if (offerError) throw offerError;
 
-  const { error: investmentError } = await supabase.from("investments").insert({
-    action: "staff",
-    club_id: clubId,
-    cost: 0,
-    game_id: gameId,
-    season_number: seasonNumber,
-  });
+  if (freeOfferEffect) {
+    // Consume the free_staff_offer pending effect; no investment row.
+    await consumePendingEffects(supabase, [freeOfferEffect.id]);
+  } else {
+    const { error: investmentError } = await supabase.from("investments").insert({
+      action: "staff",
+      club_id: clubId,
+      cost: 0,
+      game_id: gameId,
+      season_number: seasonNumber,
+    });
 
-  if (investmentError) throw investmentError;
+    if (investmentError) throw investmentError;
+  }
 
   await touchGameSave(supabase, gameId, userId);
   revalidatePath(`/games/${roomCode}`);
@@ -3534,6 +3992,7 @@ export async function recruitStaffResolveAction(formData: FormData) {
 
   if (offerError || !offer) redirect(`/games/${roomCode}?view=grounds`);
 
+  let freeSigningEffectId: string | null = null;
   if (chosenCardId && offer.offered_card_ids.includes(chosenCardId)) {
     const { data: card, error: cardError } = await supabase
       .from("staff_cards")
@@ -3543,7 +4002,13 @@ export async function recruitStaffResolveAction(formData: FormData) {
 
     if (cardError || !card) redirect(`/games/${roomCode}?view=grounds`);
 
-    if (Number(club.money) < card.price) redirect(`/games/${roomCode}?view=grounds`);
+    // Apply free_staff_signing pending effect if available
+    const staffPendingEffects = await getActivePendingEffects(supabase, clubId, "current_offseason");
+    const freeSigning = staffPendingEffects.find((eff) => eff.effect_type === "free_staff_signing");
+    const effectivePrice = freeSigning ? 0 : card.price;
+    if (freeSigning) freeSigningEffectId = freeSigning.id;
+
+    if (Number(club.money) < effectivePrice) redirect(`/games/${roomCode}?view=grounds`);
 
     const { error: hireError } = await supabase.from("club_staff").insert({
       club_id: clubId,
@@ -3552,12 +4017,18 @@ export async function recruitStaffResolveAction(formData: FormData) {
 
     if (hireError) throw hireError;
 
-    const { error: moneyError } = await supabase
-      .from("clubs")
-      .update({ money: Number(club.money) - card.price })
-      .eq("id", clubId);
+    if (effectivePrice > 0) {
+      const { error: moneyError } = await supabase
+        .from("clubs")
+        .update({ money: Number(club.money) - effectivePrice })
+        .eq("id", clubId);
 
-    if (moneyError) throw moneyError;
+      if (moneyError) throw moneyError;
+    }
+  }
+
+  if (freeSigningEffectId) {
+    await consumePendingEffects(supabase, [freeSigningEffectId]);
   }
 
   const { error: resolveError } = await supabase
@@ -3775,6 +4246,107 @@ export async function triggerDrawRerollAction(formData: FormData) {
         .eq("participant_id", loserParticipantId)
         .eq("season_number", seasonNumber);
     }
+  }
+
+  await touchGameSave(supabase, gameId, userId);
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}`);
+}
+
+// ---------------------------------------------------------------------------
+// Game Changer Choice resolution (player/zone/staff selection)
+// ---------------------------------------------------------------------------
+
+export async function resolveGameChangerChoiceAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const clubGameChangerId = String(formData.get("club_game_changer_id") || "");
+  const choiceType = String(formData.get("choice_type") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !clubGameChangerId || !supabase) {
+    redirect(`/games/${roomCode}`);
+  }
+
+  const { ownClub, game } = await getGameClubContext(supabase, gameId, userId);
+
+  const { data: cgc, error: cgcError } = await supabase
+    .from("club_game_changers")
+    .select("id, club_id, status, choice_payload, game_changer_card:game_changer_cards(id, display_name, description, category, effects)")
+    .eq("id", clubGameChangerId)
+    .eq("club_id", ownClub.id)
+    .maybeSingle<{
+      id: string;
+      club_id: string;
+      status: string;
+      choice_payload: Record<string, unknown> | null;
+      game_changer_card: { id: string; display_name: string; description: string; category: GameChangerCategory; effects: unknown[] } | null;
+    }>();
+
+  if (cgcError) throw cgcError;
+  if (!cgc || cgc.status !== "pending" || !cgc.choice_payload || !cgc.game_changer_card) {
+    redirect(`/games/${roomCode}`);
+  }
+
+  const effects = parseEffects(cgc.game_changer_card!.effects);
+  const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
+  let resolvedPayload: Record<string, unknown> = {};
+  let detail: string | undefined;
+
+  if (choiceType === "pick_player") {
+    const clubPlayerId = String(formData.get("club_player_id") || "");
+    if (!clubPlayerId) redirect(`/games/${roomCode}`);
+
+    const { data: cp } = await supabase
+      .from("club_players")
+      .select("id, club_id, player:players(display_name)")
+      .eq("id", clubPlayerId)
+      .eq("club_id", ownClub.id)
+      .maybeSingle<{ id: string; club_id: string; player: { display_name: string } | null }>();
+    if (!cp) redirect(`/games/${roomCode}`);
+
+    const effect = effects.find((e) => e.type === "player_potential_bonus");
+    if (!effect) redirect(`/games/${roomCode}`);
+
+    resolvedPayload = { type: "pick_player", club_player_id: clubPlayerId };
+    const res = await applyImmediateEffect(supabase, ownClub.id, effect, { resolvedPayload, seasonNumber });
+    detail = res.detail;
+  } else if (choiceType === "pick_zone") {
+    const zone = String(formData.get("zone") || "").toUpperCase();
+    if (!["ATT", "MID", "DEF"].includes(zone)) redirect(`/games/${roomCode}`);
+
+    const effect = effects.find((e) => e.type === "next_match_zone_delta");
+    if (!effect || effect.type !== "next_match_zone_delta") redirect(`/games/${roomCode}`);
+
+    resolvedPayload = { type: "pick_zone", zone };
+    const concreteEffect: GameChangerEffect = { ...effect, zone: zone as "ATT" | "MID" | "DEF" };
+    await enqueuePendingEffect(supabase, ownClub.id, concreteEffect, {
+      seasonNumber,
+      sourceClubGameChangerId: cgc!.id,
+    });
+    detail = `Zone ${zone} im naechsten Spiel ${effect.delta >= 0 ? "+" : ""}${effect.delta}`;
+  } else {
+    redirect(`/games/${roomCode}`);
+  }
+
+  await supabase
+    .from("club_game_changers")
+    .update({
+      status: "resolved",
+      resolved_payload: resolvedPayload,
+      used_at: new Date().toISOString(),
+    })
+    .eq("id", cgc!.id);
+
+  if (detail) {
+    await supabase.from("match_news").insert({
+      game_id: gameId,
+      club_id: ownClub.id,
+      category: cgc!.game_changer_card!.category,
+      headline: `Game Changer aufgeloest: ${cgc!.game_changer_card!.display_name}`,
+      detail,
+    });
   }
 
   await touchGameSave(supabase, gameId, userId);

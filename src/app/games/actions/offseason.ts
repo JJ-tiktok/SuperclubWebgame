@@ -1,0 +1,16 @@
+/**
+ * Off-season server actions: investments and training.
+ *
+ * Hosts the actions that touch club money, facilities and player development
+ * during the off-season:
+ *   - upgradeInvestmentAction (training / scouting / stadium)
+ *   - trainPlayerAction
+ *
+ * Implementations currently live in `src/app/games/actions.ts`.
+ */
+
+export {
+  upgradeInvestmentAction,
+  trainPlayerAction,
+} from "@/app/games/actions";
+

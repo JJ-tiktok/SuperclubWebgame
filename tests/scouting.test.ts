@@ -17,10 +17,9 @@ describe("Scouting rules", () => {
     assert.equal(getClubScoutingCapacity({ scouting_level: 4 }), 5);
   });
 
-  it("only lets the current club draw until capacity is used", () => {
+  it("lets any club draw in parallel as long as capacity is available", () => {
     assert.deepEqual(
       canDrawScoutingPlayer({
-        currentTurnClubId: "club-a",
         drawnCount: 0,
         ownClubId: "club-a",
         scoutingCapacity: 1,
@@ -29,28 +28,26 @@ describe("Scouting rules", () => {
     );
     assert.equal(
       canDrawScoutingPlayer({
-        currentTurnClubId: "club-a",
         drawnCount: 1,
         ownClubId: "club-a",
         scoutingCapacity: 1,
       }).ok,
       false,
     );
-    assert.equal(
+    // Parallel scouting: no turn check, so a different current-turn club must not block our own draws.
+    assert.deepEqual(
       canDrawScoutingPlayer({
-        currentTurnClubId: "club-b",
         drawnCount: 0,
         ownClubId: "club-a",
         scoutingCapacity: 1,
-      }).ok,
-      false,
+      }),
+      { ok: true },
     );
   });
 
   it("blocks resolving cards before all scouting cards are drawn", () => {
     assert.equal(
       canResolveScoutedPlayer({
-        currentTurnClubId: "club-a",
         drawnCount: 1,
         ownClubId: "club-a",
         scoutingCapacity: 2,
@@ -62,7 +59,6 @@ describe("Scouting rules", () => {
   it("blocks buying by money and squad limit", () => {
     assert.equal(
       canBuyScoutedPlayer({
-        currentTurnClubId: "club-a",
         drawnCount: 2,
         money: 4_000_000,
         ownClubId: "club-a",
@@ -74,7 +70,6 @@ describe("Scouting rules", () => {
     );
     assert.equal(
       canBuyScoutedPlayer({
-        currentTurnClubId: "club-a",
         drawnCount: 2,
         money: 10_000_000,
         ownClubId: "club-a",

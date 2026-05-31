@@ -67,6 +67,10 @@ export type LobbyClub = {
   training_level?: number;
   offseason_scouting_capacity?: number | null;
   offseason_training_capacity?: number | null;
+  status_override?: string | null;
+  status_override_until_season?: number | null;
+  stadium_level_cap?: number | null;
+  stadium_level_cap_until_season?: number | null;
   supercup_cards?: number;
   captain_boost_rank?: number | null;
   squad_stars?: number;
@@ -254,6 +258,10 @@ export type ClubGameChangerSnapshot = {
   used_at?: string | null;
   fixture_id?: string | null;
   applied_third?: number | null;
+  status?: "pending" | "resolved" | "consumed" | "expired" | null;
+  choice_payload?: Record<string, unknown> | null;
+  resolved_payload?: Record<string, unknown> | null;
+  created_at?: string | null;
   card: {
     id: string;
     content_key?: string | null;
@@ -264,6 +272,19 @@ export type ClubGameChangerSnapshot = {
     effects: unknown[];
     visibility?: string | null;
   };
+};
+
+export type ClubPendingEffectSnapshot = {
+  id: string;
+  club_id: string;
+  season_number: number;
+  effect_type: string;
+  payload: Record<string, unknown>;
+  scope: "next_match" | "next_transfer" | "next_offseason" | "current_offseason" | "this_season";
+  consumed_at: string | null;
+  fixture_id: string | null;
+  source_club_game_changer_id: string | null;
+  created_at: string;
 };
 
 export type InvestmentSnapshot = {
@@ -316,6 +337,8 @@ export type ClubOverviewSnapshot = {
   squad: ClubPlayerSnapshot[];
   staff: ClubStaffSnapshot[];
   game_changers: ClubGameChangerSnapshot[];
+  pending_game_changer_choices: ClubGameChangerSnapshot[];
+  pending_effects: ClubPendingEffectSnapshot[];
   investments: InvestmentSnapshot[];
   open_staff_offer: StaffOfferSnapshot | null;
   training: {

@@ -9,21 +9,17 @@ import {
 } from "@/lib/lobby/phases";
 
 describe("Lobby phase flow", () => {
-  it("runs the first game through draft and the full offseason", () => {
+  it("runs the first game through draft and the consolidated off_season", () => {
     assert.equal(getNextLobbyPhase("lobby"), "draft");
-    assert.equal(getNextLobbyPhase("draft"), "offseason_finance");
-    assert.equal(getNextLobbyPhase("offseason_finance"), "offseason_training");
-    assert.equal(getNextLobbyPhase("offseason_training"), "offseason_scouting");
-    assert.equal(getNextLobbyPhase("offseason_scouting"), "offseason_investments");
-    assert.equal(getNextLobbyPhase("offseason_investments"), "deadline_day");
+    assert.equal(getNextLobbyPhase("draft"), "off_season");
+    assert.equal(getNextLobbyPhase("off_season"), "deadline_day");
   });
 
-  it("loops later seasons from season end to finance without another draft", () => {
-    assert.equal(getNextLobbyPhase("deadline_day"), "prematch");
-    assert.equal(getNextLobbyPhase("prematch"), "match");
-    assert.equal(getNextLobbyPhase("match"), "season_end");
-    assert.equal(getNextLobbyPhase("season_end"), "offseason_finance");
-    assert.equal(shouldAdvanceSeason("season_end", "offseason_finance"), true);
+  it("loops later seasons from season end back into off_season", () => {
+    assert.equal(getNextLobbyPhase("deadline_day"), "season");
+    assert.equal(getNextLobbyPhase("season"), "season_end");
+    assert.equal(getNextLobbyPhase("season_end"), "off_season");
+    assert.equal(shouldAdvanceSeason("season_end", "off_season"), true);
   });
 
   it("increments the season only after season end", () => {
@@ -34,15 +30,15 @@ describe("Lobby phase flow", () => {
       turn_timeout_seconds: 60,
     };
 
-    assert.equal(getSettingsForNextPhase(settings, "match", "season_end").seasonNumber, 1);
-    assert.equal(getSettingsForNextPhase(settings, "season_end", "offseason_finance").seasonNumber, 2);
+    assert.equal(getSettingsForNextPhase(settings, "season", "season_end").seasonNumber, 1);
+    assert.equal(getSettingsForNextPhase(settings, "season_end", "off_season").seasonNumber, 2);
   });
 
-  it("keeps transfers offseason-wide but investments phase-only", () => {
-    assert.equal(isOffseasonManagementPhase("offseason_finance"), true);
+  it("treats off_season and deadline_day as management phases and off_season as investment phase", () => {
+    assert.equal(isOffseasonManagementPhase("off_season"), true);
     assert.equal(isOffseasonManagementPhase("deadline_day"), true);
-    assert.equal(isOffseasonManagementPhase("match"), false);
-    assert.equal(isInvestmentPhase("offseason_investments"), true);
-    assert.equal(isInvestmentPhase("offseason_training"), false);
+    assert.equal(isOffseasonManagementPhase("season"), false);
+    assert.equal(isInvestmentPhase("off_season"), true);
+    assert.equal(isInvestmentPhase("season"), false);
   });
 });

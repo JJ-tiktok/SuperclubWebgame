@@ -2,7 +2,7 @@
 
 import type { PointerEvent } from "react";
 import { useMemo, useRef, useState } from "react";
-import { saveLineupAction } from "@/app/games/actions";
+import { saveLineupAction } from "@/app/games/actions/match";
 import { PlayerCard } from "@/components/player-card/PlayerCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -221,7 +221,7 @@ export function GameLineupBoard({
     const targetSlot = getNearestSlot(drag.x, drag.y, formationSlots);
     const player = cardById.get(drag.playerId);
 
-    if (targetSlot && player && canUseSlot(player, targetSlot)) {
+    if (targetSlot && player && canUseSlot(player)) {
       setAssignments((current) => {
         const fromSlot = slotById.get(drag.fromSlotId);
         const next = { ...current };
@@ -232,7 +232,7 @@ export function GameLineupBoard({
           return current;
         }
 
-        if (fromSlot && displacedPlayer && !canUseSlot(displacedPlayer, fromSlot)) {
+        if (fromSlot && displacedPlayer && !canUseSlot(displacedPlayer)) {
           return current;
         }
 
@@ -620,7 +620,7 @@ function getLineupSummary(
 
   for (const slot of formationSlots) {
     const card = cardById.get(assignments[slot.id] ?? "");
-    if (!card || !canUseSlot(card, slot)) {
+    if (!card || !canUseSlot(card)) {
       continue;
     }
 
@@ -828,7 +828,7 @@ function getFormationCounts(assignments: Record<string, string>, playerById: Map
   return formationSlots.reduce(
     (counts, slot) => {
       const player = playerById.get(assignments[slot.id] ?? "");
-      if (player && canUseSlot(player, slot)) {
+      if (player && canUseSlot(player)) {
         counts[slot.zone] += 1;
       }
       return counts;
@@ -837,7 +837,7 @@ function getFormationCounts(assignments: Record<string, string>, playerById: Map
   );
 }
 
-function canUseSlot(player: LineupCard, _slot: FormationSlot) {
+function canUseSlot(player: LineupCard) {
   return !player.injured;
 }
 
@@ -848,3 +848,4 @@ function clamp(value: number, min: number, max: number) {
 function formatNumber(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
+

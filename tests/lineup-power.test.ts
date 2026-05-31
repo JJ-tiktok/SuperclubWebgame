@@ -52,6 +52,6 @@ describe("lineup power", () => {
       player("MID", 3, 2),
     ]);
 
-    assert.deepEqual(summary.MID, { base: 5, chemistry: 0, total: 5 });
+    assert.deepEqual(summary.MID, { base: 5, chemistry: 0, staffBonus: 0, total: 5 });
   });
 });

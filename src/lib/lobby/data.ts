@@ -4,6 +4,7 @@ import { DRAFT_PLAYER_SELECT } from "./draft";
 import type {
   ClubGameChangerSnapshot,
   ClubOverviewSnapshot,
+  ClubPendingEffectSnapshot,
   ClubPlayerSnapshot,
   DeadlineAuctionSnapshot,
   DeadlineBidSnapshot,
@@ -37,8 +38,25 @@ import { createSupabaseServiceClient } from "@/lib/supabase/server";
 
 const GAME_SELECT =
   "id, room_code, phase, host_clerk_user_id, current_turn_club_id, settings, save_name, save_status, save_version, last_saved_at, last_saved_by_clerk_user_id, created_at, updated_at";
-const CLUB_SELECT =
+
+const CLUB_SELECT_LEGACY =
   "id, game_id, clerk_user_id, club_template_id, club_name, club_slogan, club_color, manager_name, money, points, season_rank, status, stadium_level, scouting_level, training_level, offseason_scouting_capacity, offseason_training_capacity, supercup_cards, captain_boost_rank, is_ready, image_url, created_at";
+const CLUB_SELECT_V3 =
+  "id, game_id, clerk_user_id, club_template_id, club_name, club_slogan, club_color, manager_name, money, points, season_rank, status, status_override, status_override_until_season, stadium_level, stadium_level_cap, stadium_level_cap_until_season, scouting_level, training_level, offseason_scouting_capacity, offseason_training_capacity, supercup_cards, captain_boost_rank, is_ready, image_url, created_at";
+const CLUB_SELECT = CLUB_SELECT_V3;
+
+const CLUB_GAME_CHANGER_SELECT_LEGACY =
+  "id, game_changer_card_id, used_at, fixture_id, applied_third, card:game_changer_cards(id, content_key, display_name, description, category, timing, effects, visibility)";
+const CLUB_GAME_CHANGER_SELECT_V3 =
+  "id, game_changer_card_id, used_at, fixture_id, applied_third, status, choice_payload, resolved_payload, created_at, card:game_changer_cards(id, content_key, display_name, description, category, timing, effects, visibility)";
+
+/**
+ * Detects Postgres "undefined column" errors so callers can retry with a smaller column set.
+ * Used to keep the snapshot loader working before the v3 migration is applied to a given DB.
+ */
+function isUndefinedColumnError(error: { code?: string } | null | undefined): boolean {
+  return Boolean(error && error.code === "42703");
+}
 
 export async function getLobbySnapshotByRoomCode(roomCodeParam: string) {
   const { userId } = await auth();
@@ -63,10 +81,10 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string) {
     return { snapshot: null, currentUserId: userId };
   }
 
-  const [{ data: clubs, error: clubsError }, { data: members, error: membersError }] = await Promise.all([
+  const [clubsResultV3, { data: members, error: membersError }] = await Promise.all([
     supabase
       .from("clubs")
-      .select(CLUB_SELECT)
+      .select(CLUB_SELECT_V3)
       .eq("game_id", game.id)
       .order("created_at", { ascending: true })
       .returns<LobbyClub[]>(),
@@ -77,6 +95,19 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string) {
       .order("joined_at", { ascending: true })
       .returns<LobbyMember[]>(),
   ]);
+
+  let clubs = clubsResultV3.data;
+  let clubsError = clubsResultV3.error;
+  if (isUndefinedColumnError(clubsError)) {
+    const fallback = await supabase
+      .from("clubs")
+      .select(CLUB_SELECT_LEGACY)
+      .eq("game_id", game.id)
+      .order("created_at", { ascending: true })
+      .returns<LobbyClub[]>();
+    clubs = fallback.data;
+    clubsError = fallback.error;
+  }
 
   if (clubsError) {
     throw clubsError;
@@ -434,6 +465,7 @@ async function getClubOverviewSnapshot(
     { data: clubPlayers, error: clubPlayersError },
     { data: staffRows, error: staffError },
     { data: gameChangerRows, error: gameChangerError },
+    { data: pendingEffectRows, error: pendingEffectsError },
     { data: investments, error: investmentsError },
     { data: trainingTransactions, error: trainingTransactionsError },
     { data: saleTransactions, error: saleTransactionsError },
@@ -456,10 +488,17 @@ async function getClubOverviewSnapshot(
       .returns<ClubStaffSnapshot[]>(),
     supabase
       .from("club_game_changers")
-      .select("id, game_changer_card_id, used_at, fixture_id, applied_third, card:game_changer_cards(id, content_key, display_name, description, category, timing, effects, visibility)")
+      .select(CLUB_GAME_CHANGER_SELECT_V3)
       .eq("club_id", club.id)
-      .order("id", { ascending: true })
+      .order("created_at", { ascending: true, nullsFirst: false })
       .returns<ClubGameChangerSnapshot[]>(),
+    supabase
+      .from("club_pending_effects")
+      .select("id, club_id, season_number, effect_type, payload, scope, consumed_at, fixture_id, source_club_game_changer_id, created_at")
+      .eq("club_id", club.id)
+      .is("consumed_at", null)
+      .order("created_at", { ascending: true })
+      .returns<ClubPendingEffectSnapshot[]>(),
     supabase
       .from("investments")
       .select("id, game_id, club_id, season_number, action, cost, created_at")
@@ -501,9 +540,37 @@ async function getClubOverviewSnapshot(
     throw staffError;
   }
 
-  if (gameChangerError) {
-    throw gameChangerError;
+  // If the v3 migration has not been applied yet, retry the club_game_changers SELECT
+  // without the new columns and default them to a "resolved" state.
+  let gameChangerRowsFinal = gameChangerRows;
+  let gameChangerErrorFinal = gameChangerError;
+  if (isUndefinedColumnError(gameChangerErrorFinal)) {
+    const fallback = await supabase
+      .from("club_game_changers")
+      .select(CLUB_GAME_CHANGER_SELECT_LEGACY)
+      .eq("club_id", club.id)
+      .order("id", { ascending: true })
+      .returns<Array<Omit<ClubGameChangerSnapshot, "status" | "choice_payload" | "resolved_payload" | "created_at">>>();
+    if (fallback.error) {
+      throw fallback.error;
+    }
+    gameChangerRowsFinal = (fallback.data ?? []).map((row) => ({
+      ...row,
+      status: "resolved" as const,
+      choice_payload: null,
+      resolved_payload: null,
+      created_at: null,
+    }));
+    gameChangerErrorFinal = null;
   }
+
+  if (gameChangerErrorFinal) {
+    throw gameChangerErrorFinal;
+  }
+
+  // pendingEffectsError can occur when the v3 migration has not been applied yet.
+  // Treat it as no pending effects so the app still works against an older DB.
+  const pendingEffects: ClubPendingEffectSnapshot[] = pendingEffectsError ? [] : (pendingEffectRows ?? []);
 
   if (investmentsError) {
     throw investmentsError;
@@ -542,40 +609,67 @@ async function getClubOverviewSnapshot(
     .filter((event): event is NonNullable<ReturnType<typeof parseTrainingEvent>> => Boolean(event))
     .filter((event) => event.season_number === seasonNumber);
   const squadStars = (clubPlayers ?? []).reduce((total, owned) => total + Number(owned.current_stars), 0);
-  const status = normalizeClubStatus(club.status);
-  const stadiumIncome = getStadiumIncome(club.stadium_level ?? 1, status);
+
+  // Resolve status_override (Pressekonferenz / Fanmarsch) for the current season
+  const overrideUntil = club.status_override_until_season ?? null;
+  const overrideActive = club.status_override && (overrideUntil == null || overrideUntil >= seasonNumber);
+  const effectiveStatus = overrideActive
+    ? normalizeClubStatus(club.status_override ?? club.status)
+    : normalizeClubStatus(club.status);
+
+  // Resolve stadium_level_cap (Sicherheitsluecke im Konzept) for the current season
+  const capUntil = club.stadium_level_cap_until_season ?? null;
+  const capActive = club.stadium_level_cap != null && (capUntil == null || capUntil >= seasonNumber);
+  const stadiumLevelEffective = capActive
+    ? Math.min(club.stadium_level ?? 1, club.stadium_level_cap ?? 1)
+    : (club.stadium_level ?? 1);
+
+  const stadiumIncome = getStadiumIncome(stadiumLevelEffective, effectiveStatus);
   const placementReward = getPlacementReward(club.season_rank ?? 1, clubCount);
   const wages = squadStars * 1_000_000;
+
+  const allGameChangers = gameChangerRowsFinal ?? [];
+  const pendingChoices = allGameChangers.filter((row) => row.status === "pending");
 
   return {
     season_number: seasonNumber,
     sales_count: saleTransactions?.length ?? 0,
     squad: clubPlayers ?? [],
     staff: staffRows ?? [],
-    game_changers: gameChangerRows ?? [],
+    game_changers: allGameChangers,
+    pending_game_changer_choices: pendingChoices,
+    pending_effects: pendingEffects,
     investments: investments ?? [],
     open_staff_offer: openStaffOffer,
     training: {
       events: trainingEvents,
       status: (() => {
-        if (club.offseason_training_capacity != null) {
-          // Use snapshot: back-calculate extraPlayers from the stored total
-          const baseCapacity = getTrainingCapacity(club.training_level ?? 1).players;
-          return getTrainingStatus({
-            events: trainingEvents,
-            trainingLevel: club.training_level ?? 1,
-            extraPlayers: Math.max(0, club.offseason_training_capacity - baseCapacity),
-          });
+        const baseCapacity = getTrainingCapacity(club.training_level ?? 1).players;
+        // Add training_capacity_delta from active pending effects so the UI matches the actual bonus
+        let pendingExtra = 0;
+        let doubleTraining = false;
+        for (const eff of pendingEffects) {
+          if (eff.effect_type !== "training_capacity_delta") continue;
+          if (eff.scope !== "current_offseason") continue;
+          const delta = (eff.payload as { delta?: number | string }).delta;
+          if (delta === "double") {
+            doubleTraining = true;
+          } else if (typeof delta === "number") {
+            pendingExtra += delta;
+          }
         }
-        // Fallback: live staff bonus (before first snapshot exists)
-        const trainingBonus = (staffRows ?? [])
-          .flatMap((s) => (s.card?.effects ?? []) as Array<Record<string, unknown>>)
-          .filter((e) => e.type === "training_player_bonus")
-          .reduce((sum, e) => sum + Number(e.players ?? 0), 0);
+        const effectiveBase = doubleTraining ? baseCapacity * 2 : baseCapacity;
+        const snapshotExtra = club.offseason_training_capacity != null
+          ? Math.max(0, club.offseason_training_capacity - baseCapacity)
+          : (staffRows ?? [])
+              .flatMap((s) => (s.card?.effects ?? []) as Array<Record<string, unknown>>)
+              .filter((e) => e.type === "training_player_bonus")
+              .reduce((sum, e) => sum + Number(e.players ?? 0), 0);
+        const extraPlayers = Math.max(0, effectiveBase - baseCapacity + snapshotExtra + pendingExtra);
         return getTrainingStatus({
           events: trainingEvents,
           trainingLevel: club.training_level ?? 1,
-          extraPlayers: trainingBonus,
+          extraPlayers,
         });
       })(),
     },

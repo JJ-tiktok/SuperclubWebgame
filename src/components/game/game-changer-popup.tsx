@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { MatchNewsSnapshot } from "@/lib/lobby/types";
 import { Button } from "@/components/ui/button";
 
-const STORAGE_KEY = "gc_popup_last_seen_id";
+const STORAGE_KEY = "gc_popup_last_seen_at";
 
 const CATEGORY_STYLES: Record<string, { bg: string; border: string; accent: string; icon: string; label: string }> = {
   good_news: { bg: "bg-green-950", border: "border-green-600", accent: "text-green-300", icon: "✅", label: "Good News" },
@@ -20,45 +20,45 @@ export function GameChangerPopup({
   news: MatchNewsSnapshot[];
   ownClubId: string | undefined;
 }) {
-  const [pending, setPending] = useState<MatchNewsSnapshot[]>([]);
-  const [current, setCurrent] = useState<MatchNewsSnapshot | null>(null);
+  // Single queue: the first item is the one currently displayed, dismissals shift the queue.
+  const [queue, setQueue] = useState<MatchNewsSnapshot[]>([]);
+  // Tracks IDs already queued or shown so Realtime re-renders don't re-add them.
+  const shownIds = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!ownClubId) return;
 
-    const lastSeenId = localStorage.getItem(STORAGE_KEY);
-    const lastSeenTime = lastSeenId
-      ? news.find((n) => n.id === lastSeenId)?.created_at ?? null
-      : null;
+    // Use a timestamp guard so items dismissed before a page reload don't reappear
+    const lastSeenAt = localStorage.getItem(STORAGE_KEY) ?? "";
 
-    const unseen = news.filter((item) => {
-      if (item.club_id !== ownClubId) return false;
-      if (!lastSeenTime) return true;
-      return item.created_at > lastSeenTime;
-    });
+    const newItems = news.filter(
+      (item) =>
+        item.club_id === ownClubId &&
+        item.created_at > lastSeenAt &&
+        !shownIds.current.has(item.id),
+    );
 
-    if (unseen.length > 0) {
-      setPending(unseen.slice(0, 5));
+    if (newItems.length > 0) {
+      newItems.forEach((item) => shownIds.current.add(item.id));
+      // Append — never replace — so in-progress items are not discarded
+      setQueue((prev) => [...prev, ...newItems].slice(0, 10));
     }
   }, [news, ownClubId]);
 
-  useEffect(() => {
-    if (!current && pending.length > 0) {
-      setCurrent(pending[0]);
-      setPending((prev) => prev.slice(1));
-    }
-  }, [current, pending]);
+  const current = queue[0];
 
   function dismiss() {
     if (current) {
-      localStorage.setItem(STORAGE_KEY, current.id);
+      // Store the timestamp so items up to this point are suppressed on reload
+      localStorage.setItem(STORAGE_KEY, current.created_at);
     }
-    setCurrent(null);
+    setQueue((prev) => prev.slice(1));
   }
 
   if (!current) return null;
 
   const style = CATEGORY_STYLES[current.category] ?? CATEGORY_STYLES.good_news;
+  const remaining = queue.length - 1;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -77,8 +77,8 @@ export function GameChangerPopup({
         <Button className="mt-5 w-full" onClick={dismiss} variant="secondary">
           Verstanden
         </Button>
-        {pending.length > 0 ? (
-          <p className="mt-2 text-center text-xs text-zinc-500">Noch {pending.length} weitere Ereignisse</p>
+        {remaining > 0 ? (
+          <p className="mt-2 text-center text-xs text-zinc-500">Noch {remaining} weitere Ereignisse</p>
         ) : null}
       </div>
     </div>

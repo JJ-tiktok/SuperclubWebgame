@@ -2328,21 +2328,128 @@ function ClubCardsPanel({
         <PanelHeader>
           <div>
             <PanelTitle>Game-Changer</PanelTitle>
-            <PanelDescription>Verfuegbare Spezialkarten.</PanelDescription>
+            <PanelDescription>Aktive Karteneffekte und verfuegbare Geheimwaffen.</PanelDescription>
           </div>
           <Sparkles size={18} className="text-[var(--club-color)]" aria-hidden />
         </PanelHeader>
-        <CardList
-          empty="Keine Geheimwaffen im Bestand."
-          items={overview.game_changers
-            .filter((gc) => gc.card.category === "secret_weapon" && !gc.used_at)
-            .map((gameChanger) => ({
-              detail: gameChanger.card.description || formatEffects(gameChanger.card.effects),
-              meta: "Geheimwaffe",
-              title: gameChanger.card.display_name,
-            }))}
+        <PendingEffectsList
+          effects={overview.pending_effects ?? []}
+          gameChangers={overview.game_changers}
         />
+        <div className="mt-4">
+          <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">Geheimwaffen</h4>
+          <CardList
+            empty="Keine Geheimwaffen im Bestand."
+            items={overview.game_changers
+              .filter((gc) => gc.card.category === "secret_weapon" && !gc.used_at)
+              .map((gameChanger) => ({
+                detail: gameChanger.card.description || formatEffects(gameChanger.card.effects),
+                meta: "Geheimwaffe",
+                title: gameChanger.card.display_name,
+              }))}
+          />
+        </div>
       </Panel>
+    </div>
+  );
+}
+
+const PENDING_SCOPE_LABELS: Record<string, string> = {
+  next_match: "Naechstes Spiel",
+  next_transfer: "Naechster Transfer",
+  current_offseason: "Diese Offseason",
+  next_offseason: "Naechste Offseason",
+  this_season: "Diese Saison",
+};
+
+function describePendingEffectShort(effect: NonNullable<LobbySnapshot["club_overview"]>["pending_effects"][number]): string {
+  const p = effect.payload as Record<string, unknown>;
+  switch (effect.effect_type) {
+    case "next_match_zone_delta": {
+      const delta = Number(p.delta ?? 0);
+      const zone = (p.zone as string | null) ?? "(Auswahl)";
+      return `Zone ${zone}: ${delta >= 0 ? "+" : ""}${delta}`;
+    }
+    case "next_match_staff_disabled":
+      return "Staff-Boni deaktiviert";
+    case "next_match_draw_dice_bonus":
+      return `+${Number(p.bonus ?? 0)} Wuerfel bei Unentschieden`;
+    case "next_match_lineup_locked":
+      return "Aufstellung gesperrt";
+    case "training_capacity_delta": {
+      const delta = p.delta;
+      if (delta === "double") return "Trainingseinheiten verdoppelt";
+      return `${Number(delta ?? 0) >= 0 ? "+" : ""}${delta} Trainingseinheit(en)`;
+    }
+    case "free_scouting_draw":
+      return `${Number(p.count ?? 0)} gratis Scout-Draw(s)`;
+    case "free_scouting_buy_next":
+      return "Naechster Spielerkauf gratis";
+    case "free_staff_offer":
+      return "Gratis Staff-Offerte";
+    case "free_staff_signing":
+      return "Gratis Staff-Verpflichtung";
+    case "next_transfer_price_delta": {
+      const amount = Number(p.amount ?? 0);
+      return amount >= 0
+        ? `Naechster Transfer +${Math.round(amount / 1_000_000)} Mio`
+        : `Naechster Transfer ${Math.round(amount / 1_000_000)} Mio`;
+    }
+    case "offseason_lock":
+      return `Gesperrt: ${(p.blocks as string[] | undefined)?.join(", ") ?? ""}`;
+    default:
+      return effect.effect_type;
+  }
+}
+
+function PendingEffectsList({
+  effects,
+  gameChangers,
+}: {
+  effects: NonNullable<LobbySnapshot["club_overview"]>["pending_effects"];
+  gameChangers: NonNullable<LobbySnapshot["club_overview"]>["game_changers"];
+}) {
+  const sourceById = new Map(gameChangers.map((gc) => [gc.id, gc] as const));
+
+  return (
+    <div>
+      <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">Aktive Karteneffekte</h4>
+      {effects.length === 0 ? (
+        <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3 text-xs text-zinc-500">
+          Keine offenen Effekte. Ziehe Good- oder Bad-News-Karten ueber Doppel-Wuerfel im Match.
+        </div>
+      ) : (
+        <ul className="space-y-2">
+          {effects.map((effect) => {
+            const source = effect.source_club_game_changer_id
+              ? sourceById.get(effect.source_club_game_changer_id)
+              : undefined;
+            const tone = source?.card.category === "bad_news"
+              ? "border-rose-800/60 bg-rose-950/30"
+              : source?.card.category === "good_news"
+                ? "border-emerald-800/60 bg-emerald-950/30"
+                : "border-amber-800/60 bg-amber-950/30";
+            return (
+              <li
+                key={effect.id}
+                className={`rounded-md border p-3 text-sm ${tone}`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    {source ? (
+                      <p className="truncate font-semibold text-zinc-100">{source.card.display_name}</p>
+                    ) : null}
+                    <p className={source ? "mt-0.5 text-xs text-zinc-300" : "font-medium text-zinc-100"}>
+                      {describePendingEffectShort(effect)}
+                    </p>
+                  </div>
+                  <Badge>{PENDING_SCOPE_LABELS[effect.scope] ?? effect.scope}</Badge>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }

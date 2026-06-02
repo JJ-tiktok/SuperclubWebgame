@@ -113,6 +113,7 @@ import { canRecruitStaff, canUpgradeFacility, getStaffRecruitReasonLabel, getUpg
 import { calculateLineupPower } from "@/lib/lobby/lineup-power";
 import { getPhaseLabel, isInvestmentPhase } from "@/lib/lobby/phases";
 import { getManagerScoreBand, getPlacementReward, getScoutingCapacity, getStadiumIncome, getTrainingCapacity, MAX_SQUAD_SIZE } from "@/lib/game/rules";
+import { CPU_TIER_LABEL } from "@/lib/lobby/cpu-teams";
 import { canStartLobby } from "@/lib/lobby/rules";
 import {
   canBuyScoutedPlayer,
@@ -124,7 +125,7 @@ import {
 } from "@/lib/lobby/scouting";
 import { getClubTheme } from "@/lib/lobby/theme";
 import { canTrainOwnedPlayer } from "@/lib/lobby/training";
-import type { DraftPlayerRow, LobbyClub, LobbySnapshot, SeasonFixtureSnapshot, StaffOfferSnapshot } from "@/lib/lobby/types";
+import type { CpuStrengthTier, DraftPlayerRow, LobbyClub, LobbySnapshot, SeasonFixtureSnapshot, StaffOfferSnapshot } from "@/lib/lobby/types";
 import { cn } from "@/lib/utils";
 import { getPositionLabel, type PlayerCardData, type PlayerCardPosition } from "@/types/player-card";
 
@@ -2927,10 +2928,21 @@ function FixtureSideCard({
           ) : null}
           <div className="min-w-0">
             <p className="truncate font-semibold text-zinc-50">{participant.display_name}</p>
-            <p className="mt-1 text-xs text-zinc-500">{participant.kind === "cpu" ? "CPU-Team" : "Manager-Team"}</p>
+            <p className="mt-1 text-xs text-zinc-500">
+              {participant.kind === "cpu"
+                ? participant.cpu_strength_tier
+                  ? `CPU · ${CPU_TIER_LABEL[participant.cpu_strength_tier]}`
+                  : "CPU-Team"
+                : "Manager-Team"}
+            </p>
           </div>
         </div>
-        <Badge tone={participant.kind === "cpu" || locked ? "green" : "neutral"}>{participant.kind === "cpu" ? "CPU" : locked ? "locked" : "offen"}</Badge>
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          {participant.kind === "cpu" && participant.cpu_strength_tier ? (
+            <CpuStrengthBadge tier={participant.cpu_strength_tier} />
+          ) : null}
+          <Badge tone={participant.kind === "cpu" || locked ? "green" : "neutral"}>{participant.kind === "cpu" ? "CPU" : locked ? "locked" : "offen"}</Badge>
+        </div>
       </div>
       {lineup || powerSummary ? (
         <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
@@ -3282,7 +3294,12 @@ function TableView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
                         <td className="py-3 pr-3 font-semibold text-zinc-50">{standing.rank}</td>
                         <td className="py-3 pr-3 font-semibold text-zinc-50">{standing.participant.display_name}</td>
                         <td className="py-3 pr-3">
-                          <Badge tone={standing.participant.kind === "cpu" ? "blue" : "green"}>{standing.participant.kind === "cpu" ? "CPU" : "Manager"}</Badge>
+                          <div className="flex flex-wrap items-center gap-1">
+                            <Badge tone={standing.participant.kind === "cpu" ? "blue" : "green"}>{standing.participant.kind === "cpu" ? "CPU" : "Manager"}</Badge>
+                            {standing.participant.kind === "cpu" && standing.participant.cpu_strength_tier ? (
+                              <CpuStrengthBadge tier={standing.participant.cpu_strength_tier} />
+                            ) : null}
+                          </div>
                         </td>
                         <td className="py-3 pr-3">{standing.played}</td>
                         <td className="py-3 pr-3">{standing.wins}</td>
@@ -3902,6 +3919,21 @@ function getOwnLineupPowerSummary(snapshot: LobbySnapshot, ownClub?: LobbyClub):
     })),
     staffEffects,
     captain,
+  );
+}
+
+function CpuStrengthBadge({ tier }: { tier: CpuStrengthTier }) {
+  const label = CPU_TIER_LABEL[tier];
+  const className =
+    tier === "stark"
+      ? "border-rose-500/50 text-rose-200"
+      : tier === "mittel"
+        ? "border-amber-500/50 text-amber-200"
+        : "border-zinc-600 text-zinc-300";
+  return (
+    <span className={`rounded border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${className}`}>
+      {label}
+    </span>
   );
 }
 

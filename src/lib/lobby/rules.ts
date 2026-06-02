@@ -1,3 +1,4 @@
+import { dedupeCpuTeamIds } from "./cpu-teams";
 import type { LobbyClub, LobbyGame, LobbySettings } from "./types";
 
 const ROOM_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ";
@@ -75,10 +76,27 @@ export function parseLobbySettings(input: Partial<Record<string, FormDataEntryVa
   const startingMoney = Number(input.starting_money ?? DEFAULT_LOBBY_SETTINGS.starting_money);
   const maxDraftStars = Number(input.max_draft_stars ?? DEFAULT_LOBBY_SETTINGS.max_draft_stars);
   const turnTimeout = Number(input.turn_timeout_seconds ?? DEFAULT_LOBBY_SETTINGS.turn_timeout_seconds);
+  const cpuTeamIdsRaw = input.cpu_team_ids;
+  let cpu_team_ids: string[] | undefined;
+  if (typeof cpuTeamIdsRaw === "string" && cpuTeamIdsRaw.trim()) {
+    try {
+      const parsed = JSON.parse(cpuTeamIdsRaw) as unknown;
+      if (Array.isArray(parsed)) {
+        cpu_team_ids = dedupeCpuTeamIds(parsed.map((v) => String(v)));
+      }
+    } catch {
+      cpu_team_ids = undefined;
+    }
+  }
 
-  return {
+  const base = {
     starting_money: Number.isFinite(startingMoney) ? Math.max(10_000_000, Math.trunc(startingMoney)) : DEFAULT_LOBBY_SETTINGS.starting_money,
     max_draft_stars: Number.isFinite(maxDraftStars) ? Math.min(Math.max(Math.trunc(maxDraftStars), 1), 6) : DEFAULT_LOBBY_SETTINGS.max_draft_stars,
     turn_timeout_seconds: Number.isFinite(turnTimeout) ? Math.min(Math.max(Math.trunc(turnTimeout), 15), 180) : DEFAULT_LOBBY_SETTINGS.turn_timeout_seconds,
   } satisfies LobbySettings;
+
+  if (cpu_team_ids && cpu_team_ids.length > 0) {
+    return { ...base, cpu_team_ids };
+  }
+  return base;
 }

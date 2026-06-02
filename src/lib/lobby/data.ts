@@ -3,6 +3,7 @@ import { normalizeRoomCode } from "./rules";
 import { DRAFT_PLAYER_SELECT } from "./draft";
 import type {
   ClubGameChangerSnapshot,
+  CpuStrengthTier,
   ClubOverviewSnapshot,
   ClubPendingEffectSnapshot,
   ClubPlayerSnapshot,
@@ -327,13 +328,93 @@ async function getSeasonSnapshot(game: LobbyGame): Promise<SeasonSnapshot | null
   const normalizedFixtures = fixtures ?? [];
   const currentMatchday = normalizedFixtures.find((fixture) => fixture.status !== "completed")?.matchday ?? normalizedFixtures.at(-1)?.matchday ?? 1;
   const managerStandings = await getManagerStandings(game, standings ?? []);
+  const tierByCpuTeamId = await loadCpuTierByTeamId(supabase, standings ?? [], normalizedFixtures);
+  const enrichedStandings = enrichParticipantsWithCpuTier(standings ?? [], tierByCpuTeamId);
+  const enrichedFixtures = enrichFixtureParticipantsWithCpuTier(normalizedFixtures, tierByCpuTeamId);
 
   return {
     current_matchday: currentMatchday,
-    fixtures: normalizedFixtures,
+    fixtures: enrichedFixtures,
     manager_standings: managerStandings,
-    standings: standings ?? [],
+    standings: enrichedStandings,
   };
+}
+
+type CpuTierMap = Map<string, CpuStrengthTier>;
+
+async function loadCpuTierByTeamId(
+  supabase: NonNullable<ReturnType<typeof import("@/lib/supabase/server").createSupabaseServiceClient>>,
+  standings: SeasonStandingSnapshot[],
+  fixtures: SeasonFixtureSnapshot[],
+): Promise<CpuTierMap> {
+  const cpuIds = new Set<string>();
+  for (const row of standings) {
+    if (row.participant.kind === "cpu" && row.participant.cpu_team_id) {
+      cpuIds.add(row.participant.cpu_team_id);
+    }
+  }
+  for (const fixture of fixtures) {
+    if (fixture.home_participant?.kind === "cpu" && fixture.home_participant.cpu_team_id) {
+      cpuIds.add(fixture.home_participant.cpu_team_id);
+    }
+    if (fixture.away_participant?.kind === "cpu" && fixture.away_participant.cpu_team_id) {
+      cpuIds.add(fixture.away_participant.cpu_team_id);
+    }
+  }
+  if (cpuIds.size === 0) {
+    return new Map();
+  }
+
+  const { data, error } = await supabase
+    .from("cpu_teams")
+    .select("id, strength_tier")
+    .in("id", [...cpuIds])
+    .returns<Array<{ id: string; strength_tier: string }>>();
+
+  if (error?.code === "42703" || !data) {
+    return new Map();
+  }
+
+  return new Map(data.map((row) => [row.id, row.strength_tier as CpuStrengthTier]));
+}
+
+function enrichParticipantsWithCpuTier(
+  standings: SeasonStandingSnapshot[],
+  tierByCpuTeamId: CpuTierMap,
+): SeasonStandingSnapshot[] {
+  return standings.map((row) => {
+    if (row.participant.kind !== "cpu" || !row.participant.cpu_team_id) {
+      return row;
+    }
+    return {
+      ...row,
+      participant: {
+        ...row.participant,
+        cpu_strength_tier: tierByCpuTeamId.get(row.participant.cpu_team_id) ?? null,
+      },
+    };
+  });
+}
+
+function enrichFixtureParticipantsWithCpuTier(
+  fixtures: SeasonFixtureSnapshot[],
+  tierByCpuTeamId: CpuTierMap,
+): SeasonFixtureSnapshot[] {
+  const enrichOne = (participant: SeasonFixtureSnapshot["home_participant"]) => {
+    if (!participant || participant.kind !== "cpu" || !participant.cpu_team_id) {
+      return participant;
+    }
+    return {
+      ...participant,
+      cpu_strength_tier: tierByCpuTeamId.get(participant.cpu_team_id) ?? null,
+    };
+  };
+
+  return fixtures.map((fixture) => ({
+    ...fixture,
+    home_participant: enrichOne(fixture.home_participant),
+    away_participant: enrichOne(fixture.away_participant),
+  }));
 }
 
 async function getMatchNewsSnapshot(game: LobbyGame): Promise<MatchNewsSnapshot[]> {

@@ -21,6 +21,8 @@ export type LobbySettings = {
   target_league_size?: number;
   seasonNumber?: number;
   turn_timeout_seconds: number;
+  /** Host-selected CPU team IDs (global catalog); order preserved for season fill. */
+  cpu_team_ids?: string[];
 };
 
 export type ClubTemplate = {
@@ -353,9 +355,12 @@ export type ClubOverviewSnapshot = {
   finance: ClubFinanceSnapshot;
 };
 
+export type CpuStrengthTier = "stark" | "mittel" | "schwach";
+
 export type SeasonParticipantSnapshot = {
   club_id?: string | null;
   cpu_team_id?: string | null;
+  cpu_strength_tier?: CpuStrengthTier | null;
   display_name: string;
   game_id: string;
   id: string;

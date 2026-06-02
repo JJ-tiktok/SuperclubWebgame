@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { CPU_LINEUPS_BY_TIER, pickCpuTeamsForSeason } from "@/lib/lobby/cpu-teams";
 import {
   buildSeasonFixtures,
   getMatchPoints,
@@ -39,6 +40,34 @@ describe("season and matchday rules", () => {
     assert.equal(getRequiredCpuCount(1, 6), 5);
     assert.equal(getRequiredCpuCount(4, 6), 2);
     assert.equal(getRequiredCpuCount(6, 6), 0);
+  });
+
+  it("picks CPU teams in host order and slices to required count", () => {
+    const catalog = [
+      { id: "a", display_name: "Alpha" },
+      { id: "b", display_name: "Beta" },
+      { id: "c", display_name: "Charlie" },
+      { id: "d", display_name: "Delta" },
+      { id: "e", display_name: "Echo" },
+      { id: "f", display_name: "Foxtrot" },
+    ];
+    const pick = pickCpuTeamsForSeason(["f", "c", "a", "b", "d", "e"], catalog, 3);
+    assert.equal(pick.ok, true);
+    if (pick.ok) {
+      assert.deepEqual(
+        pick.teams.map((t) => t.id),
+        ["f", "c", "a"],
+      );
+    }
+    const fail = pickCpuTeamsForSeason(["a", "b"], catalog, 5);
+    assert.equal(fail.ok, false);
+  });
+
+  it("uses the configured tier lineup star values", () => {
+    assert.equal(CPU_LINEUPS_BY_TIER.stark[0].def, 19);
+    assert.equal(CPU_LINEUPS_BY_TIER.stark[1].att, 17);
+    assert.equal(CPU_LINEUPS_BY_TIER.mittel[2].att, 19);
+    assert.equal(CPU_LINEUPS_BY_TIER.schwach[2].def, 9);
   });
 
   it("creates five matchdays or a double round robin for six participants", () => {

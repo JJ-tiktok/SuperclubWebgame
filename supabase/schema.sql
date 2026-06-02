@@ -351,6 +351,7 @@ create table public.cpu_teams (
   display_name text not null,
   color text not null default '#52525b',
   active boolean not null default true,
+  strength_tier text not null default 'schwach' check (strength_tier in ('stark', 'mittel', 'schwach')),
   metadata jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now()
 );
@@ -1231,28 +1232,64 @@ begin
 end;
 $$;
 
-insert into public.cpu_teams (content_key, display_name, color)
+insert into public.cpu_teams (content_key, display_name, color, strength_tier)
 values
-  ('cpu_northbridge', 'Northbridge City', '#2563eb'),
-  ('cpu_ironvale', 'Ironvale Athletic', '#dc2626'),
-  ('cpu_lakeside', 'Lakeside Rovers', '#0891b2'),
-  ('cpu_mountain', 'Mountain United', '#16a34a'),
-  ('cpu_harbor', 'Harbor Town', '#9333ea'),
-  ('cpu_desert', 'Desert Falcons', '#d97706')
-on conflict (content_key) do nothing;
+  ('cpu_northbridge', 'Northbridge City', '#2563eb', 'stark'),
+  ('cpu_ironvale', 'Ironvale Athletic', '#dc2626', 'stark'),
+  ('cpu_lakeside', 'Lakeside Rovers', '#0891b2', 'mittel'),
+  ('cpu_mountain', 'Mountain United', '#16a34a', 'schwach'),
+  ('cpu_harbor', 'Harbor Town', '#9333ea', 'mittel'),
+  ('cpu_desert', 'Desert Falcons', '#d97706', 'schwach')
+on conflict (content_key) do update set
+  strength_tier = excluded.strength_tier;
 
 insert into public.cpu_lineups (cpu_team_id, display_name, def_stars, mid_stars, att_stars, sort_order)
-select t.id, lineup.display_name, lineup.def_stars, lineup.mid_stars, lineup.att_stars, lineup.sort_order
+select t.id, l.display_name, l.def_stars, l.mid_stars, l.att_stars, l.sort_order
 from public.cpu_teams t
 cross join (
   values
-    ('Balanced', 8, 8, 8, 1),
-    ('Low Block', 11, 7, 6, 2),
-    ('Midfield Press', 7, 11, 6, 3),
-    ('Front Foot', 6, 8, 10, 4),
-    ('Wild Card', 9, 6, 9, 5)
-) as lineup(display_name, def_stars, mid_stars, att_stars, sort_order)
-on conflict (cpu_team_id, sort_order) do nothing;
+    ('Ausgeglichen', 19::numeric, 19::numeric, 19::numeric, 1),
+    ('Defensiv',     23::numeric, 19::numeric, 17::numeric, 2),
+    ('Offensiv',     17::numeric, 19::numeric, 23::numeric, 3)
+) as l(display_name, def_stars, mid_stars, att_stars, sort_order)
+where t.strength_tier = 'stark'
+on conflict (cpu_team_id, sort_order) do update set
+  display_name = excluded.display_name,
+  def_stars = excluded.def_stars,
+  mid_stars = excluded.mid_stars,
+  att_stars = excluded.att_stars;
+
+insert into public.cpu_lineups (cpu_team_id, display_name, def_stars, mid_stars, att_stars, sort_order)
+select t.id, l.display_name, l.def_stars, l.mid_stars, l.att_stars, l.sort_order
+from public.cpu_teams t
+cross join (
+  values
+    ('Ausgeglichen', 15::numeric, 15::numeric, 15::numeric, 1),
+    ('Defensiv',     19::numeric, 15::numeric, 13::numeric, 2),
+    ('Offensiv',     13::numeric, 15::numeric, 19::numeric, 3)
+) as l(display_name, def_stars, mid_stars, att_stars, sort_order)
+where t.strength_tier = 'mittel'
+on conflict (cpu_team_id, sort_order) do update set
+  display_name = excluded.display_name,
+  def_stars = excluded.def_stars,
+  mid_stars = excluded.mid_stars,
+  att_stars = excluded.att_stars;
+
+insert into public.cpu_lineups (cpu_team_id, display_name, def_stars, mid_stars, att_stars, sort_order)
+select t.id, l.display_name, l.def_stars, l.mid_stars, l.att_stars, l.sort_order
+from public.cpu_teams t
+cross join (
+  values
+    ('Ausgeglichen', 12::numeric, 12::numeric, 12::numeric, 1),
+    ('Defensiv',     15::numeric, 12::numeric,  9::numeric, 2),
+    ('Offensiv',      9::numeric, 12::numeric, 15::numeric, 3)
+) as l(display_name, def_stars, mid_stars, att_stars, sort_order)
+where t.strength_tier = 'schwach'
+on conflict (cpu_team_id, sort_order) do update set
+  display_name = excluded.display_name,
+  def_stars = excluded.def_stars,
+  mid_stars = excluded.mid_stars,
+  att_stars = excluded.att_stars;
 
 insert into public.staff_cards (content_key, display_name, price, effects, visibility) values
   ('mark_de_man',    'Mark De Man',    10000000, '[{"type":"zone_bonus","zone":"MID","stars":1}]'::jsonb, 'room'),

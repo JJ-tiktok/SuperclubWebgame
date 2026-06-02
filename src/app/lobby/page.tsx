@@ -1,8 +1,10 @@
 import { UserButton } from "@clerk/nextjs";
 import { LobbyEntryForms } from "@/components/lobby/lobby-entry-forms";
 import { SavedGamesList } from "@/components/lobby/saved-games-list";
+import { getActiveCpuTeams } from "@/lib/lobby/cpu-teams";
 import { getSavedGamesForCurrentUser } from "@/lib/lobby/data";
 import { DEFAULT_LOBBY_SETTINGS } from "@/lib/lobby/rules";
+import { createSupabaseServiceClient } from "@/lib/supabase/server";
 import type { SavedGameSummary } from "@/lib/lobby/types";
 import { getServiceSupabaseConfigIssue } from "@/lib/supabase/config";
 import { getErrorMessage, getSupabaseSetupHint } from "@/lib/supabase/errors";
@@ -13,10 +15,15 @@ export default async function LobbyPage() {
   const supabaseConfigIssue = getServiceSupabaseConfigIssue();
   let savedGames: SavedGameSummary[] = [];
   let savedGamesIssue = supabaseConfigIssue?.message ?? "";
+  let cpuTeams: Awaited<ReturnType<typeof getActiveCpuTeams>> = [];
 
   if (!supabaseConfigIssue) {
     try {
       savedGames = await getSavedGamesForCurrentUser();
+      const supabase = createSupabaseServiceClient();
+      if (supabase) {
+        cpuTeams = await getActiveCpuTeams(supabase);
+      }
     } catch (error) {
       savedGamesIssue = getSupabaseSetupHint(error) ?? getErrorMessage(error, "Spielstaende konnten nicht geladen werden.");
     }
@@ -40,7 +47,7 @@ export default async function LobbyPage() {
         ) : null}
 
         <SavedGamesList games={savedGames} />
-        <LobbyEntryForms defaultSettings={DEFAULT_LOBBY_SETTINGS} />
+        <LobbyEntryForms cpuTeams={cpuTeams} defaultSettings={DEFAULT_LOBBY_SETTINGS} />
       </div>
     </main>
   );

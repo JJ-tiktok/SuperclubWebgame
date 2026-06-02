@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { isRedirectError } from "next/dist/client/components/redirect-error";
 import { redirect } from "next/navigation";
 import { validateClubTemplateId } from "@/lib/lobby/club-templates";
+import { parseCpuTeamIdsFromFormData, validateCpuTeamSelection } from "@/lib/lobby/cpu-teams";
 import { ensureDraftRound } from "@/lib/lobby/draft-server";
 import {
   canStartLobby,
@@ -15,7 +16,7 @@ import {
   validateClubName,
   validateRoomCode,
 } from "@/lib/lobby/rules";
-import type { ActionResult, ClubTemplate, LobbyClub, LobbyGame } from "@/lib/lobby/types";
+import type { ActionResult, ClubTemplate, LobbyClub, LobbyGame, LobbySettings } from "@/lib/lobby/types";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
 import { getServiceSupabaseConfigIssue } from "@/lib/supabase/config";
 import { getErrorMessage, getSupabaseSetupHint } from "@/lib/supabase/errors";
@@ -249,11 +250,18 @@ export async function joinGameAction(_prevState: ActionResult, formData: FormDat
 
 async function createGame(formData: FormData) {
   const { userId, displayName, imageUrl, supabase } = await requireLobbyContext();
-  const settings = parseLobbySettings({
+  const settingsBase: LobbySettings = parseLobbySettings({
     starting_money: formData.get("starting_money") ?? undefined,
     max_draft_stars: formData.get("max_draft_stars") ?? undefined,
     turn_timeout_seconds: formData.get("turn_timeout_seconds") ?? undefined,
+    cpu_team_ids: formData.get("cpu_team_ids") ?? undefined,
   });
+  const cpuTeamIds = parseCpuTeamIdsFromFormData(formData);
+  const cpuValidation = await validateCpuTeamSelection(supabase, cpuTeamIds, settingsBase);
+  if (!cpuValidation.ok) {
+    throw new Error(cpuValidation.error);
+  }
+  const settings = { ...settingsBase, cpu_team_ids: cpuValidation.ids };
   const templateResult = validateClubTemplateId(String(formData.get("club_template_id") || ""));
 
   if (!templateResult.ok) {

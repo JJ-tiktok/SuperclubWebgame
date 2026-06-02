@@ -1,10 +1,12 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelDescription, PanelHeader, PanelTitle } from "@/components/ui/panel";
 import { createGameAction, joinGameAction } from "@/app/lobby/actions";
 import { CLUB_TEMPLATES } from "@/lib/lobby/club-templates";
+import { CPU_TIER_LABEL, getMinCpuTeamsForLobby, type CpuTeamCatalogRow } from "@/lib/lobby/cpu-teams";
+import type { CpuStrengthTier } from "@/lib/lobby/types";
 import type { ActionResult } from "@/lib/lobby/types";
 
 type LobbyEntryFormsProps = {
@@ -13,9 +15,10 @@ type LobbyEntryFormsProps = {
     max_draft_stars: number;
     turn_timeout_seconds: number;
   };
+  cpuTeams: CpuTeamCatalogRow[];
 };
 
-export function LobbyEntryForms({ defaultSettings }: LobbyEntryFormsProps) {
+export function LobbyEntryForms({ defaultSettings, cpuTeams }: LobbyEntryFormsProps) {
   const initialActionState: ActionResult = { ok: false, error: "" };
   const [createState, createFormAction, createPending] = useActionState<ActionResult, FormData>(
     createGameAction,
@@ -37,6 +40,7 @@ export function LobbyEntryForms({ defaultSettings }: LobbyEntryFormsProps) {
         </PanelHeader>
         <form action={createFormAction} className="space-y-4">
           <ClubTemplateSelect name="club_template_id" />
+          <CpuTeamSelect teams={cpuTeams} />
           <div className="grid gap-3 sm:grid-cols-3">
             <NumberField label="Startgeld" name="starting_money" defaultValue={defaultSettings.starting_money} />
             <NumberField label="Max Draft" name="max_draft_stars" defaultValue={defaultSettings.max_draft_stars} />
@@ -75,6 +79,78 @@ export function LobbyEntryForms({ defaultSettings }: LobbyEntryFormsProps) {
         </form>
       </Panel>
     </div>
+  );
+}
+
+function CpuTeamSelect({ teams }: { teams: CpuTeamCatalogRow[] }) {
+  const minRequired = getMinCpuTeamsForLobby(null);
+  const [selected, setSelected] = useState<Set<string>>(() => new Set(teams.map((team) => team.id)));
+  const selectedIds = useMemo(() => [...selected], [selected]);
+
+  function toggle(id: string) {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }
+
+  const selectionOk = selected.size >= minRequired;
+
+  return (
+    <fieldset className="space-y-3">
+      <legend className="text-sm font-medium text-zinc-300">
+        CPU-Gegner ({selected.size} gewaehlt, min. {minRequired})
+      </legend>
+      <p className="text-xs text-zinc-500">
+        Waehle die Mannschaften fuer die Liga. Beim Saisonstart werden so viele Teams eingebunden, wie fuer die Spieleranzahl noetig sind (Reihenfolge = deine Auswahl).
+      </p>
+      <input name="cpu_team_ids" type="hidden" value={JSON.stringify(selectedIds)} />
+      <div className="grid gap-2 sm:grid-cols-2">
+        {teams.map((team) => {
+          const checked = selected.has(team.id);
+          return (
+            <label
+              className={`group relative cursor-pointer overflow-hidden rounded-md border p-3 transition ${
+                checked ? "border-lime-300 bg-zinc-800" : "border-zinc-800 bg-zinc-900"
+              }`}
+              key={team.id}
+            >
+              <input
+                checked={checked}
+                className="peer sr-only"
+                onChange={() => toggle(team.id)}
+                type="checkbox"
+              />
+              <span className="absolute inset-x-0 top-0 h-1.5" style={{ backgroundColor: team.color }} />
+              <div className="flex items-start justify-between gap-2 pt-2">
+                <span className="text-sm font-semibold text-zinc-50">{team.display_name}</span>
+                <CpuTierBadge tier={team.strength_tier} />
+              </div>
+            </label>
+          );
+        })}
+      </div>
+      {!selectionOk ? (
+        <p className="text-xs text-amber-300" role="status">
+          Mindestens {minRequired} CPU-Mannschaften auswaehlen (6er-Liga mit einem Manager).
+        </p>
+      ) : null}
+    </fieldset>
+  );
+}
+
+function CpuTierBadge({ tier }: { tier: CpuStrengthTier }) {
+  const tone =
+    tier === "stark" ? "border-rose-500/50 bg-rose-950/80 text-rose-200" : tier === "mittel" ? "border-amber-500/50 bg-amber-950/80 text-amber-200" : "border-zinc-600 bg-zinc-800 text-zinc-300";
+  return (
+    <span className={`shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${tone}`}>
+      {CPU_TIER_LABEL[tier]}
+    </span>
   );
 }
 

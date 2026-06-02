@@ -14,6 +14,7 @@ import {
 } from "@/lib/lobby/deadline";
 import { DRAFT_PLAYER_SELECT } from "@/lib/lobby/draft";
 import { createDraftRound, getSquadCounts, allDraftSquadsComplete } from "@/lib/lobby/draft-server";
+import { getActiveCpuTeams, pickCpuTeamsForSeason } from "@/lib/lobby/cpu-teams";
 import { canRecruitStaff, canUpgradeFacility, type UpgradeAction } from "@/lib/lobby/investments";
 import { calculateLineupPower, type CaptainBoost } from "@/lib/lobby/lineup-power";
 import { getNextLobbyPhase, getSettingsForNextPhase, isInvestmentPhase } from "@/lib/lobby/phases";
@@ -1822,34 +1823,24 @@ async function ensureSeasonSchedule(supabase: SupabaseServiceClient, gameId: str
   }
 
   const targetLeagueSize = getTargetLeagueSize(settings);
-  const [{ data: clubs, error: clubsError }, { data: cpuTeams, error: cpuError }] = await Promise.all([
-    supabase
-      .from("clubs")
-      .select("id, club_name, created_at")
-      .eq("game_id", gameId)
-      .order("created_at", { ascending: true })
-      .returns<Array<{ id: string; club_name: string; created_at: string }>>(),
-    supabase
-      .from("cpu_teams")
-      .select("id, display_name")
-      .eq("active", true)
-      .order("display_name", { ascending: true })
-      .limit(Math.max(0, targetLeagueSize))
-      .returns<Array<{ id: string; display_name: string }>>(),
-  ]);
+  const { data: clubs, error: clubsError } = await supabase
+    .from("clubs")
+    .select("id, club_name, created_at")
+    .eq("game_id", gameId)
+    .order("created_at", { ascending: true })
+    .returns<Array<{ id: string; club_name: string; created_at: string }>>();
 
   if (clubsError) {
     throw clubsError;
   }
 
-  if (cpuError) {
-    throw cpuError;
-  }
-
   const requiredCpu = getRequiredCpuCount(clubs?.length ?? 0, targetLeagueSize);
-  if ((cpuTeams?.length ?? 0) < requiredCpu) {
-    throw new Error(`Zu wenige aktive CPU-Teams. Benoetigt: ${requiredCpu}.`);
+  const cpuCatalog = await getActiveCpuTeams(supabase);
+  const cpuPick = pickCpuTeamsForSeason(settings.cpu_team_ids, cpuCatalog, requiredCpu);
+  if (!cpuPick.ok) {
+    throw new Error(cpuPick.error);
   }
+  const cpuTeams = cpuPick.teams;
 
   const participantRows = [
     ...(clubs ?? []).map((club) => ({

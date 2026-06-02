@@ -2580,10 +2580,16 @@ function ContinentalView({ isHost, ownClub, snapshot }: { isHost: boolean; ownCl
             </Button>
           </form>
         ) : null}
+        {continental.status === "completed" ? (
+          <p className="mt-3 text-sm text-emerald-300">
+            Turnier beendet.
+            {isHost ? " Nutze oben „Fortsetzen“, um in die Off-Season zu wechseln." : " Der Host kann oben „Fortsetzen“ waehlen."}
+          </p>
+        ) : null}
       </Panel>
 
       <div className="grid gap-4 xl:grid-cols-[repeat(auto-fit,minmax(280px,1fr))]">
-        {[...CONTINENTAL_ROUNDS].reverse().map((round) => {
+        {[...new Set(continental.fixtures.map((fixture) => fixture.round))].sort((a, b) => b - a).map((round) => {
           const roundFixtures = continental.fixtures.filter((fixture) => fixture.round === round);
           if (roundFixtures.length === 0) {
             return null;

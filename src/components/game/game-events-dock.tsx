@@ -29,8 +29,14 @@ export function GameEventsDock({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [filter, setFilter] = useState<FilterTab>("all");
+  const [hydrated, setHydrated] = useState(false);
   const chipRef = useRef<HTMLDivElement>(null);
-  const unreadCount = countUnreadOwnNews(news, ownClubId, gameId);
+
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
+
+  const unreadCount = hydrated ? countUnreadOwnNews(news, ownClubId, gameId) : 0;
 
   const sorted = [...news].sort(
     (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
@@ -98,8 +104,7 @@ export function GameEventsDock({
                 const isOwn = item.club_id === ownClubId;
                 const style = getCategoryStyle(item.category);
                 const clubName = resolveClubName(clubs, item.club_id);
-                const lastSeen = getLastSeenAt(gameId);
-                const isUnread = isOwn && item.created_at > lastSeen;
+                const isUnread = hydrated && isOwn && item.created_at > getLastSeenAt(gameId);
 
                 return (
                   <li

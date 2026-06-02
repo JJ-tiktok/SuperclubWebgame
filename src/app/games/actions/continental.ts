@@ -8,6 +8,7 @@ import {
   buildRound32Fixtures,
   CONTINENTAL_PRIZE_AMOUNT,
   getNextContinentalRound,
+  isContinentalFinalRound,
   pickRandomLineupIndex,
   requiredContinentalCpuCount,
   shuffleParticipants,
@@ -380,6 +381,43 @@ async function buildContinentalFixtureSide(
   };
 }
 
+async function finalizeContinentalTournament(
+  supabase: SupabaseServiceClient,
+  tournament: { id: string; game_id: string; season_number: number; prize_amount: number },
+  winnerParticipantId: string,
+  participants: Map<string, ContinentalParticipantRow>,
+  userId: string,
+) {
+  const winner = participants.get(winnerParticipantId);
+  const winnerClubId = winner?.club_id ?? null;
+  if (winnerClubId) {
+    const { data: club } = await supabase.from("clubs").select("money").eq("id", winnerClubId).single<{ money: number }>();
+    await supabase
+      .from("clubs")
+      .update({ money: Number(club?.money ?? 0) + Number(tournament.prize_amount ?? CONTINENTAL_PRIZE_AMOUNT) })
+      .eq("id", winnerClubId);
+    await supabase.from("transactions").insert({
+      game_id: tournament.game_id,
+      club_id: winnerClubId,
+      amount: Number(tournament.prize_amount ?? CONTINENTAL_PRIZE_AMOUNT),
+      reason: "continental_cup_prize",
+      metadata: { season_number: tournament.season_number },
+    });
+  }
+  await supabase
+    .from("continental_tournaments")
+    .update({ status: "completed", winner_club_id: winnerClubId, current_round: 2 })
+    .eq("id", tournament.id);
+  await supabase.from("match_news").insert({
+    game_id: tournament.game_id,
+    club_id: winnerClubId,
+    category: "good_news",
+    headline: "Continental Cup gewonnen!",
+    detail: `+${Math.round(Number(tournament.prize_amount ?? CONTINENTAL_PRIZE_AMOUNT) / 1_000_000)}M Praemie`,
+  });
+  await touchGameSave(supabase, tournament.game_id, userId);
+}
+
 async function resolveContinentalFixtureServer(
   supabase: SupabaseServiceClient,
   fixture: ContinentalFixtureRow & {
@@ -450,34 +488,9 @@ async function resolveContinentalFixtureServer(
       prize_amount: number;
     }>();
 
-  if (fixture.round === 1) {
-    const winner = participants.get(winnerParticipantId);
-    const winnerClubId = winner?.club_id ?? null;
-    if (winnerClubId) {
-      const { data: club } = await supabase.from("clubs").select("money").eq("id", winnerClubId).single<{ money: number }>();
-      await supabase
-        .from("clubs")
-        .update({ money: Number(club?.money ?? 0) + Number(tournament?.prize_amount ?? CONTINENTAL_PRIZE_AMOUNT) })
-        .eq("id", winnerClubId);
-      await supabase.from("transactions").insert({
-        game_id: tournament!.game_id,
-        club_id: winnerClubId,
-        amount: Number(tournament?.prize_amount ?? CONTINENTAL_PRIZE_AMOUNT),
-        reason: "continental_cup_prize",
-        metadata: { season_number: tournament!.season_number },
-      });
-    }
-    await supabase
-      .from("continental_tournaments")
-      .update({ status: "completed", winner_club_id: winnerClubId, current_round: 1 })
-      .eq("id", fixture.tournament_id);
-    await supabase.from("match_news").insert({
-      game_id: tournament!.game_id,
-      club_id: winnerClubId,
-      category: "good_news",
-      headline: "Continental Cup gewonnen!",
-      detail: `+${Math.round(Number(tournament?.prize_amount ?? CONTINENTAL_PRIZE_AMOUNT) / 1_000_000)}M Praemie`,
-    });
+  if (tournament && isContinentalFinalRound(fixture.round)) {
+    await finalizeContinentalTournament(supabase, tournament, winnerParticipantId, participants, userId);
+    return;
   }
 
   await touchGameSave(supabase, tournament!.game_id, userId);
@@ -677,6 +690,18 @@ export async function advanceContinentalRoundAction(formData: FormData) {
 
   const nextRound = getNextContinentalRound(currentRound);
   if (!nextRound) {
+    if (isContinentalFinalRound(currentRound) && winners.length === 1) {
+      const participants = await getContinentalParticipants(supabase, tournament.id);
+      const { data: fullTournament } = await supabase
+        .from("continental_tournaments")
+        .select("id, game_id, season_number, status, prize_amount")
+        .eq("id", tournament.id)
+        .maybeSingle<{ id: string; game_id: string; season_number: number; status: string; prize_amount: number }>();
+      if (fullTournament && fullTournament.status !== "completed") {
+        await finalizeContinentalTournament(supabase, fullTournament, winners[0]!, participants, userId);
+      }
+    }
+    revalidatePath(`/games/${roomCode}`);
     redirect(`/games/${roomCode}?view=continental`);
   }
 

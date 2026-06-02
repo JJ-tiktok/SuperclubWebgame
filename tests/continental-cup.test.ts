@@ -4,6 +4,8 @@ import {
   buildNextRoundFixtures,
   buildRound32Fixtures,
   CONTINENTAL_BRACKET_SIZE,
+  getNextContinentalRound,
+  isContinentalFinalRound,
   requiredContinentalCpuCount,
   shouldRunContinentalCup,
   shuffleParticipants,
@@ -41,6 +43,18 @@ describe("Continental Cup", () => {
     assert.equal(next[0]?.round, 16);
     assert.equal(next[0]?.home_participant_id, "w-0");
     assert.equal(next[0]?.away_participant_id, "w-1");
+  });
+
+  it("ends the bracket after the round-2 final (no phantom round 1)", () => {
+    assert.equal(getNextContinentalRound(2), null);
+    assert.equal(isContinentalFinalRound(2), true);
+    assert.deepEqual(buildNextRoundFixtures(2, ["winner-only"]), []);
+  });
+
+  it("builds a single final from two semifinal winners", () => {
+    const next = buildNextRoundFixtures(4, ["w-a", "w-b"]);
+    assert.equal(next.length, 1);
+    assert.equal(next[0]?.round, 2);
   });
 });
 

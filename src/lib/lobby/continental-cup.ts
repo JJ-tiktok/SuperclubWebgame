@@ -6,8 +6,15 @@ export const CONTINENTAL_BRACKET_SIZE = 32;
 /** Minimum catalog rows so a 2-player lobby can fill 30 CPU slots. */
 export const MIN_CONTINENTAL_CPU_CATALOG_SIZE = CONTINENTAL_BRACKET_SIZE;
 export const CONTINENTAL_PRIZE_AMOUNT = 100_000_000;
-export const CONTINENTAL_ROUNDS = [32, 16, 8, 4, 2, 1] as const;
+/** Knockout rounds (32 → 16 → 8 → 4 → 2). The final is round 2 (one match). */
+export const CONTINENTAL_ROUNDS = [32, 16, 8, 4, 2] as const;
+export const CONTINENTAL_FINAL_ROUND: (typeof CONTINENTAL_ROUNDS)[number] = 2;
 export type ContinentalRound = (typeof CONTINENTAL_ROUNDS)[number];
+
+/** Legacy DB rows used round `1` as an extra final — treat like the real final. */
+export function isContinentalFinalRound(round: number) {
+  return round === CONTINENTAL_FINAL_ROUND || round === 1;
+}
 
 export type ContinentalParticipantInput = {
   id: string;
@@ -42,8 +49,8 @@ export function getNextContinentalRound(round: ContinentalRound): ContinentalRou
   return CONTINENTAL_ROUNDS[index + 1];
 }
 
-export function getContinentalRoundLabel(round: ContinentalRound) {
-  const labels: Record<ContinentalRound, string> = {
+export function getContinentalRoundLabel(round: number) {
+  const labels: Record<number, string> = {
     32: "Sechzehntelfinale",
     16: "Achtelfinale",
     8: "Viertelfinale",

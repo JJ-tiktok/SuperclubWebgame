@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { refreshOffseasonScoutingSnapshot } from "@/lib/lobby/scouting";
 import type { GameChangerCategory } from "@/lib/lobby/types";
 
 // ---------------------------------------------------------------------------
@@ -300,6 +301,9 @@ export async function applyImmediateEffect(
       const newLevel = Math.min(4, currentLevel + Math.max(1, Math.trunc(effect.levels)));
       if (newLevel === currentLevel) return { applied: false, detail: "Max Level erreicht" };
       await supabase.from("clubs").update({ [column]: newLevel }).eq("id", clubId);
+      if (effect.facility === "scouting") {
+        await refreshOffseasonScoutingSnapshot(supabase, clubId, newLevel);
+      }
       return { applied: true, detail: `${FACILITY_LABEL[effect.facility]} jetzt Level ${newLevel}` };
     }
 

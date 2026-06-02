@@ -5,6 +5,7 @@ import {
   canDrawScoutingPlayer,
   canResolveScoutedPlayer,
   canSellClubPlayer,
+  computeOffseasonScoutingBaseCapacity,
   getClubScoutingCapacity,
   getEffectiveScoutingDrawCapacity,
   getFreeScoutingDrawCount,
@@ -149,6 +150,29 @@ describe("Scouting rules", () => {
         { club_id: "club-b", status: "passed" },
       ]),
       null,
+    );
+  });
+
+  it("raises snapshotted capacity after Game Changer scouting upgrade but not paid investment", () => {
+    assert.equal(
+      computeOffseasonScoutingBaseCapacity({
+        scoutingLevel: 3,
+        snapshotCapacity: 2,
+        staffBonus: 0,
+        drawnCount: 2,
+        hadScoutingInvestmentThisSeason: false,
+      }),
+      3,
+    );
+    assert.equal(
+      computeOffseasonScoutingBaseCapacity({
+        scoutingLevel: 3,
+        snapshotCapacity: 2,
+        staffBonus: 0,
+        drawnCount: 2,
+        hadScoutingInvestmentThisSeason: true,
+      }),
+      2,
     );
   });
 });

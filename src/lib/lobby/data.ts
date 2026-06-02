@@ -35,9 +35,10 @@ import type {
 import { calculateManagerScore, getManagerScoreBand, getPlacementReward, getStadiumIncome, getTrainingCapacity } from "@/lib/game/rules";
 import { getDeadlineAuctionCount } from "@/lib/lobby/deadline";
 import {
-  getClubScoutingCapacity,
+  computeOffseasonScoutingBaseCapacity,
   getEffectiveScoutingDrawCapacity,
   getNextPendingScoutingClubId,
+  sumStaffScoutingBonus,
   type ScoutingPendingEffect,
 } from "@/lib/lobby/scouting";
 import { computeTrainingExtraPlayers, isOffseasonPendingScopeActive } from "@/lib/lobby/offseason-pending-effects";
@@ -190,7 +191,7 @@ async function getScoutingSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promise
 
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
   const clubIds = clubs.map((c) => c.id);
-  const [{ data: draws, error: drawsError }, { data: saleRows, error: saleRowsError }, { data: staffEffectRows }, { data: pendingEffectRows }] =
+  const [{ data: draws, error: drawsError }, { data: saleRows, error: saleRowsError }, { data: staffEffectRows }, { data: pendingEffectRows }, { data: scoutingInvestmentRows }] =
     await Promise.all([
     supabase
       .from("scouting_draws")
@@ -219,6 +220,15 @@ async function getScoutingSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promise
           .is("consumed_at", null)
           .returns<Array<ScoutingPendingEffect & { club_id: string }>>()
       : Promise.resolve({ data: [], error: null }),
+    clubIds.length > 0
+      ? supabase
+          .from("investments")
+          .select("club_id")
+          .in("club_id", clubIds)
+          .eq("season_number", seasonNumber)
+          .eq("action", "scouting")
+          .returns<Array<{ club_id: string }>>()
+      : Promise.resolve({ data: [], error: null }),
   ]);
 
   if (drawsError) {
@@ -237,16 +247,15 @@ async function getScoutingSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promise
     }
   }
 
-  // Build a map of scouting_extra_cards bonus per club from staff effects
   const scoutingBonusByClubId: Record<string, number> = {};
   for (const row of staffEffectRows ?? []) {
-    const bonus = (row.card?.effects ?? [])
-      .filter((e) => e.type === "scouting_extra_cards")
-      .reduce((sum, e) => sum + Number(e.cards ?? 0), 0);
+    const bonus = sumStaffScoutingBonus(row.card?.effects ?? []);
     if (bonus > 0) {
       scoutingBonusByClubId[row.club_id] = (scoutingBonusByClubId[row.club_id] ?? 0) + bonus;
     }
   }
+
+  const hadScoutingInvestmentByClubId = new Set((scoutingInvestmentRows ?? []).map((row) => row.club_id));
 
   const normalizedDraws: ScoutingDrawSnapshot[] = draws ?? [];
   const statusByClubId: ScoutingSnapshot["status_by_club_id"] = {};
@@ -267,13 +276,13 @@ async function getScoutingSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promise
     const clubDraws = normalizedDraws.filter((draw) => draw.club_id === club.id);
     const openCount = clubDraws.filter((draw) => draw.status === "drawn").length;
     const drawnCount = clubDraws.length;
-    // Prefer the snapshotted capacity (set at off_season start) so that upgrades/new staff
-    // don't grant extra draws in the same off-season.
-    let baseCapacity =
-      club.offseason_scouting_capacity ?? getClubScoutingCapacity(club) + (scoutingBonusByClubId[club.id] ?? 0);
-    if (club.offseason_scouting_capacity == null && drawnCount > 0 && baseCapacity > drawnCount) {
-      baseCapacity = drawnCount;
-    }
+    const baseCapacity = computeOffseasonScoutingBaseCapacity({
+      scoutingLevel: club.scouting_level ?? 1,
+      snapshotCapacity: club.offseason_scouting_capacity,
+      staffBonus: scoutingBonusByClubId[club.id] ?? 0,
+      drawnCount,
+      hadScoutingInvestmentThisSeason: hadScoutingInvestmentByClubId.has(club.id),
+    });
     const capacity = getEffectiveScoutingDrawCapacity(
       baseCapacity,
       pendingByClubId.get(club.id) ?? [],

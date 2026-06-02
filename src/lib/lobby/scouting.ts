@@ -1,3 +1,4 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { getScoutingCapacity, MAX_SQUAD_SIZE } from "@/lib/game/rules";
 import { OFFSEASON_MANAGEMENT_PHASES, isOffseasonManagementPhase } from "@/lib/lobby/phases";
 import { isOffseasonPendingScopeActive } from "@/lib/lobby/offseason-pending-effects";
@@ -26,6 +27,70 @@ export function isOffseasonPhase(value: string) {
 
 export function getClubScoutingCapacity(club: Pick<LobbyClub, "scouting_level">) {
   return getScoutingCapacity(club.scouting_level ?? 1).players;
+}
+
+export function sumStaffScoutingBonus(staffEffects: Array<Record<string, unknown>>) {
+  return staffEffects
+    .filter((e) => e.type === "scouting_extra_cards")
+    .reduce((sum, e) => sum + Number(e.cards ?? 0), 0);
+}
+
+/**
+ * Off-season draw limit: snapshotted at phase start so paid facility upgrades do not
+ * grant extra draws. Raises above the snapshot when level increased without a scouting
+ * investment (e.g. Game Changer free_facility_upgrade).
+ */
+export function computeOffseasonScoutingBaseCapacity(params: {
+  scoutingLevel: number;
+  snapshotCapacity: number | null | undefined;
+  staffBonus: number;
+  drawnCount: number;
+  hadScoutingInvestmentThisSeason: boolean;
+}): number {
+  const live = getScoutingCapacity(params.scoutingLevel ?? 1).players + params.staffBonus;
+
+  if (params.snapshotCapacity != null) {
+    if (!params.hadScoutingInvestmentThisSeason && live > params.snapshotCapacity) {
+      return live;
+    }
+    return params.snapshotCapacity;
+  }
+
+  if (params.drawnCount > 0 && live > params.drawnCount) {
+    return params.drawnCount;
+  }
+
+  return live;
+}
+
+/** After a Game Changer scouting upgrade, raise the frozen off-season draw cap if needed. */
+export async function refreshOffseasonScoutingSnapshot(
+  supabase: SupabaseClient,
+  clubId: string,
+  scoutingLevel: number,
+) {
+  const { data: club } = await supabase
+    .from("clubs")
+    .select("offseason_scouting_capacity")
+    .eq("id", clubId)
+    .maybeSingle<{ offseason_scouting_capacity: number | null }>();
+  if (club?.offseason_scouting_capacity == null) {
+    return;
+  }
+
+  const { data: staffRows } = await supabase
+    .from("club_staff")
+    .select("card:staff_cards(effects)")
+    .eq("club_id", clubId)
+    .returns<Array<{ card: { effects: Array<Record<string, unknown>> } | null }>>();
+
+  const live =
+    getScoutingCapacity(scoutingLevel).players +
+    sumStaffScoutingBonus((staffRows ?? []).flatMap((row) => row.card?.effects ?? []));
+
+  if (live > club.offseason_scouting_capacity) {
+    await supabase.from("clubs").update({ offseason_scouting_capacity: live }).eq("id", clubId);
+  }
 }
 
 export type ScoutingPendingEffect = {

@@ -126,7 +126,13 @@ insert into public.continental_cpu_teams (content_key, display_name, color) valu
   ('cl_french_capital', 'French Capital', '#1e3a8a'),
   ('cl_london_elite', 'London Elite', '#052e16'),
   ('cl_milan_royal', 'Milan Royal', '#f59e0b'),
-  ('cl_munich_titans', 'Munich Titans', '#dc2626')
+  ('cl_munich_titans', 'Munich Titans', '#dc2626'),
+  ('cl_warsaw_union', 'Warsaw Union', '#dc2626'),
+  ('cl_helsinki_ice', 'Helsinki Ice', '#0ea5e9'),
+  ('cl_glasgow_hoops', 'Glasgow Hoops', '#166534'),
+  ('cl_sevilla_sun', 'Sevilla Sun', '#f97316'),
+  ('cl_budapest_heroes', 'Budapest Heroes', '#7f1d1d'),
+  ('cl_copenhagen_north', 'Copenhagen North', '#1d4ed8')
 on conflict (content_key) do nothing;
 
 insert into public.continental_cpu_lineups (continental_cpu_team_id, display_name, def_stars, mid_stars, att_stars, sort_order)

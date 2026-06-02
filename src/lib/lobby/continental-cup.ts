@@ -3,6 +3,8 @@
  */
 
 export const CONTINENTAL_BRACKET_SIZE = 32;
+/** Minimum catalog rows so a 2-player lobby can fill 30 CPU slots. */
+export const MIN_CONTINENTAL_CPU_CATALOG_SIZE = CONTINENTAL_BRACKET_SIZE;
 export const CONTINENTAL_PRIZE_AMOUNT = 100_000_000;
 export const CONTINENTAL_ROUNDS = [32, 16, 8, 4, 2, 1] as const;
 export type ContinentalRound = (typeof CONTINENTAL_ROUNDS)[number];

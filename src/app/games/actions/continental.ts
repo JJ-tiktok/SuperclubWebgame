@@ -197,16 +197,21 @@ export async function ensureContinentalTournament(
     throw new Error(`Continental Cup benoetigt 32 Teams, aber ${humanCount} Menschen + ${cpuNeeded} CPU ergibt nicht 32.`);
   }
 
-  const { data: cpuCatalog, error: cpuError } = await supabase
+  const { data: cpuPool, error: cpuError } = await supabase
     .from("continental_cpu_teams")
     .select("id, display_name")
-    .eq("active", true)
-    .order("display_name", { ascending: true })
-    .limit(cpuNeeded);
+    .eq("active", true);
   if (cpuError) throw cpuError;
-  if ((cpuCatalog?.length ?? 0) < cpuNeeded) {
-    throw new Error(`Zu wenige Continental-CPU-Teams im Katalog. Benoetigt: ${cpuNeeded}.`);
+
+  const catalogSize = cpuPool?.length ?? 0;
+  if (catalogSize < cpuNeeded) {
+    throw new Error(
+      `Zu wenige Continental-CPU-Teams im Katalog (${catalogSize}/${cpuNeeded}). ` +
+        "Bitte in Supabase `supabase/continental_cpu_catalog_expand.sql` (oder `champions_league_upgrade.sql`) ausfuehren.",
+    );
   }
+
+  const cpuCatalog = shuffleParticipants(cpuPool ?? []).slice(0, cpuNeeded);
 
   const { data: tournament, error: tournamentError } = await supabase
     .from("continental_tournaments")

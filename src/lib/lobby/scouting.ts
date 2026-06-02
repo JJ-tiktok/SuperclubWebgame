@@ -27,6 +27,13 @@ export function getClubScoutingCapacity(club: Pick<LobbyClub, "scouting_level">)
   return getScoutingCapacity(club.scouting_level ?? 1).players;
 }
 
+export type ScoutingPendingEffect = {
+  consumed_at?: string | null;
+  effect_type: string;
+  payload: Record<string, unknown>;
+  scope: string;
+};
+
 export function canDrawScoutingPlayer(params: {
   drawnCount: number;
   ownClubId: string;
@@ -37,6 +44,18 @@ export function canDrawScoutingPlayer(params: {
   }
 
   return { ok: true } as const;
+}
+
+/** Bonus draws from Game Changer cards (current off-season only). */
+export function getFreeScoutingDrawCount(pendingEffects: ScoutingPendingEffect[]) {
+  return pendingEffects
+    .filter((eff) => !eff.consumed_at && eff.effect_type === "free_scouting_draw" && eff.scope === "current_offseason")
+    .reduce((sum, eff) => sum + Math.max(0, Math.trunc(Number(eff.payload.count ?? 0))), 0);
+}
+
+/** Total draws allowed before buy/pass (facility snapshot + free draws). */
+export function getEffectiveScoutingDrawCapacity(baseCapacity: number, pendingEffects: ScoutingPendingEffect[]) {
+  return baseCapacity + getFreeScoutingDrawCount(pendingEffects);
 }
 
 export function canResolveScoutedPlayer(params: {
@@ -51,6 +70,30 @@ export function canResolveScoutedPlayer(params: {
   return { ok: true } as const;
 }
 
+export function isOffseasonTransfersBlocked(pendingEffects: ScoutingPendingEffect[]) {
+  return pendingEffects.some((eff) => {
+    if (eff.consumed_at) return false;
+    if (eff.effect_type !== "offseason_lock" || eff.scope !== "current_offseason") return false;
+    const blocks = (eff.payload.blocks as string[] | undefined) ?? [];
+    return blocks.includes("transfers");
+  });
+}
+
+export function getScoutingPurchasePrice(basePrice: number, pendingEffects: ScoutingPendingEffect[]) {
+  const active = pendingEffects.filter((eff) => !eff.consumed_at);
+  const transferDeltaEffect = active.find(
+    (eff) => eff.effect_type === "next_transfer_price_delta" && eff.scope === "next_transfer",
+  );
+  const transferDelta = transferDeltaEffect ? Number((transferDeltaEffect.payload.amount as number | undefined) ?? 0) : 0;
+  const freeBuyEffect = active.find(
+    (eff) =>
+      eff.effect_type === "free_scouting_buy_next" &&
+      eff.scope === "next_transfer" &&
+      Number((eff.payload.count as number | undefined) ?? 0) > 0,
+  );
+  return freeBuyEffect ? 0 : Math.max(0, basePrice + transferDelta);
+}
+
 export function canBuyScoutedPlayer(params: {
   drawnCount: number;
   money: number;
@@ -58,7 +101,12 @@ export function canBuyScoutedPlayer(params: {
   playerPrice: number;
   scoutingCapacity: number;
   squadSize: number;
+  transfersBlocked?: boolean;
 }) {
+  if (params.transfersBlocked) {
+    return { ok: false, reason: "transfers_blocked" } as const;
+  }
+
   const resolveCheck = canResolveScoutedPlayer(params);
   if (!resolveCheck.ok) {
     return resolveCheck;
@@ -111,6 +159,7 @@ export function getScoutingActionLabel(reason: string) {
     not_offseason: "Nur Offseason",
     sale_limit: "Verkaufslimit",
     squad_full: "Kader voll",
+    transfers_blocked: "Transfers gesperrt",
   };
 
   return labels[reason] ?? "Nicht moeglich";

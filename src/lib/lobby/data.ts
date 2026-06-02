@@ -34,7 +34,12 @@ import type {
 } from "./types";
 import { calculateManagerScore, getManagerScoreBand, getPlacementReward, getStadiumIncome, getTrainingCapacity } from "@/lib/game/rules";
 import { getDeadlineAuctionCount } from "@/lib/lobby/deadline";
-import { getClubScoutingCapacity, getNextPendingScoutingClubId } from "@/lib/lobby/scouting";
+import {
+  getClubScoutingCapacity,
+  getEffectiveScoutingDrawCapacity,
+  getNextPendingScoutingClubId,
+  type ScoutingPendingEffect,
+} from "@/lib/lobby/scouting";
 import { getTrainingStatus, parseTrainingEvent } from "@/lib/lobby/training";
 import type { ClubStatus } from "@/lib/game/types";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
@@ -184,7 +189,8 @@ async function getScoutingSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promise
 
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
   const clubIds = clubs.map((c) => c.id);
-  const [{ data: draws, error: drawsError }, { data: saleRows, error: saleRowsError }, { data: staffEffectRows }] = await Promise.all([
+  const [{ data: draws, error: drawsError }, { data: saleRows, error: saleRowsError }, { data: staffEffectRows }, { data: pendingEffectRows }] =
+    await Promise.all([
     supabase
       .from("scouting_draws")
       .select(`id, game_id, club_id, season_number, pile_key, draw_index, player_id, status, created_at, resolved_at, player:players(${DRAFT_PLAYER_SELECT})`)
@@ -204,6 +210,14 @@ async function getScoutingSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promise
       .select("club_id, card:staff_cards(effects)")
       .in("club_id", clubIds)
       .returns<Array<{ club_id: string; card: { effects: Array<Record<string, unknown>> } }>>(),
+    clubIds.length > 0
+      ? supabase
+          .from("club_pending_effects")
+          .select("club_id, effect_type, payload, scope, consumed_at")
+          .in("club_id", clubIds)
+          .is("consumed_at", null)
+          .returns<Array<ScoutingPendingEffect & { club_id: string }>>()
+      : Promise.resolve({ data: [], error: null }),
   ]);
 
   if (drawsError) {
@@ -236,13 +250,30 @@ async function getScoutingSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promise
   const normalizedDraws: ScoutingDrawSnapshot[] = draws ?? [];
   const statusByClubId: ScoutingSnapshot["status_by_club_id"] = {};
 
+  const pendingByClubId = new Map<string, ScoutingPendingEffect[]>();
+  for (const row of pendingEffectRows ?? []) {
+    const list = pendingByClubId.get(row.club_id) ?? [];
+    list.push({
+      consumed_at: row.consumed_at,
+      effect_type: row.effect_type,
+      payload: row.payload,
+      scope: row.scope,
+    });
+    pendingByClubId.set(row.club_id, list);
+  }
+
   for (const club of clubs) {
     const clubDraws = normalizedDraws.filter((draw) => draw.club_id === club.id);
     const openCount = clubDraws.filter((draw) => draw.status === "drawn").length;
+    const drawnCount = clubDraws.length;
     // Prefer the snapshotted capacity (set at off_season start) so that upgrades/new staff
     // don't grant extra draws in the same off-season.
-    const capacity = club.offseason_scouting_capacity
-      ?? (getClubScoutingCapacity(club) + (scoutingBonusByClubId[club.id] ?? 0));
+    let baseCapacity =
+      club.offseason_scouting_capacity ?? getClubScoutingCapacity(club) + (scoutingBonusByClubId[club.id] ?? 0);
+    if (club.offseason_scouting_capacity == null && drawnCount > 0 && baseCapacity > drawnCount) {
+      baseCapacity = drawnCount;
+    }
+    const capacity = getEffectiveScoutingDrawCapacity(baseCapacity, pendingByClubId.get(club.id) ?? []);
 
     statusByClubId[club.id] = {
       bought_count: clubDraws.filter((draw) => draw.status === "bought").length,

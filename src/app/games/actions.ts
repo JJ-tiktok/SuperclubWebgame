@@ -60,6 +60,10 @@ import {
 import type { GameChangerCategory } from "@/lib/lobby/types";
 import {
   canBuyScoutedPlayer,
+  getEffectiveScoutingDrawCapacity,
+  getFreeScoutingDrawCount,
+  getScoutingPurchasePrice,
+  isOffseasonTransfersBlocked,
   canDrawScoutingPlayer,
   canResolveScoutedPlayer,
   canSellClubPlayer,
@@ -595,20 +599,7 @@ export async function trainPlayerAction(formData: FormData) {
   redirect(`/games/${roomCode}?view=training`);
 }
 
-/**
- * Returns the effective scouting draw capacity for the given club.
- * During off_season, uses the snapshot stored at phase start so that
- * facility upgrades and newly recruited staff don't immediately grant
- * extra draws in the same off-season.
- */
-async function getEffectiveScoutingCapacity(
-  supabase: SupabaseServiceClient,
-  club: LobbyClub,
-): Promise<number> {
-  if (club.offseason_scouting_capacity != null) {
-    return club.offseason_scouting_capacity;
-  }
-  // Fallback: live calculation (used before first off_season snapshot exists)
+async function calculateLiveScoutingCapacity(supabase: SupabaseServiceClient, club: LobbyClub) {
   const { data: staffRows } = await supabase
     .from("club_staff")
     .select("card:staff_cards(effects)")
@@ -619,6 +610,29 @@ async function getEffectiveScoutingCapacity(
     .filter((e) => e.type === "scouting_extra_cards")
     .reduce((sum, e) => sum + Number(e.cards ?? 0), 0);
   return getClubScoutingCapacity(club) + bonus;
+}
+
+/**
+ * Base scouting draws for this off-season (facility snapshot at phase start).
+ * If no snapshot exists yet but the club already drew cards, grandfather the
+ * count so mid-off-season upgrades do not block buy/pass.
+ */
+async function resolveScoutingBaseCapacity(
+  supabase: SupabaseServiceClient,
+  club: LobbyClub,
+  drawnCount: number,
+): Promise<number> {
+  if (club.offseason_scouting_capacity != null) {
+    return club.offseason_scouting_capacity;
+  }
+
+  const liveCapacity = await calculateLiveScoutingCapacity(supabase, club);
+  if (drawnCount > 0 && liveCapacity > drawnCount) {
+    await supabase.from("clubs").update({ offseason_scouting_capacity: drawnCount }).eq("id", club.id);
+    return drawnCount;
+  }
+
+  return liveCapacity;
 }
 
 export async function drawScoutingPlayerAction(formData: FormData) {
@@ -645,15 +659,16 @@ export async function drawScoutingPlayerAction(formData: FormData) {
     const blocks = ((eff.payload as { blocks?: string[] }).blocks ?? []);
     return blocks.includes("scouting");
   });
-  // Free draws bump effective capacity by their count; we consume the first matching effect on draw.
-  const freeDrawEffect = scoutingPendingEffects.find((eff) => eff.effect_type === "free_scouting_draw" && Number((eff.payload as { count?: number }).count ?? 0) > 0);
-  const freeDrawCount = freeDrawEffect ? Number((freeDrawEffect.payload as { count?: number }).count ?? 0) : 0;
 
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
   const draws = await getScoutingDraws(supabase, gameId, seasonNumber);
   const ownDraws = draws.filter((draw) => draw.club_id === ownClub.id);
-  const baseCapacity = await getEffectiveScoutingCapacity(supabase, ownClub);
-  const effectiveCapacity = baseCapacity + freeDrawCount;
+  const baseCapacity = await resolveScoutingBaseCapacity(supabase, ownClub, ownDraws.length);
+  const freeDrawCount = getFreeScoutingDrawCount(scoutingPendingEffects);
+  const effectiveCapacity = getEffectiveScoutingDrawCapacity(baseCapacity, scoutingPendingEffects);
+  const freeDrawEffect = scoutingPendingEffects.find(
+    (eff) => eff.effect_type === "free_scouting_draw" && Number((eff.payload as { count?: number }).count ?? 0) > 0,
+  );
   const drawCheck = canDrawScoutingPlayer({
     drawnCount: ownDraws.length,
     ownClubId: ownClub.id,
@@ -734,7 +749,7 @@ export async function buyScoutedPlayerAction(formData: FormData) {
   }
 
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
-  const [draws, squadCount, buyStaffRows, capacity] = await Promise.all([
+  const [draws, squadCount, buyStaffRows, buyPendingEffects] = await Promise.all([
     getScoutingDraws(supabase, gameId, seasonNumber),
     getClubSquadCount(supabase, ownClub.id),
     supabase
@@ -742,46 +757,48 @@ export async function buyScoutedPlayerAction(formData: FormData) {
       .select("card:staff_cards(effects)")
       .eq("club_id", ownClub.id)
       .returns<Array<{ card: { effects: Array<Record<string, unknown>> } }>>(),
-    getEffectiveScoutingCapacity(supabase, ownClub),
+    getActivePendingEffects(supabase, ownClub.id),
   ]);
   const draw = draws.find((item) => item.id === drawId);
 
   if (!draw || draw.club_id !== ownClub.id || draw.status !== "drawn") {
-    redirect(`/games/${roomCode}?view=scouting`);
+    redirect(`/games/${roomCode}?view=scouting&scouting_error=invalid_draw`);
   }
 
   const ownDraws = draws.filter((item) => item.club_id === ownClub.id);
   const baseScoutingPrice = Number(draw.player.scouting_price ?? 0);
+  const scoutingPendingEffects = buyPendingEffects.filter((eff) => eff.scope === "current_offseason");
+  const baseCapacity = await resolveScoutingBaseCapacity(supabase, ownClub, ownDraws.length);
+  const resolveCapacity = getEffectiveScoutingDrawCapacity(baseCapacity, scoutingPendingEffects);
 
-  // Apply offseason lock + next_transfer price delta + free_scouting_buy_next
-  const buyPendingEffects = await getActivePendingEffects(supabase, ownClub.id);
-  const transfersBlocked = buyPendingEffects.some((eff) => {
-    if (eff.effect_type !== "offseason_lock") return false;
-    if (eff.scope !== "current_offseason") return false;
-    const blocks = ((eff.payload as { blocks?: string[] }).blocks ?? []);
-    return blocks.includes("transfers");
-  });
+  const transfersBlocked = isOffseasonTransfersBlocked(buyPendingEffects);
   if (transfersBlocked) {
-    redirect(`/games/${roomCode}?view=scouting`);
+    redirect(`/games/${roomCode}?view=scouting&scouting_error=transfers_blocked`);
   }
 
-  const transferDeltaEffect = buyPendingEffects.find((eff) => eff.effect_type === "next_transfer_price_delta" && eff.scope === "next_transfer");
-  const transferDelta = transferDeltaEffect ? Number((transferDeltaEffect.payload as { amount?: number }).amount ?? 0) : 0;
-  const freeBuyEffect = buyPendingEffects.find((eff) => eff.effect_type === "free_scouting_buy_next" && eff.scope === "next_transfer" && Number((eff.payload as { count?: number }).count ?? 0) > 0);
-  const adjustedPrice = freeBuyEffect ? 0 : Math.max(0, baseScoutingPrice + transferDelta);
-  const price = adjustedPrice;
+  const price = getScoutingPurchasePrice(baseScoutingPrice, buyPendingEffects);
+  const transferDeltaEffect = buyPendingEffects.find(
+    (eff) => eff.effect_type === "next_transfer_price_delta" && eff.scope === "next_transfer",
+  );
+  const freeBuyEffect = buyPendingEffects.find(
+    (eff) =>
+      eff.effect_type === "free_scouting_buy_next" &&
+      eff.scope === "next_transfer" &&
+      Number((eff.payload as { count?: number }).count ?? 0) > 0,
+  );
 
   const buyCheck = canBuyScoutedPlayer({
     drawnCount: ownDraws.length,
     money: Number(ownClub.money),
     ownClubId: ownClub.id,
     playerPrice: price,
-    scoutingCapacity: capacity,
+    scoutingCapacity: resolveCapacity,
     squadSize: squadCount,
+    transfersBlocked,
   });
 
   if (!buyCheck.ok) {
-    redirect(`/games/${roomCode}?view=scouting`);
+    redirect(`/games/${roomCode}?view=scouting&scouting_error=${buyCheck.reason}`);
   }
 
   const newSigningBonus = (buyStaffRows.data ?? [])
@@ -872,20 +889,20 @@ export async function passScoutedPlayerAction(formData: FormData) {
   }
 
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
-  const [draws, capacity] = await Promise.all([
-    getScoutingDraws(supabase, gameId, seasonNumber),
-    getEffectiveScoutingCapacity(supabase, ownClub),
-  ]);
+  const draws = await getScoutingDraws(supabase, gameId, seasonNumber);
   const draw = draws.find((item) => item.id === drawId);
   const ownDraws = draws.filter((item) => item.club_id === ownClub.id);
+  const scoutingPendingEffects = await getActivePendingEffects(supabase, ownClub.id, "current_offseason");
+  const baseCapacity = await resolveScoutingBaseCapacity(supabase, ownClub, ownDraws.length);
+  const resolveCapacity = getEffectiveScoutingDrawCapacity(baseCapacity, scoutingPendingEffects);
   const resolveCheck = canResolveScoutedPlayer({
     drawnCount: ownDraws.length,
     ownClubId: ownClub.id,
-    scoutingCapacity: capacity,
+    scoutingCapacity: resolveCapacity,
   });
 
   if (!draw || draw.club_id !== ownClub.id || draw.status !== "drawn" || !resolveCheck.ok) {
-    redirect(`/games/${roomCode}?view=scouting`);
+    redirect(`/games/${roomCode}?view=scouting&scouting_error=${resolveCheck.ok ? "invalid_draw" : resolveCheck.reason}`);
   }
 
   const { error } = await supabase
@@ -4001,7 +4018,7 @@ async function getGameClubContext(supabase: SupabaseServiceClient, gameId: strin
     supabase
       .from("clubs")
       .select(
-        "id, game_id, clerk_user_id, club_name, manager_name, money, points, is_ready, created_at, scouting_level, training_level, stadium_level, season_rank, status",
+        "id, game_id, clerk_user_id, club_name, manager_name, money, points, is_ready, created_at, scouting_level, training_level, stadium_level, season_rank, status, offseason_scouting_capacity, offseason_training_capacity",
       )
       .eq("game_id", gameId)
       .order("created_at", { ascending: true })

@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import type { CSSProperties, ReactNode } from "react";
 import { useRef, useState } from "react";
 import {
@@ -124,6 +125,9 @@ import { CPU_TIER_LABEL } from "@/lib/lobby/cpu-teams";
 import { canStartLobby } from "@/lib/lobby/rules";
 import {
   canBuyScoutedPlayer,
+  getScoutingActionLabel,
+  getScoutingPurchasePrice,
+  isOffseasonTransfersBlocked,
   canDrawScoutingPlayer,
   canResolveScoutedPlayer,
   canSellClubPlayer,
@@ -1094,6 +1098,8 @@ function TrainingView({
 }
 
 function ScoutingView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub: LobbyClub | undefined; snapshot: LobbySnapshot }) {
+  const searchParams = useSearchParams();
+  const scoutingError = searchParams.get("scouting_error");
   const scouting = snapshot.scouting;
   const overview = snapshot.club_overview;
 
@@ -1130,6 +1136,11 @@ function ScoutingView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub:
 
   return (
     <div className="space-y-4">
+      {scoutingError ? (
+        <div className="rounded-md border border-amber-700 bg-amber-950/40 p-3 text-sm text-amber-100">
+          Kauf nicht moeglich: {getScoutingActionLabel(scoutingError)}
+        </div>
+      ) : null}
       {scouting.all_finished ? (
         <div className="rounded-md border border-emerald-800 bg-emerald-950/40 p-4">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1330,13 +1341,16 @@ function ScoutingDrawsPanel({
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                 {clubDraws.map((draw) => {
                   const card = mapDbPlayerToPlayerCardData(draw.player);
+                  const pendingEffects = overview.pending_effects ?? [];
+                  const purchasePrice = getScoutingPurchasePrice(Number(draw.player.scouting_price ?? 0), pendingEffects);
                   const buyCheck = canBuyScoutedPlayer({
                     drawnCount: ownDraws.length,
                     money: overview.finance.money,
                     ownClubId: ownClub.id,
-                    playerPrice: Number(draw.player.scouting_price ?? 0),
+                    playerPrice: purchasePrice,
                     scoutingCapacity: ownStatus.capacity,
                     squadSize: overview.squad.length,
+                    transfersBlocked: isOffseasonTransfersBlocked(pendingEffects),
                   });
                   const resolveCheck = canResolveScoutedPlayer({
                     drawnCount: ownDraws.length,

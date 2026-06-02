@@ -6,6 +6,8 @@ import {
   canResolveScoutedPlayer,
   canSellClubPlayer,
   getClubScoutingCapacity,
+  getEffectiveScoutingDrawCapacity,
+  getFreeScoutingDrawCount,
   getNextPendingScoutingClubId,
 } from "@/lib/lobby/scouting";
 
@@ -85,6 +87,41 @@ describe("Scouting rules", () => {
     assert.deepEqual(canSellClubPlayer({ isOffseason: true, salesCount: 1 }), { ok: true });
     assert.equal(canSellClubPlayer({ isOffseason: true, salesCount: 2 }).ok, false);
     assert.equal(canSellClubPlayer({ isOffseason: false, salesCount: 0 }).ok, false);
+  });
+
+  it("counts free scouting draws toward resolve capacity", () => {
+    const pending = [
+      {
+        consumed_at: null,
+        effect_type: "free_scouting_draw",
+        payload: { count: 1 },
+        scope: "current_offseason",
+      },
+    ];
+    assert.equal(getFreeScoutingDrawCount(pending), 1);
+    assert.equal(getEffectiveScoutingDrawCapacity(2, pending), 3);
+    assert.equal(
+      canBuyScoutedPlayer({
+        drawnCount: 2,
+        money: 10_000_000,
+        ownClubId: "club-a",
+        playerPrice: 1_000_000,
+        scoutingCapacity: 3,
+        squadSize: 10,
+      }).ok,
+      false,
+    );
+    assert.equal(
+      canBuyScoutedPlayer({
+        drawnCount: 3,
+        money: 10_000_000,
+        ownClubId: "club-a",
+        playerPrice: 1_000_000,
+        scoutingCapacity: 3,
+        squadSize: 10,
+      }).ok,
+      true,
+    );
   });
 
   it("finds the next club that still has scouting work", () => {

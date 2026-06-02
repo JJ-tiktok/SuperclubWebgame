@@ -423,7 +423,7 @@ export async function trainPlayerAction(formData: FormData) {
       .from("club_players")
       .select(
         `id, club_id, player_id, current_stars, injured,
-        club:clubs(id, game_id, clerk_user_id, training_level, offseason_training_capacity),
+        club:clubs!club_players_club_id_fkey(id, game_id, clerk_user_id, training_level, offseason_training_capacity),
         player:players(id, skill_max)`,
       )
       .eq("id", clubPlayerId)
@@ -3856,7 +3856,7 @@ async function getManagerScoreRows(supabase: SupabaseServiceClient, gameId: stri
       >(),
     supabase
       .from("club_players")
-      .select("club_id, current_stars, club:clubs!inner(game_id)")
+      .select("club_id, current_stars, club:clubs!club_players_club_id_fkey!inner(game_id)")
       .eq("club.game_id", gameId)
       .returns<Array<{ club_id: string; current_stars: number | string }>>(),
   ]);

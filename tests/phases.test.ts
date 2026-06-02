@@ -22,6 +22,16 @@ describe("Lobby phase flow", () => {
     assert.equal(shouldAdvanceSeason("season_end", "off_season"), true);
   });
 
+  it("routes odd season end directly to off_season", () => {
+    const settings = {
+      max_draft_stars: 3,
+      seasonNumber: 1,
+      starting_money: 100_000_000,
+      turn_timeout_seconds: 60,
+    };
+    assert.equal(getNextLobbyPhase("season_end", settings), "off_season");
+  });
+
   it("increments the season only after season end", () => {
     const settings = {
       max_draft_stars: 3,

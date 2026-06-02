@@ -24,6 +24,8 @@ import type {
   SavedGameSummary,
   ScoutingDrawSnapshot,
   ScoutingSnapshot,
+  ContinentalFixtureSnapshot,
+  ContinentalTournamentSnapshot,
   SeasonFixtureSnapshot,
   SeasonSnapshot,
   SeasonStandingSnapshot,
@@ -138,6 +140,7 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string) {
   const scouting = await getScoutingSnapshot(game, clubsWithStars);
   const deadline = await getDeadlineSnapshot(game, clubsWithStars);
   const season = await getSeasonSnapshot(game);
+  const continental = await getContinentalSnapshot(game);
   const ownClub = clubsWithStars.find((club) => club.clerk_user_id === userId);
   const clubOverview = ownClub ? await getClubOverviewSnapshot(game, ownClub, clubsWithStars.length) : null;
   const matchNews = await getMatchNewsSnapshot(game);
@@ -149,6 +152,7 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string) {
     draft,
     deadline,
     season,
+    continental,
     scouting,
     club_overview: clubOverview,
     match_news: matchNews,
@@ -261,6 +265,115 @@ async function getScoutingSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promise
     next_pending_club_id: nextPendingClubId,
     sales_by_club_id: salesByClubId,
     status_by_club_id: statusByClubId,
+  };
+}
+
+async function getContinentalSnapshot(game: LobbyGame): Promise<ContinentalTournamentSnapshot | null> {
+  const supabase = createSupabaseServiceClient();
+  if (!supabase) {
+    return null;
+  }
+
+  const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
+  const shouldLoad = game.phase === "champions_league" || game.phase === "season_end";
+  if (!shouldLoad && game.phase !== "off_season") {
+    return null;
+  }
+
+  const { data: tournament, error: tournamentError } = await supabase
+    .from("continental_tournaments")
+    .select("id, season_number, status, current_round, prize_amount, winner_club_id")
+    .eq("game_id", game.id)
+    .eq("season_number", seasonNumber)
+    .maybeSingle<{
+      id: string;
+      season_number: number;
+      status: string;
+      current_round: number;
+      prize_amount: number;
+      winner_club_id: string | null;
+    }>();
+
+  if (tournamentError?.code === "42P01") {
+    return null;
+  }
+
+  if (tournamentError) {
+    throw tournamentError;
+  }
+
+  if (!tournament) {
+    if (game.phase === "champions_league") {
+      return {
+        id: "",
+        season_number: seasonNumber,
+        status: "setup",
+        current_round: 32,
+        prize_amount: 100_000_000,
+        winner_club_id: null,
+        participants: [],
+        fixtures: [],
+        setup_error: "Continental Cup fehlt. Host kann das Turnier initialisieren.",
+      };
+    }
+    return null;
+  }
+
+  const [{ data: participants, error: participantsError }, { data: fixtures, error: fixturesError }] = await Promise.all([
+    supabase
+      .from("continental_participants")
+      .select("id, kind, club_id, display_name, bracket_seed, eliminated_round")
+      .eq("tournament_id", tournament.id)
+      .order("bracket_seed", { ascending: true }),
+    supabase
+      .from("continental_fixtures")
+      .select(
+        `id, round, match_index, status, match_state,
+        home_lineup_locked, away_lineup_locked,
+        home_locked_def, home_locked_mid, home_locked_att,
+        away_locked_def, away_locked_mid, away_locked_att,
+        home_score, away_score, winner_participant_id,
+        home_participant:continental_participants!continental_fixtures_home_participant_id_fkey(id, kind, club_id, display_name, bracket_seed, eliminated_round),
+        away_participant:continental_participants!continental_fixtures_away_participant_id_fkey(id, kind, club_id, display_name, bracket_seed, eliminated_round),
+        home_cpu_lineup:continental_cpu_lineups!continental_fixtures_home_continental_cpu_lineup_id_fkey(id, display_name, def_stars, mid_stars, att_stars),
+        away_cpu_lineup:continental_cpu_lineups!continental_fixtures_away_continental_cpu_lineup_id_fkey(id, display_name, def_stars, mid_stars, att_stars)`,
+      )
+      .eq("tournament_id", tournament.id)
+      .order("round", { ascending: false })
+      .order("match_index", { ascending: true })
+      .returns<ContinentalFixtureSnapshot[]>(),
+  ]);
+
+  if (participantsError || fixturesError) {
+    return {
+      id: tournament.id,
+      season_number: tournament.season_number,
+      status: tournament.status,
+      current_round: tournament.current_round,
+      prize_amount: Number(tournament.prize_amount),
+      winner_club_id: tournament.winner_club_id,
+      participants: [],
+      fixtures: [],
+      setup_error: "Continental-Tabellen fehlen. Bitte `supabase/champions_league_upgrade.sql` ausfuehren.",
+    };
+  }
+
+  return {
+    id: tournament.id,
+    season_number: tournament.season_number,
+    status: tournament.status,
+    current_round: tournament.current_round,
+    prize_amount: Number(tournament.prize_amount),
+    winner_club_id: tournament.winner_club_id,
+    participants: (participants ?? []).map((p) => ({
+      id: p.id as string,
+      kind: p.kind as "human" | "cpu",
+      club_id: p.club_id as string | null,
+      display_name: p.display_name as string,
+      bracket_seed: Number(p.bracket_seed),
+      eliminated_round: p.eliminated_round != null ? Number(p.eliminated_round) : null,
+    })),
+    fixtures: fixtures ?? [],
   };
 }
 

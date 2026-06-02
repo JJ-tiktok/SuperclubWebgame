@@ -11,6 +11,7 @@ export type LobbyPhase =
   | "match"
   | "season"
   | "season_end"
+  | "champions_league"
   | "completed";
 
 export type LobbySettings = {
@@ -463,6 +464,50 @@ export type SeasonSnapshot = {
   standings: SeasonStandingSnapshot[];
 };
 
+export type ContinentalParticipantSnapshot = {
+  id: string;
+  kind: "human" | "cpu";
+  club_id: string | null;
+  display_name: string;
+  bracket_seed: number;
+  eliminated_round: number | null;
+};
+
+export type ContinentalFixtureSnapshot = {
+  id: string;
+  round: number;
+  match_index: number;
+  status: string;
+  match_state: string;
+  home_lineup_locked: boolean;
+  away_lineup_locked: boolean;
+  home_locked_def?: number | null;
+  home_locked_mid?: number | null;
+  home_locked_att?: number | null;
+  away_locked_def?: number | null;
+  away_locked_mid?: number | null;
+  away_locked_att?: number | null;
+  home_score?: number | null;
+  away_score?: number | null;
+  winner_participant_id?: string | null;
+  home_participant: ContinentalParticipantSnapshot;
+  away_participant: ContinentalParticipantSnapshot;
+  home_cpu_lineup?: { id: string; display_name: string; def_stars: number; mid_stars: number; att_stars: number } | null;
+  away_cpu_lineup?: { id: string; display_name: string; def_stars: number; mid_stars: number; att_stars: number } | null;
+};
+
+export type ContinentalTournamentSnapshot = {
+  id: string;
+  season_number: number;
+  status: string;
+  current_round: number;
+  prize_amount: number;
+  winner_club_id: string | null;
+  participants: ContinentalParticipantSnapshot[];
+  fixtures: ContinentalFixtureSnapshot[];
+  setup_error?: string;
+};
+
 export type LobbySnapshot = {
   game: LobbyGame;
   clubs: LobbyClub[];
@@ -470,6 +515,7 @@ export type LobbySnapshot = {
   draft: DraftRoundSnapshot | null;
   deadline: DeadlineSnapshot | null;
   season: SeasonSnapshot | null;
+  continental: ContinentalTournamentSnapshot | null;
   scouting: ScoutingSnapshot | null;
   club_overview: ClubOverviewSnapshot | null;
   match_news: MatchNewsSnapshot[];

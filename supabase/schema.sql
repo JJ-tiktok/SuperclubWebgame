@@ -16,6 +16,7 @@ create type public.game_phase as enum (
   'match',
   'season',
   'season_end',
+  'champions_league',
   'completed'
 );
 
@@ -366,6 +367,94 @@ create table public.cpu_lineups (
   sort_order int not null default 0,
   created_at timestamptz not null default now(),
   unique (cpu_team_id, sort_order)
+);
+
+create table public.continental_cpu_teams (
+  id uuid primary key default gen_random_uuid(),
+  content_key text not null unique,
+  display_name text not null,
+  color text not null default '#52525b',
+  active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+
+create table public.continental_cpu_lineups (
+  id uuid primary key default gen_random_uuid(),
+  continental_cpu_team_id uuid not null references public.continental_cpu_teams(id) on delete cascade,
+  display_name text not null,
+  def_stars numeric(4,1) not null check (def_stars >= 0),
+  mid_stars numeric(4,1) not null check (mid_stars >= 0),
+  att_stars numeric(4,1) not null check (att_stars >= 0),
+  sort_order int not null default 0,
+  created_at timestamptz not null default now(),
+  unique (continental_cpu_team_id, sort_order)
+);
+
+create table public.continental_tournaments (
+  id uuid primary key default gen_random_uuid(),
+  game_id uuid not null references public.games(id) on delete cascade,
+  season_number int not null,
+  status text not null default 'setup' check (status in ('setup', 'in_progress', 'completed')),
+  bracket_size int not null default 32,
+  prize_amount bigint not null default 100000000,
+  winner_club_id uuid references public.clubs(id) on delete set null,
+  current_round int not null default 32,
+  created_at timestamptz not null default now(),
+  unique (game_id, season_number)
+);
+
+create table public.continental_participants (
+  id uuid primary key default gen_random_uuid(),
+  tournament_id uuid not null references public.continental_tournaments(id) on delete cascade,
+  kind text not null check (kind in ('human', 'cpu')),
+  club_id uuid references public.clubs(id) on delete cascade,
+  continental_cpu_team_id uuid references public.continental_cpu_teams(id) on delete restrict,
+  display_name text not null,
+  bracket_seed int not null,
+  eliminated_round int,
+  created_at timestamptz not null default now(),
+  unique (tournament_id, club_id),
+  unique (tournament_id, continental_cpu_team_id),
+  check (
+    (kind = 'human' and club_id is not null and continental_cpu_team_id is null)
+    or
+    (kind = 'cpu' and continental_cpu_team_id is not null and club_id is null)
+  )
+);
+
+create table public.continental_fixtures (
+  id uuid primary key default gen_random_uuid(),
+  tournament_id uuid not null references public.continental_tournaments(id) on delete cascade,
+  round int not null check (round in (32, 16, 8, 4, 2, 1)),
+  match_index int not null check (match_index >= 0),
+  home_participant_id uuid not null references public.continental_participants(id) on delete cascade,
+  away_participant_id uuid not null references public.continental_participants(id) on delete cascade,
+  home_continental_cpu_lineup_id uuid references public.continental_cpu_lineups(id) on delete set null,
+  away_continental_cpu_lineup_id uuid references public.continental_cpu_lineups(id) on delete set null,
+  home_lineup_locked boolean not null default false,
+  away_lineup_locked boolean not null default false,
+  home_locked_def int,
+  home_locked_mid int,
+  home_locked_att int,
+  away_locked_def int,
+  away_locked_mid int,
+  away_locked_att int,
+  status text not null default 'scheduled' check (status in ('scheduled', 'completed')),
+  match_state text not null default 'scheduled' check (match_state in ('scheduled', 'in_progress', 'completed')),
+  current_third int not null default 0,
+  home_ready_for_next_third boolean not null default false,
+  away_ready_for_next_third boolean not null default false,
+  partial_result jsonb,
+  home_score int,
+  away_score int,
+  home_third_points numeric(3,1),
+  away_third_points numeric(3,1),
+  result jsonb,
+  winner_participant_id uuid references public.continental_participants(id) on delete set null,
+  created_at timestamptz not null default now(),
+  completed_at timestamptz,
+  unique (tournament_id, round, match_index),
+  check (home_participant_id <> away_participant_id)
 );
 
 create table public.season_participants (
@@ -1339,6 +1428,7 @@ grant select on public.staff_cards, public.club_staff, public.game_changer_cards
 grant select, insert, update on public.staff_offers to authenticated;
 grant select on public.investments, public.auctions, public.bids, public.matches, public.lineups, public.match_events, public.transactions to authenticated;
 grant select on public.cpu_teams, public.cpu_lineups, public.season_participants, public.fixtures, public.season_standings to authenticated;
+grant select on public.continental_cpu_teams, public.continental_cpu_lineups, public.continental_tournaments, public.continental_participants, public.continental_fixtures to authenticated;
 grant select, insert on public.game_saves to authenticated;
 
 do $$

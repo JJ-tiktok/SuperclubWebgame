@@ -23,7 +23,8 @@ export type GameView =
   | "draft"
   | "training"
   | "scouting"
-  | "deadline";
+  | "deadline"
+  | "continental";
 
 const GAME_VIEWS: GameView[] = [
   "dashboard",
@@ -38,6 +39,7 @@ const GAME_VIEWS: GameView[] = [
   "training",
   "scouting",
   "deadline",
+  "continental",
 ];
 
 export function normalizeView(value: string | undefined): GameView {

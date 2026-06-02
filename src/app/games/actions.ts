@@ -17,6 +17,10 @@ import { createDraftRound, getSquadCounts, allDraftSquadsComplete } from "@/lib/
 import { getActiveCpuTeams, pickCpuTeamsForSeason } from "@/lib/lobby/cpu-teams";
 import { canRecruitStaff, canUpgradeFacility, type UpgradeAction } from "@/lib/lobby/investments";
 import { calculateLineupPower, type CaptainBoost } from "@/lib/lobby/lineup-power";
+import {
+  ensureContinentalTournament,
+  isContinentalTournamentComplete,
+} from "@/app/games/actions/continental";
 import { getNextLobbyPhase, getSettingsForNextPhase, isInvestmentPhase } from "@/lib/lobby/phases";
 import {
   buildSeasonFixtures,
@@ -1635,7 +1639,7 @@ export async function advancePhaseAction(formData: FormData) {
     }
   }
 
-  const nextPhase = getNextLobbyPhase(game.phase);
+  const nextPhase = getNextLobbyPhase(game.phase, game.settings);
   const now = new Date().toISOString();
   // Scouting is now parallel — no turn concept needed; keep null for all phases that don't need a turn
   const nextTurnClubId = null;
@@ -1649,8 +1653,23 @@ export async function advancePhaseAction(formData: FormData) {
     await finalizeSeasonEnd(supabase, gameId, Number(game.settings?.seasonNumber ?? 1));
   }
 
-  if (game.phase === "season_end" && (nextPhase === "off_season" || nextPhase === "offseason_finance")) {
+  if (
+    game.phase === "season_end" &&
+    (nextPhase === "off_season" || nextPhase === "champions_league" || nextPhase === "offseason_finance")
+  ) {
     await bookSeasonFinance(supabase, gameId, Number(game.settings?.seasonNumber ?? 1));
+  }
+
+  if (game.phase === "champions_league" && nextPhase === "off_season") {
+    const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
+    const complete = await isContinentalTournamentComplete(supabase, gameId, seasonNumber);
+    if (!complete) {
+      redirect(`/games/${roomCode}?view=continental`);
+    }
+  }
+
+  if (nextPhase === "champions_league") {
+    await ensureContinentalTournament(supabase, gameId, Number(game.settings?.seasonNumber ?? 1));
   }
 
   if (nextPhase === "off_season") {

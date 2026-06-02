@@ -67,6 +67,12 @@ import {
   recruitStaffResolveAction,
 } from "@/app/games/actions/staff";
 import {
+  advanceContinentalRoundAction,
+  initializeContinentalCupAction,
+  lockContinentalLineupAction,
+  resolveContinentalFixtureAction,
+} from "@/app/games/actions/continental";
+import {
   initializeSeasonScheduleAction,
   lockFixtureLineupAction,
   markReadyForNextThirdAction,
@@ -74,6 +80,7 @@ import {
   startMatchAction,
   triggerDrawRerollAction,
 } from "@/app/games/actions/match";
+import { CONTINENTAL_ROUNDS, getContinentalRoundLabel } from "@/lib/lobby/continental-cup";
 import { healInjuredPlayerAction } from "@/app/games/actions/game-changers";
 import {
   formatMoney,
@@ -125,7 +132,15 @@ import {
 } from "@/lib/lobby/scouting";
 import { getClubTheme } from "@/lib/lobby/theme";
 import { canTrainOwnedPlayer } from "@/lib/lobby/training";
-import type { CpuStrengthTier, DraftPlayerRow, LobbyClub, LobbySnapshot, SeasonFixtureSnapshot, StaffOfferSnapshot } from "@/lib/lobby/types";
+import type {
+  ContinentalFixtureSnapshot,
+  CpuStrengthTier,
+  DraftPlayerRow,
+  LobbyClub,
+  LobbySnapshot,
+  SeasonFixtureSnapshot,
+  StaffOfferSnapshot,
+} from "@/lib/lobby/types";
 import { cn } from "@/lib/utils";
 import { getPositionLabel, type PlayerCardData, type PlayerCardPosition } from "@/types/player-card";
 
@@ -157,6 +172,7 @@ const phaseMenu: Array<{ id: GameView; label: string; icon: typeof Home; phases:
   { id: "training", label: "Training", icon: Dumbbell, phases: ["off_season", "offseason_training"] },
   { id: "scouting", label: "Scouting", icon: MapIcon, phases: ["off_season", "offseason_scouting"] },
   { id: "deadline", label: "Deadline Day", icon: Gavel, phases: ["deadline_day"] },
+  { id: "continental", label: "Continental Cup", icon: Trophy, phases: ["champions_league"] },
 ];
 
 export function GameDashboard({ activeView, currentUserId, snapshot }: GameDashboardProps) {
@@ -2472,6 +2488,174 @@ function CardList({ empty, items }: { empty: string; items: Array<{ detail: stri
   );
 }
 
+function ContinentalView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub: LobbyClub | undefined; snapshot: LobbySnapshot }) {
+  const continental = snapshot.continental;
+
+  if (!continental) {
+    return (
+      <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+        <PanelHeader>
+          <div>
+            <PanelTitle>Continental Cup</PanelTitle>
+            <PanelDescription>Der Continental Cup startet nach geraden Saisons zwischen Saisonabschluss und Off-Season.</PanelDescription>
+          </div>
+          <Trophy size={18} className="text-[var(--club-color)]" aria-hidden />
+        </PanelHeader>
+      </Panel>
+    );
+  }
+
+  if (continental.setup_error) {
+    return (
+      <Panel className="border-amber-700 bg-amber-950/30">
+        <PanelHeader>
+          <div>
+            <PanelTitle>Continental Cup Setup</PanelTitle>
+            <PanelDescription>{continental.setup_error}</PanelDescription>
+          </div>
+          <Trophy size={18} className="text-amber-200" aria-hidden />
+        </PanelHeader>
+        {isHost ? (
+          <form action={initializeContinentalCupAction}>
+            <input name="game_id" type="hidden" value={snapshot.game.id} />
+            <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+            <Button type="submit" variant="primary">
+              Turnier initialisieren
+            </Button>
+          </form>
+        ) : null}
+      </Panel>
+    );
+  }
+
+  const currentRoundFixtures = continental.fixtures.filter((fixture) => fixture.round === continental.current_round);
+  const currentRoundComplete =
+    currentRoundFixtures.length > 0 && currentRoundFixtures.every((fixture) => fixture.status === "completed");
+  const ownParticipant = ownClub
+    ? continental.participants.find((participant) => participant.club_id === ownClub.id)
+    : null;
+
+  return (
+    <div className="space-y-4">
+      <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+        <PanelHeader>
+          <div>
+            <PanelTitle>Continental Cup</PanelTitle>
+            <PanelDescription>
+              K.o.-Turnier Saison {continental.season_number} — Praemie {formatMoney(continental.prize_amount)}
+            </PanelDescription>
+          </div>
+          <Badge tone={continental.status === "completed" ? "green" : "blue"}>
+            {continental.status === "completed" ? "Abgeschlossen" : getContinentalRoundLabel(continental.current_round as (typeof CONTINENTAL_ROUNDS)[number])}
+          </Badge>
+        </PanelHeader>
+        {ownParticipant ? (
+          <p className="text-sm text-zinc-300">
+            Dein Team: <span className="font-semibold text-zinc-50">{ownParticipant.display_name}</span>
+            {ownParticipant.eliminated_round != null ? (
+              <span className="text-rose-300"> — ausgeschieden in Runde {ownParticipant.eliminated_round}</span>
+            ) : null}
+          </p>
+        ) : null}
+        {isHost && continental.status !== "completed" && currentRoundComplete ? (
+          <form action={advanceContinentalRoundAction} className="mt-3">
+            <input name="game_id" type="hidden" value={snapshot.game.id} />
+            <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+            <Button type="submit" variant="primary">
+              Naechste Runde starten
+            </Button>
+          </form>
+        ) : null}
+      </Panel>
+
+      <div className="grid gap-4 xl:grid-cols-[repeat(auto-fit,minmax(280px,1fr))]">
+        {[...CONTINENTAL_ROUNDS].reverse().map((round) => {
+          const roundFixtures = continental.fixtures.filter((fixture) => fixture.round === round);
+          if (roundFixtures.length === 0) {
+            return null;
+          }
+          return (
+            <Panel className="border-zinc-800 bg-zinc-950/70" key={round}>
+              <PanelHeader>
+                <PanelTitle>{getContinentalRoundLabel(round)}</PanelTitle>
+              </PanelHeader>
+              <div className="space-y-3">
+                {roundFixtures.map((fixture) => (
+                  <ContinentalFixtureCard fixture={fixture} isHost={isHost} key={fixture.id} ownClub={ownClub} snapshot={snapshot} />
+                ))}
+              </div>
+            </Panel>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ContinentalFixtureCard({
+  fixture,
+  isHost,
+  ownClub,
+  snapshot,
+}: {
+  fixture: ContinentalFixtureSnapshot;
+  isHost: boolean;
+  ownClub: LobbyClub | undefined;
+  snapshot: LobbySnapshot;
+}) {
+  const home = fixture.home_participant;
+  const away = fixture.away_participant;
+  const ownSide = ownClub?.id === home.club_id ? "home" : ownClub?.id === away.club_id ? "away" : null;
+  const ownLocked = ownSide === "home" ? fixture.home_lineup_locked : ownSide === "away" ? fixture.away_lineup_locked : false;
+  const hasCpu = home.kind === "cpu" || away.kind === "cpu";
+  const bothHumanLocked = home.kind === "human" && away.kind === "human" && fixture.home_lineup_locked && fixture.away_lineup_locked;
+  const canLock = Boolean(ownSide && fixture.status !== "completed" && !ownLocked);
+  const canResolveOwn =
+    Boolean(ownSide && fixture.status !== "completed" && ownLocked && (hasCpu || bothHumanLocked));
+  const canHostResolve = Boolean(isHost && !ownSide && fixture.status !== "completed" && bothHumanLocked);
+
+  return (
+    <div
+      className={cn(
+        "rounded-md border p-3",
+        ownSide ? "border-[var(--club-border)] bg-zinc-900/80" : "border-zinc-800 bg-zinc-900/40",
+      )}
+    >
+      <div className="flex items-center justify-between gap-2 text-sm">
+        <span className={cn("font-medium", home.club_id === ownClub?.id && "text-[var(--club-color)]")}>{home.display_name}</span>
+        <span className="text-zinc-500">
+          {fixture.status === "completed" ? `${fixture.home_score ?? 0} : ${fixture.away_score ?? 0}` : "vs"}
+        </span>
+        <span className={cn("font-medium text-right", away.club_id === ownClub?.id && "text-[var(--club-color)]")}>{away.display_name}</span>
+      </div>
+      {fixture.status !== "completed" ? (
+        <div className="mt-2 flex flex-wrap gap-2">
+          {canLock ? (
+            <form action={lockContinentalLineupAction}>
+              <input name="game_id" type="hidden" value={snapshot.game.id} />
+              <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+              <input name="fixture_id" type="hidden" value={fixture.id} />
+              <Button size="sm" type="submit" variant="outline">
+                Aufstellung locken
+              </Button>
+            </form>
+          ) : null}
+          {canResolveOwn || canHostResolve ? (
+            <form action={resolveContinentalFixtureAction}>
+              <input name="game_id" type="hidden" value={snapshot.game.id} />
+              <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+              <input name="fixture_id" type="hidden" value={fixture.id} />
+              <Button size="sm" type="submit" variant="primary">
+                Spiel auswerten
+              </Button>
+            </form>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function MatchdayView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub: LobbyClub | undefined; snapshot: LobbySnapshot }) {
   const season = snapshot.season;
 
@@ -3452,6 +3636,10 @@ function renderView(
 
   if (view === "matchday") {
     return <MatchdayView isHost={props.isHost} ownClub={props.ownClub} snapshot={props.snapshot} />;
+  }
+
+  if (view === "continental") {
+    return <ContinentalView isHost={props.isHost} ownClub={props.ownClub} snapshot={props.snapshot} />;
   }
 
   if (view === "table") {

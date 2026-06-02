@@ -1,3 +1,4 @@
+import { shouldRunContinentalCup } from "@/lib/lobby/continental-cup";
 import type { LobbyPhase, LobbySettings } from "@/lib/lobby/types";
 
 // Phases in which a manager is doing off-season management (training/scouting/investments + deadline day).
@@ -16,7 +17,14 @@ export function getSeasonNumber(settings: Pick<LobbySettings, "seasonNumber"> | 
   return Number(settings?.seasonNumber ?? 1);
 }
 
-export function getNextLobbyPhase(phase: LobbyPhase): LobbyPhase {
+export function getNextLobbyPhase(
+  phase: LobbyPhase,
+  settings?: Pick<LobbySettings, "seasonNumber"> | null,
+): LobbyPhase {
+  if (phase === "season_end") {
+    return shouldRunContinentalCup(getSeasonNumber(settings)) ? "champions_league" : "off_season";
+  }
+
   const nextByPhase: Partial<Record<LobbyPhase, LobbyPhase>> = {
     completed: "completed",
     lobby: "draft",
@@ -24,7 +32,7 @@ export function getNextLobbyPhase(phase: LobbyPhase): LobbyPhase {
     off_season: "deadline_day",
     deadline_day: "season",
     season: "season_end",
-    season_end: "off_season",
+    champions_league: "off_season",
     // Legacy fallbacks (until DB migration runs)
     offseason_finance: "off_season",
     offseason_training: "off_season",
@@ -38,7 +46,10 @@ export function getNextLobbyPhase(phase: LobbyPhase): LobbyPhase {
 }
 
 export function shouldAdvanceSeason(previousPhase: LobbyPhase, nextPhase: LobbyPhase) {
-  return previousPhase === "season_end" && nextPhase === "off_season";
+  return (
+    (previousPhase === "season_end" && nextPhase === "off_season") ||
+    (previousPhase === "champions_league" && nextPhase === "off_season")
+  );
 }
 
 export function getSettingsForNextPhase(settings: LobbySettings, previousPhase: LobbyPhase, nextPhase: LobbyPhase): LobbySettings {
@@ -80,6 +91,7 @@ export function getPhaseLabel(phase: LobbyPhase): string {
     deadline_day: "Deadline Day",
     season: "Saison",
     season_end: "Saisonabschluss",
+    champions_league: "Continental Cup",
     completed: "Abgeschlossen",
     // Legacy fallbacks
     offseason_finance: "Off-Season",

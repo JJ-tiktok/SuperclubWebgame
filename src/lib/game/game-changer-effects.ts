@@ -39,7 +39,17 @@ export type GameChangerEffect =
   | { type: "targeted_injury"; selector: "random_zone" | "best_zone" | "random_position"; zone?: TacticalZone; position?: "GK" | "DEF" | "MID" | "ATT"; duration: "next_match" | "season" }
   | { type: "last_trained_star_loss"; stars: number }
   | { type: "force_release_stars"; stars: number }
-  | { type: "offseason_lock"; blocks: Array<"scouting" | "transfers"> };
+  | { type: "offseason_lock"; blocks: Array<"scouting" | "transfers"> }
+  // v4 active match cards (secret-weapon family with play windows)
+  | { type: "match_zone_boost"; stars: number; zone?: TacticalZone; choice?: "zone" }
+  | { type: "man_marking"; per_star_attack_penalty: number; choice: "defender" }
+  | { type: "captain_reassign"; choice: "captain_player" | "captain_zone" }
+  | { type: "lineup_reopen" }
+  | { type: "injure_opponent"; duration: "season" | "next_match"; choice: "opponent_player" }
+  | { type: "derby_day" }
+  | { type: "var_reroll" }
+  | { type: "heal_injury_choice" }
+  | { type: "retroactive_win_attempt"; attempts: number; faces: number; success: number };
 
 // Zone modifier written into fixture.partial_result.pending_modifiers for the next third
 export type ZoneModifier = {
@@ -85,6 +95,33 @@ export function buildPendingChoice(effect: GameChangerEffect): PendingChoice | n
     return { type: "pick_zone", effect_type: "next_match_zone_delta", delta: effect.delta };
   }
 
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Active match-card classification (v4)
+// ---------------------------------------------------------------------------
+
+export type MatchCardChoiceKind =
+  | "zone"
+  | "defender"
+  | "opponent_player"
+  | "injured_player"
+  | "captain_player";
+
+/**
+ * Returns the choice UI a v4 match card requires before it can be played,
+ * or null if it can be played without a target selection.
+ */
+export function getMatchCardChoiceKind(effects: GameChangerEffect[]): MatchCardChoiceKind | null {
+  for (const effect of effects) {
+    if (effect.type === "match_zone_boost" && effect.choice === "zone") return "zone";
+    if (effect.type === "man_marking") return "defender";
+    if (effect.type === "heal_injury_choice") return "injured_player";
+    if (effect.type === "captain_reassign") return "captain_player";
+    // injure_opponent (Dirty Tackle) targets a hidden opponent roster -> resolved
+    // server-side (random) to avoid leaking the opponent squad. No client choice.
+  }
   return null;
 }
 
@@ -165,6 +202,28 @@ export function describeEffect(effect: GameChangerEffect): string {
       return `Spieler im Wert von ${effect.stars} Sternen entlassen`;
     case "offseason_lock":
       return `Offseason gesperrt: ${effect.blocks.join(", ")}`;
+    case "match_zone_boost":
+      return effect.choice === "zone"
+        ? `+${effect.stars} auf ein beliebiges Drittel`
+        : `+${effect.stars} in Zone ${effect.zone ?? "(Auswahl)"}`;
+    case "man_marking":
+      return `Manndeckung: Gegner-Angriff -${effect.per_star_attack_penalty} pro Verteidiger-Stern`;
+    case "captain_reassign":
+      return "Captain neu zuweisen (Boost auf anderen Spieler)";
+    case "lineup_reopen":
+      return "Aufstellung erneut oeffnen und neu locken";
+    case "injure_opponent":
+      return effect.duration === "season"
+        ? "Gegner-Spieler verletzen (Rest der Saison)"
+        : "Gegner-Spieler verletzen (naechstes Spiel)";
+    case "derby_day":
+      return "Derby Day: alle Zusatzeffekte fallen weg";
+    case "var_reroll":
+      return "VAR: letztes Drittel neu wuerfeln";
+    case "heal_injury_choice":
+      return "Verletzten Spieler heilen";
+    case "retroactive_win_attempt":
+      return `${effect.attempts}x W${effect.faces}: bei ${effect.success} nachtraeglicher Sieg`;
   }
 }
 
@@ -362,6 +421,16 @@ export async function applyImmediateEffect(
     case "steal_money":
     case "extra_training_attempt":
     case "noop":
+    // v4 active match cards are resolved in playMatchCardAction, not here.
+    case "match_zone_boost":
+    case "man_marking":
+    case "captain_reassign":
+    case "lineup_reopen":
+    case "injure_opponent":
+    case "derby_day":
+    case "var_reroll":
+    case "heal_injury_choice":
+    case "retroactive_win_attempt":
       return { applied: false };
   }
 }
@@ -426,22 +495,79 @@ export async function enqueuePendingEffect(
 // Secret Weapon buffer helpers
 // ---------------------------------------------------------------------------
 
+export type MatchCardModifierPayload = {
+  // For match_zone_boost with choice="zone": which zone the player picked.
+  zone?: TacticalZone;
+  // For man_marking: stars of the chosen defender (penalty = stars * per_star_attack_penalty).
+  defender_stars?: number;
+};
+
 export function buildZoneModifiers(
   clubGameChangerId: string,
   forSide: "home" | "away",
   effects: GameChangerEffect[],
+  payload: MatchCardModifierPayload = {},
 ): ZoneModifier[] {
   const mods: ZoneModifier[] = [];
+  const opponentSide: "home" | "away" = forSide === "home" ? "away" : "home";
   for (const effect of effects) {
     if (effect.type === "third_boost") {
-      const targetSide = effect.for === "self" ? forSide : forSide === "home" ? "away" : "home";
+      const targetSide = effect.for === "self" ? forSide : opponentSide;
       mods.push({ zone: effect.zone, delta: effect.stars, for: targetSide, source_club_game_changer_id: clubGameChangerId });
     } else if (effect.type === "third_penalty") {
-      const targetSide = effect.for === "self" ? forSide : forSide === "home" ? "away" : "home";
+      const targetSide = effect.for === "self" ? forSide : opponentSide;
       mods.push({ zone: effect.zone, delta: -effect.stars, for: targetSide, source_club_game_changer_id: clubGameChangerId });
+    } else if (effect.type === "match_zone_boost") {
+      const zone = effect.choice === "zone" ? payload.zone : effect.zone;
+      if (zone) {
+        mods.push({ zone, delta: effect.stars, for: forSide, source_club_game_changer_id: clubGameChangerId });
+      }
+    } else if (effect.type === "man_marking") {
+      const defenderStars = Math.max(0, Math.trunc(payload.defender_stars ?? 0));
+      const penalty = defenderStars * Math.max(1, Math.trunc(effect.per_star_attack_penalty));
+      if (penalty > 0) {
+        mods.push({ zone: "ATT", delta: -penalty, for: opponentSide, source_club_game_changer_id: clubGameChangerId });
+      }
     }
   }
   return mods;
+}
+
+// ---------------------------------------------------------------------------
+// Retroactive win (Sieg oder Spielabbruch) dice helper
+// ---------------------------------------------------------------------------
+
+export type RetroWinResult = {
+  rolls: number[];
+  success: boolean;
+};
+
+export function rollRetroWin(
+  effect: Extract<GameChangerEffect, { type: "retroactive_win_attempt" }>,
+  random: () => number = Math.random,
+): RetroWinResult {
+  const attempts = Math.max(1, Math.trunc(effect.attempts));
+  const faces = Math.max(1, Math.trunc(effect.faces));
+  const rolls: number[] = [];
+  for (let i = 0; i < attempts; i++) {
+    rolls.push(1 + Math.floor(random() * faces));
+  }
+  return { rolls, success: rolls.some((r) => r >= effect.success) };
+}
+
+// ---------------------------------------------------------------------------
+// Weighted random draw (CSV duplicate entries -> draw_weight)
+// ---------------------------------------------------------------------------
+
+export function pickWeightedIndex(weights: number[], random: () => number = Math.random): number {
+  const total = weights.reduce((sum, w) => sum + Math.max(0, w), 0);
+  if (total <= 0) return weights.length > 0 ? Math.floor(random() * weights.length) : -1;
+  let roll = random() * total;
+  for (let i = 0; i < weights.length; i++) {
+    roll -= Math.max(0, weights[i]);
+    if (roll < 0) return i;
+  }
+  return weights.length - 1;
 }
 
 export function mergeModifiersIntoPartialResult(

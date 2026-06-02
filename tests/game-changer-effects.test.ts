@@ -2,11 +2,15 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   buildPendingChoice,
+  buildZoneModifiers,
   describeEffect,
   describeGameChangerEffects,
   effectToPendingScope,
+  getMatchCardChoiceKind,
   injuryDurationMatchday,
   parseEffects,
+  pickWeightedIndex,
+  rollRetroWin,
   selectInjuryTarget,
   type GameChangerEffect,
   type InjuryCandidate,
@@ -101,6 +105,24 @@ describe("Game Changer effects engine", () => {
     }
   });
 
+  it("describes the v4 active match card effects without throwing", () => {
+    const all: GameChangerEffect[] = [
+      { type: "match_zone_boost", stars: 2, zone: "ATT" },
+      { type: "match_zone_boost", stars: 2, choice: "zone" },
+      { type: "man_marking", per_star_attack_penalty: 2, choice: "defender" },
+      { type: "captain_reassign", choice: "captain_player" },
+      { type: "lineup_reopen" },
+      { type: "injure_opponent", duration: "season", choice: "opponent_player" },
+      { type: "derby_day" },
+      { type: "var_reroll" },
+      { type: "heal_injury_choice" },
+      { type: "retroactive_win_attempt", attempts: 2, faces: 6, success: 6 },
+    ];
+    for (const eff of all) {
+      assert.ok(describeEffect(eff).length > 0, `missing description for ${eff.type}`);
+    }
+  });
+
   it("parses an effects JSON blob from the DB and skips invalid entries", () => {
     const raw = [
       { type: "money_change", amount: 5 },
@@ -145,6 +167,59 @@ describe("Targeted injury selection", () => {
       candidates,
     );
     assert.equal(target?.id, "gk");
+  });
+});
+
+describe("v4 match card classification + modifiers", () => {
+  it("classifies the choice UI a card needs", () => {
+    assert.equal(getMatchCardChoiceKind([{ type: "match_zone_boost", stars: 2, choice: "zone" }]), "zone");
+    assert.equal(getMatchCardChoiceKind([{ type: "match_zone_boost", stars: 2, zone: "ATT" }]), null);
+    assert.equal(getMatchCardChoiceKind([{ type: "man_marking", per_star_attack_penalty: 2, choice: "defender" }]), "defender");
+    assert.equal(getMatchCardChoiceKind([{ type: "heal_injury_choice" }]), "injured_player");
+    assert.equal(getMatchCardChoiceKind([{ type: "captain_reassign", choice: "captain_player" }]), "captain_player");
+    // Dirty Tackle resolves server-side (random) -> no client choice.
+    assert.equal(getMatchCardChoiceKind([{ type: "injure_opponent", duration: "season", choice: "opponent_player" }]), null);
+  });
+
+  it("builds a self zone boost for a fixed-zone match_zone_boost", () => {
+    const mods = buildZoneModifiers("cgc1", "home", [{ type: "match_zone_boost", stars: 2, zone: "ATT" }]);
+    assert.deepEqual(mods, [{ zone: "ATT", delta: 2, for: "home", source_club_game_changer_id: "cgc1" }]);
+  });
+
+  it("uses the chosen zone for a choice-based match_zone_boost", () => {
+    const mods = buildZoneModifiers("cgc1", "away", [{ type: "match_zone_boost", stars: 2, choice: "zone" }], { zone: "MID" });
+    assert.deepEqual(mods, [{ zone: "MID", delta: 2, for: "away", source_club_game_changer_id: "cgc1" }]);
+  });
+
+  it("applies man marking as an opponent ATT penalty scaled by defender stars", () => {
+    const mods = buildZoneModifiers("cgc1", "home", [{ type: "man_marking", per_star_attack_penalty: 2, choice: "defender" }], { defender_stars: 3 });
+    assert.deepEqual(mods, [{ zone: "ATT", delta: -6, for: "away", source_club_game_changer_id: "cgc1" }]);
+  });
+
+  it("emits no man marking modifier when the defender has zero stars", () => {
+    const mods = buildZoneModifiers("cgc1", "home", [{ type: "man_marking", per_star_attack_penalty: 2, choice: "defender" }], { defender_stars: 0 });
+    assert.equal(mods.length, 0);
+  });
+});
+
+describe("Weighted draw + retroactive win", () => {
+  it("always picks the only positive-weight index", () => {
+    assert.equal(pickWeightedIndex([0, 0, 1, 0], () => 0.5), 2);
+  });
+
+  it("respects weights at the boundaries of the random roll", () => {
+    // weights [3,1] over total 4: roll 0 -> index 0, roll near 1 -> index 1
+    assert.equal(pickWeightedIndex([3, 1], () => 0), 0);
+    assert.equal(pickWeightedIndex([3, 1], () => 0.99), 1);
+  });
+
+  it("rolls the configured number of dice and detects success", () => {
+    const fail = rollRetroWin({ type: "retroactive_win_attempt", attempts: 2, faces: 6, success: 6 }, () => 0);
+    assert.equal(fail.rolls.length, 2);
+    assert.equal(fail.success, false);
+    const win = rollRetroWin({ type: "retroactive_win_attempt", attempts: 2, faces: 6, success: 6 }, () => 0.999);
+    assert.equal(win.rolls.every((r) => r === 6), true);
+    assert.equal(win.success, true);
   });
 });
 

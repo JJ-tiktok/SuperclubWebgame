@@ -70,7 +70,6 @@ import {
   initializeSeasonScheduleAction,
   lockFixtureLineupAction,
   markReadyForNextThirdAction,
-  playSecretWeaponAction,
   resolveFixtureAction,
   startMatchAction,
   triggerDrawRerollAction,
@@ -95,12 +94,15 @@ import {
 } from "@/components/game/lib/dashboard-helpers";
 import { Metric, SmallInfo } from "@/components/game/shared/metric";
 import { SquadPositionBreakdown } from "@/components/game/shared/squad-breakdown";
-import { ActiveCardEffectsPanel } from "@/components/game/active-card-effects-panel";
+import { ActiveEffectsChip } from "@/components/game/active-effects-chip";
 import { GameChangerChoiceModal } from "@/components/game/game-changer-choice-modal";
 import { GameChangerPopup } from "@/components/game/game-changer-popup";
+import { GameEventsDock } from "@/components/game/game-events-dock";
 import { GameLineupBoard } from "@/components/game/game-lineup-board";
 import { GameRealtimeRefresh } from "@/components/game/game-realtime-refresh";
-import { MatchNewsTicker } from "@/components/game/match-news-ticker";
+import { CaptainPanel } from "@/components/game/captain-panel";
+import { AfterMatchCards, MatchCardsPanel } from "@/components/game/match-cards-panel";
+import { DrawnGameChangersList, PendingEffectsList } from "@/components/game/pending-effects-list";
 import { PlayerCard } from "@/components/player-card/PlayerCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -187,7 +189,14 @@ export function GameDashboard({ activeView, currentUserId, snapshot }: GameDashb
       }
     >
       <GameRealtimeRefresh gameId={snapshot.game.id} />
-      <GameChangerPopup news={snapshot.match_news} ownClubId={ownClub?.id} />
+      <GameChangerPopup
+        clubs={snapshot.clubs}
+        gameId={snapshot.game.id}
+        news={snapshot.match_news}
+        ownClubId={ownClub?.id}
+        pendingEffects={snapshot.club_overview?.pending_effects ?? []}
+        roomCode={snapshot.game.room_code}
+      />
       {(snapshot.club_overview?.pending_game_changer_choices ?? []).slice(0, 1).map((choice) => (
         <GameChangerChoiceModal
           key={choice.id}
@@ -236,7 +245,12 @@ export function GameDashboard({ activeView, currentUserId, snapshot }: GameDashb
           })}
         </section>
       </div>
-      <MatchNewsTicker news={snapshot.match_news} />
+      <GameEventsDock
+        clubs={snapshot.clubs}
+        gameId={snapshot.game.id}
+        news={snapshot.match_news}
+        ownClubId={ownClub?.id}
+      />
     </main>
   );
 }
@@ -465,6 +479,10 @@ function GameHeader({
             <Badge>{snapshot.game.phase.toUpperCase()}</Badge>
             <Badge>{phaseDoneCount}/{phaseDoneTotal} fertig</Badge>
             <Badge>Save v{snapshot.game.save_version ?? 1}</Badge>
+            <ActiveEffectsChip
+              effects={snapshot.club_overview?.pending_effects ?? []}
+              roomCode={snapshot.game.room_code}
+            />
           </div>
           <h1 className="mt-3 text-2xl font-semibold text-zinc-50">{ownClub?.club_name ?? "Spielstand"}</h1>
           <p className="mt-1 text-sm text-zinc-400">
@@ -597,8 +615,6 @@ function DashboardView({
         </Panel>
         <ClubSummaryPanel ownClub={ownClub} />
       </div>
-
-      <ActiveCardEffectsPanel effects={snapshot.club_overview?.pending_effects ?? []} />
 
       <ManagersPanel snapshot={snapshot} />
     </div>
@@ -1781,7 +1797,22 @@ function LineupView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; sna
         </div>
       </Panel>
 
-      <GameLineupBoard cards={lineupCards} gameId={snapshot.game.id} roomCode={snapshot.game.room_code} staffEffects={staffEffects} />
+      <CaptainPanel
+        gameId={snapshot.game.id}
+        roomCode={snapshot.game.room_code}
+        squad={overview.squad}
+        captainClubPlayerId={ownClub.captain_club_player_id}
+        boostRank={ownClub.captain_boost_rank}
+      />
+
+      <GameLineupBoard
+        cards={lineupCards}
+        gameId={snapshot.game.id}
+        roomCode={snapshot.game.room_code}
+        staffEffects={staffEffects}
+        captainId={ownClub.captain_club_player_id ?? null}
+        captainBoost={Math.trunc(Number(ownClub.captain_boost_rank ?? 0))}
+      />
     </div>
   );
 }
@@ -2324,17 +2355,24 @@ function ClubCardsPanel({
           </div>
         )}
       </Panel>
-      <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+      <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="game-changer">
         <PanelHeader>
           <div>
-            <PanelTitle>Game-Changer</PanelTitle>
-            <PanelDescription>Aktive Karteneffekte und verfuegbare Geheimwaffen.</PanelDescription>
+            <PanelTitle>Game-Changer &amp; Effekte</PanelTitle>
+            <PanelDescription>Offene Effekte, Verlauf und Geheimwaffen.</PanelDescription>
           </div>
           <Sparkles size={18} className="text-[var(--club-color)]" aria-hidden />
         </PanelHeader>
         <PendingEffectsList
+          currentSeasonNumber={overview.season_number}
           effects={overview.pending_effects ?? []}
           gameChangers={overview.game_changers}
+        />
+        <DrawnGameChangersList
+          key={overview.season_number}
+          currentSeasonNumber={overview.season_number}
+          gameChangers={overview.game_changers}
+          pendingEffects={overview.pending_effects ?? []}
         />
         <div className="mt-4">
           <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">Geheimwaffen</h4>
@@ -2350,106 +2388,6 @@ function ClubCardsPanel({
           />
         </div>
       </Panel>
-    </div>
-  );
-}
-
-const PENDING_SCOPE_LABELS: Record<string, string> = {
-  next_match: "Naechstes Spiel",
-  next_transfer: "Naechster Transfer",
-  current_offseason: "Diese Offseason",
-  next_offseason: "Naechste Offseason",
-  this_season: "Diese Saison",
-};
-
-function describePendingEffectShort(effect: NonNullable<LobbySnapshot["club_overview"]>["pending_effects"][number]): string {
-  const p = effect.payload as Record<string, unknown>;
-  switch (effect.effect_type) {
-    case "next_match_zone_delta": {
-      const delta = Number(p.delta ?? 0);
-      const zone = (p.zone as string | null) ?? "(Auswahl)";
-      return `Zone ${zone}: ${delta >= 0 ? "+" : ""}${delta}`;
-    }
-    case "next_match_staff_disabled":
-      return "Staff-Boni deaktiviert";
-    case "next_match_draw_dice_bonus":
-      return `+${Number(p.bonus ?? 0)} Wuerfel bei Unentschieden`;
-    case "next_match_lineup_locked":
-      return "Aufstellung gesperrt";
-    case "training_capacity_delta": {
-      const delta = p.delta;
-      if (delta === "double") return "Trainingseinheiten verdoppelt";
-      return `${Number(delta ?? 0) >= 0 ? "+" : ""}${delta} Trainingseinheit(en)`;
-    }
-    case "free_scouting_draw":
-      return `${Number(p.count ?? 0)} gratis Scout-Draw(s)`;
-    case "free_scouting_buy_next":
-      return "Naechster Spielerkauf gratis";
-    case "free_staff_offer":
-      return "Gratis Staff-Offerte";
-    case "free_staff_signing":
-      return "Gratis Staff-Verpflichtung";
-    case "next_transfer_price_delta": {
-      const amount = Number(p.amount ?? 0);
-      return amount >= 0
-        ? `Naechster Transfer +${Math.round(amount / 1_000_000)} Mio`
-        : `Naechster Transfer ${Math.round(amount / 1_000_000)} Mio`;
-    }
-    case "offseason_lock":
-      return `Gesperrt: ${(p.blocks as string[] | undefined)?.join(", ") ?? ""}`;
-    default:
-      return effect.effect_type;
-  }
-}
-
-function PendingEffectsList({
-  effects,
-  gameChangers,
-}: {
-  effects: NonNullable<LobbySnapshot["club_overview"]>["pending_effects"];
-  gameChangers: NonNullable<LobbySnapshot["club_overview"]>["game_changers"];
-}) {
-  const sourceById = new Map(gameChangers.map((gc) => [gc.id, gc] as const));
-
-  return (
-    <div>
-      <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">Aktive Karteneffekte</h4>
-      {effects.length === 0 ? (
-        <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3 text-xs text-zinc-500">
-          Keine offenen Effekte. Ziehe Good- oder Bad-News-Karten ueber Doppel-Wuerfel im Match.
-        </div>
-      ) : (
-        <ul className="space-y-2">
-          {effects.map((effect) => {
-            const source = effect.source_club_game_changer_id
-              ? sourceById.get(effect.source_club_game_changer_id)
-              : undefined;
-            const tone = source?.card.category === "bad_news"
-              ? "border-rose-800/60 bg-rose-950/30"
-              : source?.card.category === "good_news"
-                ? "border-emerald-800/60 bg-emerald-950/30"
-                : "border-amber-800/60 bg-amber-950/30";
-            return (
-              <li
-                key={effect.id}
-                className={`rounded-md border p-3 text-sm ${tone}`}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    {source ? (
-                      <p className="truncate font-semibold text-zinc-100">{source.card.display_name}</p>
-                    ) : null}
-                    <p className={source ? "mt-0.5 text-xs text-zinc-300" : "font-medium text-zinc-100"}>
-                      {describePendingEffectShort(effect)}
-                    </p>
-                  </div>
-                  <Badge>{PENDING_SCOPE_LABELS[effect.scope] ?? effect.scope}</Badge>
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-      )}
     </div>
   );
 }
@@ -2698,7 +2636,7 @@ function FixtureCard({
   const canLock = Boolean(ownSide && fixture.status !== "completed" && !ownLocked);
   const canResolveOwnCpuMatch = Boolean(ownSide && hasCpu && ownLocked && fixture.status !== "completed");
   const canHostResolvePvpMatch = Boolean(isHost && !hasCpu && bothHumanLineupsLocked && fixture.status !== "completed");
-  const ownPowerSummary = getOwnLineupPowerSummary(snapshot);
+  const ownPowerSummary = getOwnLineupPowerSummary(snapshot, ownClub);
   const result = parseFixtureResult(fixture.result);
 
   // For PvP: build a fake "lineup" object from stored locked power so the opponent's
@@ -2733,9 +2671,12 @@ function FixtureCard({
   const secretWeapons = (snapshot.club_overview?.game_changers ?? []).filter(
     (gc) => gc.card.category === "secret_weapon" && !gc.used_at,
   );
-  const hasPlayedSecretWeaponForFixture = (snapshot.club_overview?.game_changers ?? []).some(
-    (gc) => gc.card.category === "secret_weapon" && gc.fixture_id === fixture.id,
+  const playedWindowsForFixture = new Set<string>(
+    (snapshot.club_overview?.game_changers ?? [])
+      .filter((gc) => gc.card.category === "secret_weapon" && gc.fixture_id === fixture.id)
+      .map((gc) => gc.applied_window ?? (gc.card.play_window ?? "before_match")),
   );
+  const ownSquad = snapshot.club_overview?.squad ?? [];
   const partialThirds = ((fixture.partial_result as { thirds?: unknown[] } | null)?.thirds ?? []) as FixtureThird[];
 
   // For PvP, suppress the old "Host resolves PvP" button — the new state machine handles it
@@ -2870,26 +2811,15 @@ function FixtureCard({
             {isPvP && bothHumanLineupsLocked && matchState === "scheduled" && ownSide ? (
               <div className="space-y-2">
                 <p className="text-xs text-zinc-400">Beide Aufstellungen sind gelockt. Du kannst jetzt Geheimwaffen vor dem Anpfiff einsetzen.</p>
-                {secretWeapons.length > 0 ? (
-                  <div className="space-y-1">
-                    <p className="text-xs font-medium text-violet-300">Geheimwaffen</p>
-                    {hasPlayedSecretWeaponForFixture ? (
-                      <p className="rounded bg-violet-950/50 px-2 py-1.5 text-xs text-violet-400">Fuer dieses Match bereits eine Geheimwaffe eingesetzt.</p>
-                    ) : (
-                      secretWeapons.map((gc) => (
-                        <form action={playSecretWeaponAction} key={gc.id}>
-                          <input name="game_id" type="hidden" value={snapshot.game.id} />
-                          <input name="room_code" type="hidden" value={snapshot.game.room_code} />
-                          <input name="fixture_id" type="hidden" value={fixture.id} />
-                          <input name="club_game_changer_id" type="hidden" value={gc.id} />
-                          <Button className="w-full border-violet-700 text-violet-100 hover:bg-violet-950" type="submit" variant="outline">
-                            {gc.card.display_name}
-                          </Button>
-                        </form>
-                      ))
-                    )}
-                  </div>
-                ) : null}
+                <MatchCardsPanel
+                  gameId={snapshot.game.id}
+                  roomCode={snapshot.game.room_code}
+                  fixtureId={fixture.id}
+                  window="before_match"
+                  cards={secretWeapons}
+                  squad={ownSquad}
+                  playedWindows={playedWindowsForFixture}
+                />
                 <form action={startMatchAction}>
                   <input name="game_id" type="hidden" value={snapshot.game.id} />
                   <input name="room_code" type="hidden" value={snapshot.game.room_code} />
@@ -2904,26 +2834,15 @@ function FixtureCard({
             {/* PvP In Progress */}
             {isPvP && matchState === "in_progress" && ownSide ? (
               <div className="space-y-3">
-                {secretWeapons.length > 0 ? (
-                  <div className="space-y-1">
-                    <p className="text-xs font-medium text-violet-300">Geheimwaffe einsetzen</p>
-                    {hasPlayedSecretWeaponForFixture ? (
-                      <p className="rounded bg-violet-950/50 px-2 py-1.5 text-xs text-violet-400">Fuer dieses Match bereits eine Geheimwaffe eingesetzt.</p>
-                    ) : (
-                      secretWeapons.map((gc) => (
-                        <form action={playSecretWeaponAction} key={gc.id}>
-                          <input name="game_id" type="hidden" value={snapshot.game.id} />
-                          <input name="room_code" type="hidden" value={snapshot.game.room_code} />
-                          <input name="fixture_id" type="hidden" value={fixture.id} />
-                          <input name="club_game_changer_id" type="hidden" value={gc.id} />
-                          <Button className="w-full border-violet-700 text-violet-100 hover:bg-violet-950" type="submit" variant="outline">
-                            {gc.card.display_name}
-                          </Button>
-                        </form>
-                      ))
-                    )}
-                  </div>
-                ) : null}
+                <MatchCardsPanel
+                  gameId={snapshot.game.id}
+                  roomCode={snapshot.game.room_code}
+                  fixtureId={fixture.id}
+                  window="during_match"
+                  cards={secretWeapons}
+                  squad={ownSquad}
+                  playedWindows={playedWindowsForFixture}
+                />
                 {!ownReady ? (
                   <form action={markReadyForNextThirdAction}>
                     <input name="game_id" type="hidden" value={snapshot.game.id} />
@@ -2939,6 +2858,23 @@ function FixtureCard({
                   </div>
                 )}
               </div>
+            ) : null}
+
+            {/* After match: active cards (e.g. Sieg oder Spielabbruch) */}
+            {fixture.status === "completed" && ownSide ? (
+              <AfterMatchCards
+                gameId={snapshot.game.id}
+                roomCode={snapshot.game.room_code}
+                fixtureId={fixture.id}
+                cards={secretWeapons}
+                squad={ownSquad}
+                playedWindows={playedWindowsForFixture}
+                ownLost={Boolean(
+                  fixture.home_score != null && fixture.away_score != null &&
+                  (ownSide === "home" ? fixture.home_score < fixture.away_score : fixture.away_score < fixture.home_score),
+                )}
+                retroWinResult={(fixture.retro_win_result as { rolls?: number[]; success?: boolean } | null) ?? null}
+              />
             ) : null}
 
             {canResolveOwnCpuMatch || canHostResolvePvpMatchLegacy ? (
@@ -3931,7 +3867,7 @@ function parseFixtureResult(value: Record<string, unknown> | null | undefined) {
   };
 }
 
-function getOwnLineupPowerSummary(snapshot: LobbySnapshot): LineupPowerSummary | null {
+function getOwnLineupPowerSummary(snapshot: LobbySnapshot, ownClub?: LobbyClub): LineupPowerSummary | null {
   const squad = snapshot.club_overview?.squad;
 
   if (!squad) {
@@ -3942,8 +3878,15 @@ function getOwnLineupPowerSummary(snapshot: LobbySnapshot): LineupPowerSummary |
     (s) => s.card.effects as Array<{ type: string; zone?: string; stars?: number }>,
   );
 
+  const captainBoost = Math.trunc(Number(ownClub?.captain_boost_rank ?? 0));
+  const captain =
+    ownClub?.captain_club_player_id && captainBoost > 0
+      ? { clubPlayerId: ownClub.captain_club_player_id, boost: captainBoost }
+      : null;
+
   return calculateLineupPower(
     squad.map((owned) => ({
+      id: owned.id,
       chemistry_left: owned.player.chemistry_left,
       chemistry_right: owned.player.chemistry_right,
       current_stars: owned.current_stars,
@@ -3958,6 +3901,7 @@ function getOwnLineupPowerSummary(snapshot: LobbySnapshot): LineupPowerSummary |
           : undefined,
     })),
     staffEffects,
+    captain,
   );
 }
 

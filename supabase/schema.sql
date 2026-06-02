@@ -113,6 +113,7 @@ create table public.clubs (
   offseason_training_capacity int,
   supercup_cards int not null default 0,
   captain_boost_rank int,
+  captain_club_player_id uuid,
   created_at timestamptz not null default now(),
   unique (game_id, clerk_user_id)
 );
@@ -172,6 +173,11 @@ create table public.club_players (
   acquired_at timestamptz not null default now(),
   unique (club_id, player_id)
 );
+
+-- Captain assignment (added after club_players exists to avoid a forward reference).
+alter table public.clubs
+  add constraint clubs_captain_club_player_id_fkey
+  foreign key (captain_club_player_id) references public.club_players(id) on delete set null;
 
 create table public.draft_rounds (
   id uuid primary key default gen_random_uuid(),
@@ -244,6 +250,9 @@ create table public.game_changer_cards (
   category text not null default 'secret_weapon'
     check (category in ('good_news', 'bad_news', 'secret_weapon')),
   timing text not null default 'after_match',
+  draw_weight int not null default 1,
+  play_window text
+    check (play_window in ('before_match', 'during_match', 'after_match')),
   effects jsonb not null default '[]'::jsonb,
   visibility public.card_visibility not null default 'private'
 );
@@ -252,9 +261,11 @@ create table public.club_game_changers (
   id uuid primary key default gen_random_uuid(),
   club_id uuid not null references public.clubs(id) on delete cascade,
   game_changer_card_id uuid not null references public.game_changer_cards(id) on delete restrict,
+  season_number int not null default 1,
   used_at timestamptz,
   fixture_id uuid references public.fixtures(id) on delete set null,
-  applied_third int
+  applied_third int,
+  applied_window text
 );
 
 create table public.investments (
@@ -402,6 +413,9 @@ create table public.fixtures (
   home_third_points numeric(3,1),
   away_third_points numeric(3,1),
   result jsonb,
+  derby_day boolean not null default false,
+  retro_win_used boolean not null default false,
+  retro_win_result jsonb,
   created_at timestamptz not null default now(),
   completed_at timestamptz,
   unique (game_id, season_number, matchday, home_participant_id, away_participant_id),
@@ -431,6 +445,7 @@ create table public.match_news (
   game_id uuid not null references public.games(id) on delete cascade,
   fixture_id uuid references public.fixtures(id) on delete cascade,
   club_id uuid references public.clubs(id) on delete cascade,
+  club_game_changer_id uuid references public.club_game_changers(id) on delete set null,
   category text not null check (category in ('good_news', 'bad_news', 'secret_weapon', 'injury')),
   headline text not null,
   detail text,

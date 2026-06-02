@@ -43,12 +43,15 @@ const CLUB_SELECT_LEGACY =
   "id, game_id, clerk_user_id, club_template_id, club_name, club_slogan, club_color, manager_name, money, points, season_rank, status, stadium_level, scouting_level, training_level, offseason_scouting_capacity, offseason_training_capacity, supercup_cards, captain_boost_rank, is_ready, image_url, created_at";
 const CLUB_SELECT_V3 =
   "id, game_id, clerk_user_id, club_template_id, club_name, club_slogan, club_color, manager_name, money, points, season_rank, status, status_override, status_override_until_season, stadium_level, stadium_level_cap, stadium_level_cap_until_season, scouting_level, training_level, offseason_scouting_capacity, offseason_training_capacity, supercup_cards, captain_boost_rank, is_ready, image_url, created_at";
+const CLUB_SELECT_V4 = `${CLUB_SELECT_V3}, captain_club_player_id`;
 const CLUB_SELECT = CLUB_SELECT_V3;
 
 const CLUB_GAME_CHANGER_SELECT_LEGACY =
   "id, game_changer_card_id, used_at, fixture_id, applied_third, card:game_changer_cards(id, content_key, display_name, description, category, timing, effects, visibility)";
 const CLUB_GAME_CHANGER_SELECT_V3 =
-  "id, game_changer_card_id, used_at, fixture_id, applied_third, status, choice_payload, resolved_payload, created_at, card:game_changer_cards(id, content_key, display_name, description, category, timing, effects, visibility)";
+  "id, game_changer_card_id, season_number, used_at, fixture_id, applied_third, status, choice_payload, resolved_payload, created_at, card:game_changer_cards(id, content_key, display_name, description, category, timing, effects, visibility)";
+const CLUB_GAME_CHANGER_SELECT_V4 =
+  "id, game_changer_card_id, season_number, used_at, fixture_id, applied_third, applied_window, status, choice_payload, resolved_payload, created_at, card:game_changer_cards(id, content_key, display_name, description, category, timing, play_window, draw_weight, effects, visibility)";
 
 /**
  * Detects Postgres "undefined column" errors so callers can retry with a smaller column set.
@@ -81,10 +84,10 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string) {
     return { snapshot: null, currentUserId: userId };
   }
 
-  const [clubsResultV3, { data: members, error: membersError }] = await Promise.all([
+  const [clubsResultV4, { data: members, error: membersError }] = await Promise.all([
     supabase
       .from("clubs")
-      .select(CLUB_SELECT_V3)
+      .select(CLUB_SELECT_V4)
       .eq("game_id", game.id)
       .order("created_at", { ascending: true })
       .returns<LobbyClub[]>(),
@@ -96,17 +99,29 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string) {
       .returns<LobbyMember[]>(),
   ]);
 
-  let clubs = clubsResultV3.data;
-  let clubsError = clubsResultV3.error;
+  let clubs = clubsResultV4.data;
+  let clubsError = clubsResultV4.error;
+  // Fallback chain for DBs without the latest migrations: V4 -> V3 -> legacy.
   if (isUndefinedColumnError(clubsError)) {
-    const fallback = await supabase
+    const v3 = await supabase
       .from("clubs")
-      .select(CLUB_SELECT_LEGACY)
+      .select(CLUB_SELECT_V3)
       .eq("game_id", game.id)
       .order("created_at", { ascending: true })
       .returns<LobbyClub[]>();
-    clubs = fallback.data;
-    clubsError = fallback.error;
+    if (!isUndefinedColumnError(v3.error)) {
+      clubs = v3.data;
+      clubsError = v3.error;
+    } else {
+      const fallback = await supabase
+        .from("clubs")
+        .select(CLUB_SELECT_LEGACY)
+        .eq("game_id", game.id)
+        .order("created_at", { ascending: true })
+        .returns<LobbyClub[]>();
+      clubs = fallback.data;
+      clubsError = fallback.error;
+    }
   }
 
   if (clubsError) {
@@ -256,25 +271,28 @@ async function getSeasonSnapshot(game: LobbyGame): Promise<SeasonSnapshot | null
   }
 
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
-  const [{ data: fixtures, error: fixturesError }, { data: standings, error: standingsError }] = await Promise.all([
-    supabase
-      .from("fixtures")
-      .select(
-        `id, game_id, season_number, matchday, home_participant_id, away_participant_id, status,
+  const buildFixturesSelect = (includeV4: boolean) =>
+    `id, game_id, season_number, matchday, home_participant_id, away_participant_id, status,
         match_state, current_third, home_ready_for_next_third, away_ready_for_next_third, partial_result,
         home_lineup_locked, away_lineup_locked,
         home_locked_def, home_locked_mid, home_locked_att,
         away_locked_def, away_locked_mid, away_locked_att,
         home_score, away_score, home_third_points, away_third_points, result, completed_at,
+        ${includeV4 ? "derby_day, retro_win_used, retro_win_result," : ""}
         home_participant:season_participants!fixtures_home_participant_id_fkey(id, game_id, season_number, kind, club_id, cpu_team_id, display_name),
         away_participant:season_participants!fixtures_away_participant_id_fkey(id, game_id, season_number, kind, club_id, cpu_team_id, display_name),
         home_cpu_lineup:cpu_lineups!fixtures_home_cpu_lineup_id_fkey(id, display_name, def_stars, mid_stars, att_stars),
-        away_cpu_lineup:cpu_lineups!fixtures_away_cpu_lineup_id_fkey(id, display_name, def_stars, mid_stars, att_stars)`,
-      )
+        away_cpu_lineup:cpu_lineups!fixtures_away_cpu_lineup_id_fkey(id, display_name, def_stars, mid_stars, att_stars)`;
+  const fetchFixtures = async (includeV4: boolean) =>
+    supabase
+      .from("fixtures")
+      .select(buildFixturesSelect(includeV4))
       .eq("game_id", game.id)
       .eq("season_number", seasonNumber)
       .order("matchday", { ascending: true })
-      .returns<SeasonFixtureSnapshot[]>(),
+      .returns<SeasonFixtureSnapshot[]>();
+  const [fixturesResult, { data: standings, error: standingsError }] = await Promise.all([
+    fetchFixtures(true),
     supabase
       .from("season_standings")
       .select(
@@ -287,6 +305,14 @@ async function getSeasonSnapshot(game: LobbyGame): Promise<SeasonSnapshot | null
       .order("rank", { ascending: true })
       .returns<SeasonStandingSnapshot[]>(),
   ]);
+
+  // Fall back to the pre-v4 column set if derby_day/retro_win_* are not present yet.
+  let { data: fixtures, error: fixturesError } = fixturesResult;
+  if (isUndefinedColumnError(fixturesError)) {
+    const legacy = await fetchFixtures(false);
+    fixtures = legacy.data;
+    fixturesError = legacy.error;
+  }
 
   if (fixturesError || standingsError) {
     return {
@@ -314,13 +340,33 @@ async function getMatchNewsSnapshot(game: LobbyGame): Promise<MatchNewsSnapshot[
   const supabase = createSupabaseServiceClient();
   if (!supabase) return [];
 
-  const { data } = await supabase
+  const selectV3 =
+    "id, game_id, fixture_id, club_id, club_game_changer_id, category, headline, detail, created_at";
+  const selectLegacy =
+    "id, game_id, fixture_id, club_id, category, headline, detail, created_at";
+
+  const { data, error } = await supabase
     .from("match_news")
-    .select("id, game_id, fixture_id, club_id, category, headline, detail, created_at")
+    .select(selectV3)
     .eq("game_id", game.id)
     .order("created_at", { ascending: false })
     .limit(50)
     .returns<MatchNewsSnapshot[]>();
+
+  if (isUndefinedColumnError(error)) {
+    const fallback = await supabase
+      .from("match_news")
+      .select(selectLegacy)
+      .eq("game_id", game.id)
+      .order("created_at", { ascending: false })
+      .limit(50)
+      .returns<MatchNewsSnapshot[]>();
+    return fallback.data ?? [];
+  }
+
+  if (error) {
+    throw error;
+  }
 
   return data ?? [];
 }
@@ -488,7 +534,7 @@ async function getClubOverviewSnapshot(
       .returns<ClubStaffSnapshot[]>(),
     supabase
       .from("club_game_changers")
-      .select(CLUB_GAME_CHANGER_SELECT_V3)
+      .select(CLUB_GAME_CHANGER_SELECT_V4)
       .eq("club_id", club.id)
       .order("created_at", { ascending: true, nullsFirst: false })
       .returns<ClubGameChangerSnapshot[]>(),
@@ -496,6 +542,7 @@ async function getClubOverviewSnapshot(
       .from("club_pending_effects")
       .select("id, club_id, season_number, effect_type, payload, scope, consumed_at, fixture_id, source_club_game_changer_id, created_at")
       .eq("club_id", club.id)
+      .eq("season_number", seasonNumber)
       .is("consumed_at", null)
       .order("created_at", { ascending: true })
       .returns<ClubPendingEffectSnapshot[]>(),
@@ -540,28 +587,41 @@ async function getClubOverviewSnapshot(
     throw staffError;
   }
 
-  // If the v3 migration has not been applied yet, retry the club_game_changers SELECT
-  // without the new columns and default them to a "resolved" state.
+  // Defensive fallbacks when newer migrations have not been applied to a given DB.
+  // V4 (play_window/draw_weight/applied_window) -> V3 -> legacy.
   let gameChangerRowsFinal = gameChangerRows;
   let gameChangerErrorFinal = gameChangerError;
   if (isUndefinedColumnError(gameChangerErrorFinal)) {
-    const fallback = await supabase
+    const v3 = await supabase
       .from("club_game_changers")
-      .select(CLUB_GAME_CHANGER_SELECT_LEGACY)
+      .select(CLUB_GAME_CHANGER_SELECT_V3)
       .eq("club_id", club.id)
-      .order("id", { ascending: true })
-      .returns<Array<Omit<ClubGameChangerSnapshot, "status" | "choice_payload" | "resolved_payload" | "created_at">>>();
-    if (fallback.error) {
-      throw fallback.error;
+      .order("created_at", { ascending: true, nullsFirst: false })
+      .returns<ClubGameChangerSnapshot[]>();
+    if (!v3.error) {
+      gameChangerRowsFinal = v3.data;
+      gameChangerErrorFinal = null;
+    } else if (isUndefinedColumnError(v3.error)) {
+      const fallback = await supabase
+        .from("club_game_changers")
+        .select(CLUB_GAME_CHANGER_SELECT_LEGACY)
+        .eq("club_id", club.id)
+        .order("id", { ascending: true })
+        .returns<Array<Omit<ClubGameChangerSnapshot, "status" | "choice_payload" | "resolved_payload" | "created_at">>>();
+      if (fallback.error) {
+        throw fallback.error;
+      }
+      gameChangerRowsFinal = (fallback.data ?? []).map((row) => ({
+        ...row,
+        status: "resolved" as const,
+        choice_payload: null,
+        resolved_payload: null,
+        created_at: null,
+      }));
+      gameChangerErrorFinal = null;
+    } else {
+      gameChangerErrorFinal = v3.error;
     }
-    gameChangerRowsFinal = (fallback.data ?? []).map((row) => ({
-      ...row,
-      status: "resolved" as const,
-      choice_payload: null,
-      resolved_payload: null,
-      created_at: null,
-    }));
-    gameChangerErrorFinal = null;
   }
 
   if (gameChangerErrorFinal) {

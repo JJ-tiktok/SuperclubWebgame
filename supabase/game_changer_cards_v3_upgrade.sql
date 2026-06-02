@@ -8,7 +8,8 @@ alter table public.club_game_changers
     check (status in ('pending', 'resolved', 'consumed', 'expired')),
   add column if not exists choice_payload jsonb,
   add column if not exists resolved_payload jsonb,
-  add column if not exists created_at timestamptz not null default now();
+  add column if not exists created_at timestamptz not null default now(),
+  add column if not exists season_number int not null default 1;
 
 -- Existing rows (auto-applied or secret weapons) are treated as resolved
 update public.club_game_changers
@@ -76,3 +77,7 @@ end $$;
 
 -- 6. grant SELECT to authenticated
 grant select on public.club_pending_effects to authenticated;
+
+-- 7. match_news: link to club_game_changers for UI effect correlation
+alter table public.match_news
+  add column if not exists club_game_changer_id uuid references public.club_game_changers(id) on delete set null;

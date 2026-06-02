@@ -102,11 +102,15 @@ export function GameLineupBoard({
   gameId,
   roomCode,
   staffEffects = [],
+  captainId = null,
+  captainBoost = 0,
 }: {
   cards: LineupCard[];
   gameId: string;
   roomCode: string;
   staffEffects?: StaffZoneEffect[];
+  captainId?: string | null;
+  captainBoost?: number;
 }) {
   const boardRef = useRef<HTMLDivElement>(null);
   const cardsWithDefaultKeeper = useMemo(() => ensureDefaultKeeper(cards), [cards]);
@@ -121,7 +125,10 @@ export function GameLineupBoard({
   const assignedIds = new Set(Object.values(assignments));
   const benchCards = cardsWithDefaultKeeper.filter((card) => !assignedIds.has(card.id) && !card.lockedDefault);
   const chemistryLinks = getChemistryLinks(assignments, cardById, formationSlots);
-  const summary = getLineupSummary(assignments, cardById, chemistryLinks, formationSlots, staffEffects);
+  const summary = getLineupSummary(assignments, cardById, chemistryLinks, formationSlots, staffEffects, {
+    captainId,
+    captainBoost,
+  });
   const chemistryMultiplier = (staffEffects ?? [])
     .filter((e) => e.type === "chemistry_multiplier")
     .reduce((best, e) => Math.max(best, e.factor ?? 1), 1);
@@ -349,9 +356,17 @@ export function GameLineupBoard({
               >
                 {player && !isDragged ? (
                   <div
-                    className={cn(player.lockedDefault || player.injured ? "cursor-default" : "cursor-grab active:cursor-grabbing")}
+                    className={cn("relative", player.lockedDefault || player.injured ? "cursor-default" : "cursor-grab active:cursor-grabbing")}
                     onPointerDown={(event) => startDrag(event, slot.id, player.id)}
                   >
+                    {captainId && player.id === captainId ? (
+                      <span
+                        className="absolute -left-1 -top-1 z-10 flex h-5 items-center gap-0.5 rounded-full bg-amber-500 px-1.5 text-[10px] font-black text-black shadow"
+                        title={captainBoost > 0 ? `Captain (+${captainBoost})` : "Captain"}
+                      >
+                        C{captainBoost > 0 ? ` +${captainBoost}` : ""}
+                      </span>
+                    ) : null}
                     <LineupPlayerCard offPosPenalty={isOffPosition ? offPosPenalty : 0} player={player} selected={player.lockedDefault} variant="lineup" />
                   </div>
                 ) : (
@@ -600,7 +615,10 @@ function getLineupSummary(
   chemistryLinks: ChemistryLink[],
   formationSlots: FormationSlot[],
   staffEffects: StaffZoneEffect[] = [],
+  captain: { captainId?: string | null; captainBoost?: number } = {},
 ) {
+  const captainId = captain.captainId ?? null;
+  const captainBoost = Math.trunc(Number(captain.captainBoost ?? 0));
   const diceZoneBonus = staffEffects
     .filter((e) => e.type === "dice_zone_bonus")
     .reduce((sum, e) => sum + (e.stars ?? 0), 0);
@@ -626,7 +644,8 @@ function getLineupSummary(
 
     const naturalPositions = card.positions.length ? card.positions : ["MID"];
     const penalty = getPositionPenalty(naturalPositions, slot.zone);
-    const value = applyPositionPenalty(getTotalSkillValue(card), penalty);
+    const captainBonus = captainId && card.id === captainId ? captainBoost : 0;
+    const value = applyPositionPenalty(getTotalSkillValue(card), penalty) + captainBonus;
     summary.players += 1;
 
     if (slot.zone === "GK") {

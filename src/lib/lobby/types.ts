@@ -73,6 +73,7 @@ export type LobbyClub = {
   stadium_level_cap_until_season?: number | null;
   supercup_cards?: number;
   captain_boost_rank?: number | null;
+  captain_club_player_id?: string | null;
   squad_stars?: number;
   is_ready: boolean;
   image_url?: string | null;
@@ -255,9 +256,11 @@ export type GameChangerCategory = "good_news" | "bad_news" | "secret_weapon";
 export type ClubGameChangerSnapshot = {
   id: string;
   game_changer_card_id: string;
+  season_number?: number | null;
   used_at?: string | null;
   fixture_id?: string | null;
   applied_third?: number | null;
+  applied_window?: string | null;
   status?: "pending" | "resolved" | "consumed" | "expired" | null;
   choice_payload?: Record<string, unknown> | null;
   resolved_payload?: Record<string, unknown> | null;
@@ -269,6 +272,8 @@ export type ClubGameChangerSnapshot = {
     description: string;
     category: GameChangerCategory;
     timing: string;
+    play_window?: string | null;
+    draw_weight?: number | null;
     effects: unknown[];
     visibility?: string | null;
   };
@@ -390,6 +395,7 @@ export type MatchNewsSnapshot = {
   game_id: string;
   fixture_id?: string | null;
   club_id?: string | null;
+  club_game_changer_id?: string | null;
   category: GameChangerCategory | "injury";
   headline: string;
   detail?: string | null;
@@ -437,6 +443,9 @@ export type SeasonFixtureSnapshot = {
   away_ready_for_next_third: boolean;
   partial_result?: Record<string, unknown> | null;
   result?: Record<string, unknown> | null;
+  derby_day?: boolean | null;
+  retro_win_used?: boolean | null;
+  retro_win_result?: Record<string, unknown> | null;
   season_number: number;
   status: "completed" | "scheduled";
 };

@@ -4,6 +4,8 @@ export type LineupZone = "ATT" | "DEF" | "GK" | "MID";
 export type TacticalLineupZone = "ATT" | "DEF" | "MID";
 
 export type LineupPowerPlayer = {
+  /** club_players.id — needed to apply the captain boost to a specific player */
+  id?: string | null;
   chemistry_left?: boolean | null;
   chemistry_right?: boolean | null;
   current_stars: number | string;
@@ -14,6 +16,11 @@ export type LineupPowerPlayer = {
   position?: string | null;
   /** All eligible positions — takes precedence over `position` when present */
   positions?: string[] | null;
+};
+
+export type CaptainBoost = {
+  clubPlayerId: string;
+  boost: number;
 };
 
 export type LineupPowerSummary = {
@@ -46,10 +53,17 @@ export type StaffEffectInput = {
 export function calculateLineupPower(
   players: LineupPowerPlayer[],
   staffEffects: StaffEffectInput[] = [],
+  captain: CaptainBoost | null = null,
 ): LineupPowerSummary {
   const activePlayers = players
     .filter((player) => !player.injured && isLineupZone(player.current_zone))
     .sort((a, b) => Number(a.lineup_slot ?? 999) - Number(b.lineup_slot ?? 999));
+
+  // Captain boost only applies when the captain is an active (non-injured) lineup player.
+  const captainBoost =
+    captain && captain.boost > 0 && activePlayers.some((p) => p.id === captain.clubPlayerId)
+      ? captain
+      : null;
 
   const diceZoneBonus = staffEffects
     .filter((e) => e.type === "dice_zone_bonus")
@@ -63,9 +77,9 @@ export function calculateLineupPower(
   };
 
   const summary: LineupPowerSummary = {
-    ATT: { base: getBaseStars(activePlayers, "ATT"), chemistry: 0, staffBonus: staffBonusForZone("ATT"), total: 0 },
-    DEF: { base: getBaseStars(activePlayers, "DEF") + getBaseStars(activePlayers, "GK"), chemistry: 0, staffBonus: staffBonusForZone("DEF"), total: 0 },
-    MID: { base: getBaseStars(activePlayers, "MID"), chemistry: 0, staffBonus: staffBonusForZone("MID"), total: 0 },
+    ATT: { base: getBaseStars(activePlayers, "ATT", captainBoost), chemistry: 0, staffBonus: staffBonusForZone("ATT"), total: 0 },
+    DEF: { base: getBaseStars(activePlayers, "DEF", captainBoost) + getBaseStars(activePlayers, "GK", captainBoost), chemistry: 0, staffBonus: staffBonusForZone("DEF"), total: 0 },
+    MID: { base: getBaseStars(activePlayers, "MID", captainBoost), chemistry: 0, staffBonus: staffBonusForZone("MID"), total: 0 },
   };
 
   const chemistryMultiplier = staffEffects
@@ -87,14 +101,15 @@ export function calculateLineupPower(
   return summary;
 }
 
-function getBaseStars(players: LineupPowerPlayer[], zone: LineupZone) {
+function getBaseStars(players: LineupPowerPlayer[], zone: LineupZone, captain: CaptainBoost | null = null) {
   return getZonePlayers(players, zone).reduce((total, player) => {
     const raw = Number(player.current_stars);
     // Prefer the full eligible-positions array; fall back to single position string
     const naturalPositions: string | string[] =
       player.positions?.length ? player.positions : (player.position ?? zone);
     const penalty = getPositionPenalty(naturalPositions, zone);
-    return total + applyPositionPenalty(raw, penalty);
+    const captainBonus = captain && player.id === captain.clubPlayerId ? captain.boost : 0;
+    return total + applyPositionPenalty(raw, penalty) + captainBonus;
   }, 0);
 }
 

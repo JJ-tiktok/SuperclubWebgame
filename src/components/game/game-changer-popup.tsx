@@ -1,84 +1,175 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import type { MatchNewsSnapshot } from "@/lib/lobby/types";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import { Bandage, Skull, Sparkles, Swords } from "lucide-react";
+import type { ClubPendingEffectSnapshot, LobbyClub, MatchNewsSnapshot } from "@/lib/lobby/types";
 import { Button } from "@/components/ui/button";
+import {
+  describePendingEffect,
+  findPendingEffectForNews,
+  formatNewsDate,
+  getCategoryStyle,
+  getLastSeenAt,
+  isNewsShownInSession,
+  markNewsIdsShown,
+  parseGameChangerHeadline,
+  resolveClubName,
+  setLastSeenAt,
+} from "@/lib/game/game-changer-ui";
 
-const STORAGE_KEY = "gc_popup_last_seen_at";
-
-const CATEGORY_STYLES: Record<string, { bg: string; border: string; accent: string; icon: string; label: string }> = {
-  good_news: { bg: "bg-green-950", border: "border-green-600", accent: "text-green-300", icon: "✅", label: "Good News" },
-  bad_news: { bg: "bg-rose-950", border: "border-rose-600", accent: "text-rose-300", icon: "💥", label: "Bad News" },
-  secret_weapon: { bg: "bg-violet-950", border: "border-violet-600", accent: "text-violet-300", icon: "⚔️", label: "Geheimwaffe" },
-  injury: { bg: "bg-amber-950", border: "border-amber-600", accent: "text-amber-300", icon: "🚑", label: "Verletzung" },
-};
+const CATEGORY_ICONS = {
+  good_news: Sparkles,
+  bad_news: Skull,
+  secret_weapon: Swords,
+  injury: Bandage,
+} as const;
 
 export function GameChangerPopup({
   news,
   ownClubId,
+  gameId,
+  roomCode,
+  clubs,
+  pendingEffects,
 }: {
   news: MatchNewsSnapshot[];
   ownClubId: string | undefined;
+  gameId: string;
+  roomCode: string;
+  clubs: LobbyClub[];
+  pendingEffects: ClubPendingEffectSnapshot[];
 }) {
-  // Single queue: the first item is the one currently displayed, dismissals shift the queue.
+  const router = useRouter();
   const [queue, setQueue] = useState<MatchNewsSnapshot[]>([]);
-  // Tracks IDs already queued or shown so Realtime re-renders don't re-add them.
-  const shownIds = useRef<Set<string>>(new Set());
+  const queuedIds = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!ownClubId) return;
 
-    // Use a timestamp guard so items dismissed before a page reload don't reappear
-    const lastSeenAt = localStorage.getItem(STORAGE_KEY) ?? "";
+    const lastSeenAt = getLastSeenAt(gameId);
 
     const newItems = news.filter(
       (item) =>
         item.club_id === ownClubId &&
         item.created_at > lastSeenAt &&
-        !shownIds.current.has(item.id),
+        !isNewsShownInSession(gameId, item.id) &&
+        !queuedIds.current.has(item.id),
     );
 
     if (newItems.length > 0) {
-      newItems.forEach((item) => shownIds.current.add(item.id));
-      // Append — never replace — so in-progress items are not discarded
+      markNewsIdsShown(
+        gameId,
+        newItems.map((item) => item.id),
+      );
+      newItems.forEach((item) => queuedIds.current.add(item.id));
       setQueue((prev) => [...prev, ...newItems].slice(0, 10));
     }
-  }, [news, ownClubId]);
+  }, [news, ownClubId, gameId]);
 
   const current = queue[0];
+  const queueIndex = queue.length > 0 ? 1 : 0;
+  const queueTotal = queue.length;
 
-  function dismiss() {
-    if (current) {
-      // Store the timestamp so items up to this point are suppressed on reload
-      localStorage.setItem(STORAGE_KEY, current.created_at);
+  const dismiss = useCallback(() => {
+    setQueue((prev) => {
+      const item = prev[0];
+      if (item) {
+        markNewsIdsShown(gameId, [item.id]);
+        const seen = getLastSeenAt(gameId);
+        if (!seen || item.created_at > seen) {
+          setLastSeenAt(gameId, item.created_at);
+        }
+      }
+      return prev.slice(1);
+    });
+  }, [gameId]);
+
+  useEffect(() => {
+    if (!current) return;
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape" || event.key === "Enter") {
+        dismiss();
+      }
     }
-    setQueue((prev) => prev.slice(1));
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [current, dismiss]);
+
+  function goToActiveEffects() {
+    dismiss();
+    router.push(`/games/${roomCode}?view=grounds#game-changer`);
   }
 
   if (!current) return null;
 
-  const style = CATEGORY_STYLES[current.category] ?? CATEGORY_STYLES.good_news;
-  const remaining = queue.length - 1;
+  const style = getCategoryStyle(current.category);
+  const Icon = CATEGORY_ICONS[current.category as keyof typeof CATEGORY_ICONS] ?? Sparkles;
+  const clubName = resolveClubName(clubs, current.club_id);
+  const cardTitle = parseGameChangerHeadline(current.headline);
+  const linkedEffect = findPendingEffectForNews(current, pendingEffects);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/60" onClick={dismiss} />
-      <div className={`relative z-10 w-full max-w-sm rounded-lg border-2 p-6 shadow-2xl ${style.bg} ${style.border}`}>
-        <div className="flex items-center gap-3">
-          <span className="text-3xl leading-none">{style.icon}</span>
-          <div>
+      <div className="absolute inset-0 bg-black/60" onClick={dismiss} aria-hidden />
+      <div
+        className={`relative z-10 w-full max-w-md rounded-lg border-2 p-6 shadow-2xl ${style.bg} ${style.border}`}
+        role="dialog"
+        aria-labelledby="gc-modal-title"
+        aria-describedby="gc-modal-detail"
+      >
+        {queueTotal > 1 ? (
+          <p className="mb-3 text-center text-xs font-medium text-zinc-400">
+            Ereignis {queueIndex} von {queueTotal}
+          </p>
+        ) : null}
+
+        <div className="flex items-start gap-3">
+          <div className={`rounded-lg border p-2 ${style.border} bg-black/20`}>
+            <Icon className={`h-7 w-7 ${style.accent}`} aria-hidden />
+          </div>
+          <div className="min-w-0 flex-1">
             <p className={`text-xs font-semibold uppercase tracking-wide ${style.accent}`}>{style.label}</p>
-            <p className="mt-0.5 text-lg font-bold text-zinc-50">{current.headline}</p>
+            {clubName ? (
+              <p className="mt-0.5 text-xs text-zinc-400">{clubName}</p>
+            ) : null}
+            <p id="gc-modal-title" className="mt-1 text-lg font-bold text-zinc-50">
+              {cardTitle}
+            </p>
+            <p className="mt-0.5 text-xs text-zinc-500">{formatNewsDate(current.created_at)}</p>
           </div>
         </div>
+
         {current.detail ? (
-          <p className="mt-3 text-sm text-zinc-300">{current.detail}</p>
+          <p id="gc-modal-detail" className="mt-4 text-sm leading-relaxed text-zinc-300">
+            {current.detail}
+          </p>
         ) : null}
-        <Button className="mt-5 w-full" onClick={dismiss} variant="secondary">
-          Verstanden
-        </Button>
-        {remaining > 0 ? (
-          <p className="mt-2 text-center text-xs text-zinc-500">Noch {remaining} weitere Ereignisse</p>
+
+        {linkedEffect ? (
+          <div className="mt-4 rounded-md border border-amber-700/50 bg-amber-950/40 p-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-amber-200">Aktiver Effekt</p>
+            <p className="mt-1 text-sm text-zinc-200">{describePendingEffect(linkedEffect)}</p>
+          </div>
+        ) : null}
+
+        <div className="mt-5 flex flex-col gap-2">
+          <Button className="w-full" onClick={dismiss} variant="secondary">
+            Verstanden
+          </Button>
+          {linkedEffect ? (
+            <Button className="w-full" onClick={goToActiveEffects} variant="outline">
+              Zu aktiven Effekten
+            </Button>
+          ) : null}
+        </div>
+
+        {queueTotal > 1 ? (
+          <p className="mt-2 text-center text-xs text-zinc-500">
+            Noch {queueTotal - 1} weitere Ereignis{queueTotal - 1 === 1 ? "" : "se"}
+          </p>
         ) : null}
       </div>
     </div>

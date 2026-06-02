@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import { resolveGameChangerChoiceAction } from "@/app/games/actions/game-changers";
 import { Button } from "@/components/ui/button";
+import { getCategoryStyle } from "@/lib/game/game-changer-ui";
 import type { ClubGameChangerSnapshot, ClubPlayerSnapshot } from "@/lib/lobby/types";
 
 type ChoicePayload = {
@@ -31,14 +32,13 @@ export function GameChangerChoiceModal({ gameId, roomCode, choice, squad }: Prop
     [squad],
   );
 
-  const headerBg = choice.card.category === "good_news" ? "bg-emerald-950 border-emerald-700" : "bg-rose-950 border-rose-700";
-  const accent = choice.card.category === "good_news" ? "text-emerald-200" : "text-rose-200";
+  const style = getCategoryStyle(choice.card.category);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70" />
-      <div className={`relative z-10 w-full max-w-md rounded-lg border-2 p-6 shadow-2xl ${headerBg}`}>
-        <p className={`text-xs font-semibold uppercase tracking-wide ${accent}`}>Auswahl noetig</p>
+      <div className={`relative z-10 w-full max-w-md rounded-lg border-2 p-6 shadow-2xl ${style.bg} ${style.border}`}>
+        <p className={`text-xs font-semibold uppercase tracking-wide ${style.accent}`}>{style.label} · Auswahl noetig</p>
         <h2 className="mt-1 text-lg font-bold text-zinc-50">{choice.card.display_name}</h2>
         <p className="mt-2 text-sm text-zinc-300">{choice.card.description}</p>
 

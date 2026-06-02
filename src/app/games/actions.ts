@@ -23,6 +23,12 @@ import {
 } from "@/app/games/actions/continental";
 import { getNextLobbyPhase, getSettingsForNextPhase, isInvestmentPhase } from "@/lib/lobby/phases";
 import {
+  computeTrainingExtraPlayers,
+  isOffseasonPendingEffectWindow,
+  isOffseasonPendingScopeActive,
+  shouldPromoteOffseasonEffectsOnPhaseAdvance,
+} from "@/lib/lobby/offseason-pending-effects";
+import {
   buildSeasonFixtures,
   getMatchPoints,
   getMatchPointsMode,
@@ -486,43 +492,34 @@ export async function trainPlayerAction(formData: FormData) {
     .select("card:staff_cards(effects)")
     .eq("club_id", ownedPlayer.club_id)
     .returns<Array<{ card: { effects: Array<Record<string, unknown>> } }>>();
-  const trainingPlayerBonus = (trainStaffRows ?? [])
-    .flatMap((s) => s.card?.effects ?? [])
-    .filter((e) => e.type === "training_player_bonus")
-    .reduce((sum, e) => sum + Number(e.players ?? 0), 0);
+  const trainStaffEffects = (trainStaffRows ?? []).flatMap((s) => s.card?.effects ?? []);
 
   const trainingEvents = (transactionRows ?? [])
     .map(parseTrainingEvent)
     .filter((event): event is NonNullable<ReturnType<typeof parseTrainingEvent>> => Boolean(event))
     .filter((event) => event.season_number === seasonNumber && event.game_phase === game.phase);
 
-  // Use the snapshotted capacity if available (set at off_season start), otherwise fall back to live calculation
-  const baseCapacity = getTrainingCapacity(ownedPlayer.club.training_level).players;
-  const snapshotCap = ownedPlayer.club.offseason_training_capacity;
-  const baseExtraPlayers = snapshotCap != null
-    ? snapshotCap - baseCapacity
-    : trainingPlayerBonus;
-
-  // Apply training_capacity_delta from active pending effects (Good/Bad News cards).
-  const trainingPendingEffects = await getActivePendingEffects(supabase, ownedPlayer.club_id, "current_offseason");
-  let pendingExtra = 0;
-  let doubleTraining = false;
-  for (const eff of trainingPendingEffects) {
-    if (eff.effect_type !== "training_capacity_delta") continue;
-    const delta = eff.payload.delta;
-    if (delta === "double") {
-      doubleTraining = true;
-    } else if (typeof delta === "number") {
-      pendingExtra += delta;
-    }
+  if (isOffseasonPendingEffectWindow(game.phase)) {
+    await transitionPendingEffectsToOffseason(supabase, gameId);
   }
-  const effectiveBase = doubleTraining ? baseCapacity * 2 : baseCapacity;
-  const effectiveExtraPlayers = effectiveBase - baseCapacity + Math.max(0, baseExtraPlayers) + pendingExtra;
+
+  const baseCapacity = getTrainingCapacity(ownedPlayer.club.training_level).players;
+  const pendingRows = await getActivePendingEffects(supabase, ownedPlayer.club_id);
+  const offseasonPending = pendingRows.filter((eff) =>
+    isOffseasonPendingScopeActive(eff.scope, game.phase),
+  );
+  const extraPlayers = computeTrainingExtraPlayers({
+    baseCapacity,
+    offseasonTrainingCapacity: ownedPlayer.club.offseason_training_capacity,
+    staffEffects: trainStaffEffects,
+    pendingEffects: offseasonPending,
+    phase: game.phase,
+  });
 
   const trainingStatus = getTrainingStatus({
     events: trainingEvents,
     trainingLevel: ownedPlayer.club.training_level,
-    extraPlayers: Math.max(0, effectiveExtraPlayers),
+    extraPlayers,
   });
   const currentStars = Math.trunc(Number(ownedPlayer.current_stars));
   const skillMax = Math.trunc(Number(ownedPlayer.player.skill_max ?? currentStars));
@@ -652,8 +649,13 @@ export async function drawScoutingPlayerAction(formData: FormData) {
     redirect(`/games/${roomCode}?view=scouting`);
   }
 
-  // Block when an Illegaler-Jugendtransfer-style offseason lock is active.
-  const scoutingPendingEffects = await getActivePendingEffects(supabase, ownClub.id, "current_offseason");
+  if (isOffseasonPendingEffectWindow(game.phase)) {
+    await transitionPendingEffectsToOffseason(supabase, gameId);
+  }
+
+  const scoutingPendingEffects = (await getActivePendingEffects(supabase, ownClub.id)).filter((eff) =>
+    isOffseasonPendingScopeActive(eff.scope, game.phase),
+  );
   const scoutingBlocked = scoutingPendingEffects.some((eff) => {
     if (eff.effect_type !== "offseason_lock") return false;
     const blocks = ((eff.payload as { blocks?: string[] }).blocks ?? []);
@@ -664,8 +666,8 @@ export async function drawScoutingPlayerAction(formData: FormData) {
   const draws = await getScoutingDraws(supabase, gameId, seasonNumber);
   const ownDraws = draws.filter((draw) => draw.club_id === ownClub.id);
   const baseCapacity = await resolveScoutingBaseCapacity(supabase, ownClub, ownDraws.length);
-  const freeDrawCount = getFreeScoutingDrawCount(scoutingPendingEffects);
-  const effectiveCapacity = getEffectiveScoutingDrawCapacity(baseCapacity, scoutingPendingEffects);
+  const freeDrawCount = getFreeScoutingDrawCount(scoutingPendingEffects, game.phase);
+  const effectiveCapacity = getEffectiveScoutingDrawCapacity(baseCapacity, scoutingPendingEffects, game.phase);
   const freeDrawEffect = scoutingPendingEffects.find(
     (eff) => eff.effect_type === "free_scouting_draw" && Number((eff.payload as { count?: number }).count ?? 0) > 0,
   );
@@ -748,6 +750,10 @@ export async function buyScoutedPlayerAction(formData: FormData) {
     redirect(`/games/${roomCode}?view=scouting`);
   }
 
+  if (isOffseasonPendingEffectWindow(game.phase)) {
+    await transitionPendingEffectsToOffseason(supabase, gameId);
+  }
+
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
   const [draws, squadCount, buyStaffRows, buyPendingEffects] = await Promise.all([
     getScoutingDraws(supabase, gameId, seasonNumber),
@@ -767,11 +773,13 @@ export async function buyScoutedPlayerAction(formData: FormData) {
 
   const ownDraws = draws.filter((item) => item.club_id === ownClub.id);
   const baseScoutingPrice = Number(draw.player.scouting_price ?? 0);
-  const scoutingPendingEffects = buyPendingEffects.filter((eff) => eff.scope === "current_offseason");
+  const scoutingPendingEffects = buyPendingEffects.filter((eff) =>
+    isOffseasonPendingScopeActive(eff.scope, game.phase),
+  );
   const baseCapacity = await resolveScoutingBaseCapacity(supabase, ownClub, ownDraws.length);
-  const resolveCapacity = getEffectiveScoutingDrawCapacity(baseCapacity, scoutingPendingEffects);
+  const resolveCapacity = getEffectiveScoutingDrawCapacity(baseCapacity, scoutingPendingEffects, game.phase);
 
-  const transfersBlocked = isOffseasonTransfersBlocked(buyPendingEffects);
+  const transfersBlocked = isOffseasonTransfersBlocked(buyPendingEffects, game.phase);
   if (transfersBlocked) {
     redirect(`/games/${roomCode}?view=scouting&scouting_error=transfers_blocked`);
   }
@@ -888,13 +896,19 @@ export async function passScoutedPlayerAction(formData: FormData) {
     redirect(`/games/${roomCode}?view=scouting`);
   }
 
+  if (isOffseasonPendingEffectWindow(game.phase)) {
+    await transitionPendingEffectsToOffseason(supabase, gameId);
+  }
+
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
   const draws = await getScoutingDraws(supabase, gameId, seasonNumber);
   const draw = draws.find((item) => item.id === drawId);
   const ownDraws = draws.filter((item) => item.club_id === ownClub.id);
-  const scoutingPendingEffects = await getActivePendingEffects(supabase, ownClub.id, "current_offseason");
+  const scoutingPendingEffects = (await getActivePendingEffects(supabase, ownClub.id)).filter((eff) =>
+    isOffseasonPendingScopeActive(eff.scope, game.phase),
+  );
   const baseCapacity = await resolveScoutingBaseCapacity(supabase, ownClub, ownDraws.length);
-  const resolveCapacity = getEffectiveScoutingDrawCapacity(baseCapacity, scoutingPendingEffects);
+  const resolveCapacity = getEffectiveScoutingDrawCapacity(baseCapacity, scoutingPendingEffects, game.phase);
   const resolveCheck = canResolveScoutedPlayer({
     drawnCount: ownDraws.length,
     ownClubId: ownClub.id,
@@ -1689,8 +1703,7 @@ export async function advancePhaseAction(formData: FormData) {
     await ensureContinentalTournament(supabase, gameId, Number(game.settings?.seasonNumber ?? 1));
   }
 
-  if (nextPhase === "off_season") {
-    // Promote next_offseason pending effects to current_offseason for the new offseason
+  if (shouldPromoteOffseasonEffectsOnPhaseAdvance(game.phase, nextPhase)) {
     await transitionPendingEffectsToOffseason(supabase, gameId);
     await snapshotOffseasonCapacities(supabase, gameId);
   }

@@ -40,6 +40,7 @@ import {
   getNextPendingScoutingClubId,
   type ScoutingPendingEffect,
 } from "@/lib/lobby/scouting";
+import { computeTrainingExtraPlayers, isOffseasonPendingScopeActive } from "@/lib/lobby/offseason-pending-effects";
 import { getTrainingStatus, parseTrainingEvent } from "@/lib/lobby/training";
 import type { ClubStatus } from "@/lib/game/types";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
@@ -273,7 +274,11 @@ async function getScoutingSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promise
     if (club.offseason_scouting_capacity == null && drawnCount > 0 && baseCapacity > drawnCount) {
       baseCapacity = drawnCount;
     }
-    const capacity = getEffectiveScoutingDrawCapacity(baseCapacity, pendingByClubId.get(club.id) ?? []);
+    const capacity = getEffectiveScoutingDrawCapacity(
+      baseCapacity,
+      pendingByClubId.get(club.id) ?? [],
+      game.phase,
+    );
 
     statusByClubId[club.id] = {
       bought_count: clubDraws.filter((draw) => draw.status === "bought").length,
@@ -930,27 +935,16 @@ async function getClubOverviewSnapshot(
       events: trainingEvents,
       status: (() => {
         const baseCapacity = getTrainingCapacity(club.training_level ?? 1).players;
-        // Add training_capacity_delta from active pending effects so the UI matches the actual bonus
-        let pendingExtra = 0;
-        let doubleTraining = false;
-        for (const eff of pendingEffects) {
-          if (eff.effect_type !== "training_capacity_delta") continue;
-          if (eff.scope !== "current_offseason") continue;
-          const delta = (eff.payload as { delta?: number | string }).delta;
-          if (delta === "double") {
-            doubleTraining = true;
-          } else if (typeof delta === "number") {
-            pendingExtra += delta;
-          }
-        }
-        const effectiveBase = doubleTraining ? baseCapacity * 2 : baseCapacity;
-        const snapshotExtra = club.offseason_training_capacity != null
-          ? Math.max(0, club.offseason_training_capacity - baseCapacity)
-          : (staffRows ?? [])
-              .flatMap((s) => (s.card?.effects ?? []) as Array<Record<string, unknown>>)
-              .filter((e) => e.type === "training_player_bonus")
-              .reduce((sum, e) => sum + Number(e.players ?? 0), 0);
-        const extraPlayers = Math.max(0, effectiveBase - baseCapacity + snapshotExtra + pendingExtra);
+        const offseasonPending = pendingEffects.filter((eff) =>
+          isOffseasonPendingScopeActive(eff.scope, game.phase),
+        );
+        const extraPlayers = computeTrainingExtraPlayers({
+          baseCapacity,
+          offseasonTrainingCapacity: club.offseason_training_capacity ?? null,
+          staffEffects: (staffRows ?? []).flatMap((s) => (s.card?.effects ?? []) as Array<Record<string, unknown>>),
+          pendingEffects: offseasonPending,
+          phase: game.phase,
+        });
         return getTrainingStatus({
           events: trainingEvents,
           trainingLevel: club.training_level ?? 1,

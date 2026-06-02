@@ -1,5 +1,6 @@
 import { getScoutingCapacity, MAX_SQUAD_SIZE } from "@/lib/game/rules";
 import { OFFSEASON_MANAGEMENT_PHASES, isOffseasonManagementPhase } from "@/lib/lobby/phases";
+import { isOffseasonPendingScopeActive } from "@/lib/lobby/offseason-pending-effects";
 import type { LobbyClub, ScoutingDrawSnapshot } from "@/lib/lobby/types";
 
 export const SCOUTING_PILES = [
@@ -46,16 +47,28 @@ export function canDrawScoutingPlayer(params: {
   return { ok: true } as const;
 }
 
-/** Bonus draws from Game Changer cards (current off-season only). */
-export function getFreeScoutingDrawCount(pendingEffects: ScoutingPendingEffect[]) {
+/** Bonus draws from Game Changer cards (active off-season scopes only). */
+export function getFreeScoutingDrawCount(
+  pendingEffects: ScoutingPendingEffect[],
+  phase?: string,
+) {
   return pendingEffects
-    .filter((eff) => !eff.consumed_at && eff.effect_type === "free_scouting_draw" && eff.scope === "current_offseason")
+    .filter(
+      (eff) =>
+        !eff.consumed_at &&
+        eff.effect_type === "free_scouting_draw" &&
+        isOffseasonPendingScopeActive(eff.scope, phase),
+    )
     .reduce((sum, eff) => sum + Math.max(0, Math.trunc(Number(eff.payload.count ?? 0))), 0);
 }
 
 /** Total draws allowed before buy/pass (facility snapshot + free draws). */
-export function getEffectiveScoutingDrawCapacity(baseCapacity: number, pendingEffects: ScoutingPendingEffect[]) {
-  return baseCapacity + getFreeScoutingDrawCount(pendingEffects);
+export function getEffectiveScoutingDrawCapacity(
+  baseCapacity: number,
+  pendingEffects: ScoutingPendingEffect[],
+  phase?: string,
+) {
+  return baseCapacity + getFreeScoutingDrawCount(pendingEffects, phase);
 }
 
 export function canResolveScoutedPlayer(params: {
@@ -70,10 +83,15 @@ export function canResolveScoutedPlayer(params: {
   return { ok: true } as const;
 }
 
-export function isOffseasonTransfersBlocked(pendingEffects: ScoutingPendingEffect[]) {
+export function isOffseasonTransfersBlocked(
+  pendingEffects: ScoutingPendingEffect[],
+  phase?: string,
+) {
   return pendingEffects.some((eff) => {
     if (eff.consumed_at) return false;
-    if (eff.effect_type !== "offseason_lock" || eff.scope !== "current_offseason") return false;
+    if (eff.effect_type !== "offseason_lock" || !isOffseasonPendingScopeActive(eff.scope, phase)) {
+      return false;
+    }
     const blocks = (eff.payload.blocks as string[] | undefined) ?? [];
     return blocks.includes("transfers");
   });

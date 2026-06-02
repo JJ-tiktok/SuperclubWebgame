@@ -1350,7 +1350,7 @@ function ScoutingDrawsPanel({
                     playerPrice: purchasePrice,
                     scoutingCapacity: ownStatus.capacity,
                     squadSize: overview.squad.length,
-                    transfersBlocked: isOffseasonTransfersBlocked(pendingEffects, game.phase),
+                    transfersBlocked: isOffseasonTransfersBlocked(pendingEffects, snapshot.game.phase),
                   });
                   const resolveCheck = canResolveScoutedPlayer({
                     drawnCount: ownDraws.length,

@@ -91,15 +91,25 @@ import {
   normalizeTransferCashAmount,
 } from "@/lib/lobby/transfers";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
-import type { DraftPickSnapshot, DraftPlayerRow, LobbyClub, LobbyGame, LobbyPhase, ScoutingDrawSnapshot } from "@/lib/lobby/types";
+import type { DraftPickSnapshot, DraftPlayerRow, GameEventType, LobbyClub, LobbyGame, LobbyPhase, ScoutingDrawSnapshot } from "@/lib/lobby/types";
 
 export async function setReadyFromDashboardAction(formData: FormData) {
+  const { userId } = await auth();
   const gameId = String(formData.get("game_id") || "");
   const roomCode = String(formData.get("room_code") || "");
   const ready = String(formData.get("ready") || "") === "true";
+  const supabase = createSupabaseServiceClient();
 
   if (gameId && roomCode) {
-    await setReadyAction(gameId, ready);
+    const result = await setReadyAction(gameId, ready);
+    if (result.ok && userId && supabase) {
+      await emitGameEvent(supabase, {
+        actorClerkUserId: userId,
+        gameId,
+        payload: { clerkUserId: userId, ready },
+        type: "MEMBER_READY_CHANGED",
+      });
+    }
     revalidatePath(`/games/${roomCode}`);
   }
 
@@ -107,11 +117,21 @@ export async function setReadyFromDashboardAction(formData: FormData) {
 }
 
 export async function startGameFromDashboardAction(formData: FormData) {
+  const { userId } = await auth();
   const gameId = String(formData.get("game_id") || "");
   const roomCode = String(formData.get("room_code") || "");
+  const supabase = createSupabaseServiceClient();
 
   if (gameId && roomCode) {
-    await startGameAction(gameId);
+    const result = await startGameAction(gameId);
+    if (result.ok && userId && supabase) {
+      await emitGameEvent(supabase, {
+        actorClerkUserId: userId,
+        gameId,
+        payload: { phase: "draft" },
+        type: "PHASE_CHANGED",
+      });
+    }
     revalidatePath(`/games/${roomCode}`);
   }
 
@@ -412,6 +432,22 @@ export async function makeDraftPickAction(formData: FormData) {
       throw turnError;
     }
   }
+
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: {
+      clubId: ownClub.id,
+      nextClubId: roundComplete ? null : draftRound.pick_order_club_ids[nextPicks.length] ?? null,
+      pickIndex: nextPicks.at(-1)?.pickIndex ?? picks.length,
+      pickedAt: nextPicks.at(-1)?.pickedAt,
+      playerId,
+      roundComplete,
+      roundId: draftRound.id,
+      squadCount: nextSquadCounts.get(ownClub.id) ?? 0,
+    },
+    type: "DRAFT_PICK_MADE",
+  });
 
   revalidatePath(`/games/${roomCode}`);
   redirect(`/games/${roomCode}?view=draft`);
@@ -762,6 +798,18 @@ export async function drawScoutingPlayerAction(formData: FormData) {
   }
 
   await touchGameSave(supabase, gameId, userId);
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: {
+      clubId: ownClub.id,
+      drawIndex: ownDraws.length,
+      pileKey,
+      playerId: selectedPlayer.id,
+      seasonNumber,
+    },
+    type: "SCOUTING_CARD_DRAWN",
+  });
   revalidatePath(`/games/${roomCode}`);
   redirect(`/games/${roomCode}?view=scouting`);
 }
@@ -908,6 +956,18 @@ export async function buyScoutedPlayerAction(formData: FormData) {
   }
 
   await touchGameSave(supabase, gameId, userId);
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: {
+      clubId: ownClub.id,
+      drawId: draw.id,
+      playerId: draw.player_id,
+      price,
+      seasonNumber,
+    },
+    type: "SCOUTING_CARD_BOUGHT",
+  });
   revalidatePath(`/games/${roomCode}`);
   redirect(`/games/${roomCode}?view=scouting`);
 }
@@ -1616,6 +1676,20 @@ export async function placeDeadlineBidAction(formData: FormData) {
     await touchGameSave(supabase, gameId, userId);
   }
 
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: {
+      amount: bidCheck.normalizedAmount,
+      auctionId: auction.id,
+      clubId: ownClub.id,
+      nextClubId,
+      status: nextClubId ? "open" : "resolving",
+      turnStartedAt: nextClubId ? new Date().toISOString() : null,
+    },
+    type: "AUCTION_BID_PLACED",
+  });
+
   revalidatePath(`/games/${roomCode}`);
   redirect(`/games/${roomCode}?view=deadline`);
 }
@@ -1776,6 +1850,19 @@ export async function saveLineupAction(formData: FormData) {
   }
 
   await touchGameSave(supabase, gameId, userId);
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: {
+      assignments: submitted.map((item) => ({
+        clubPlayerId: item.club_player_id,
+        slot: item.slot,
+        zone: item.zone,
+      })),
+      clubId: ownClub.id,
+    },
+    type: "LINEUP_SAVED",
+  });
   revalidatePath(`/games/${roomCode}`);
   redirect(`/games/${roomCode}?view=lineup`);
 }
@@ -1870,6 +1957,17 @@ export async function lockFixtureLineupAction(formData: FormData) {
   }
 
   await touchGameSave(supabase, gameId, userId);
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: {
+      clubId: ownClub.id,
+      fixtureId,
+      powers,
+      side,
+    },
+    type: "LINEUP_LOCKED",
+  });
   revalidatePath(`/games/${roomCode}`);
   redirect(`/games/${roomCode}?view=matchday`);
 }
@@ -1916,6 +2014,12 @@ export async function resolveFixtureAction(formData: FormData) {
   });
 
   await autoSimulateCpuOnlyFixtures(supabase, gameId, game, userId);
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: { fixtureId },
+    type: "MATCH_SIMULATED",
+  });
 
   revalidatePath(`/games/${roomCode}`);
   redirect(`/games/${roomCode}?view=matchday`);
@@ -1975,6 +2079,12 @@ export async function setPhaseDoneAction(formData: FormData) {
     throw error;
   }
 
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: { clerkUserId: userId, phaseDone: done },
+    type: "MEMBER_READY_CHANGED",
+  });
   revalidatePath(`/games/${roomCode}`);
   redirect(`/games/${roomCode}`);
 }
@@ -2149,6 +2259,16 @@ export async function advancePhaseAction(formData: FormData) {
     await autoSimulateCpuOnlyFixtures(supabase, gameId, { ...game, phase: nextPhase, room_code: roomCode }, userId);
   }
 
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: {
+      currentTurnClubId: nextTurnClubId,
+      phase: nextPhase,
+      previousPhase: game.phase,
+    },
+    type: "PHASE_CHANGED",
+  });
   revalidatePath(`/games/${roomCode}`);
   redirect(`/games/${roomCode}`);
 }
@@ -4731,6 +4851,15 @@ async function resolveDeadlineAuction(supabase: SupabaseServiceClient, auctionId
     await markDeadlineAuctionPassed(supabase, auction.id, auction.passed_club_ids ?? []);
     await openNextDeadlineAuction(supabase, gameId, Number(auction.season_number ?? 1));
     await touchGameSave(supabase, gameId, userId);
+    await emitGameEvent(supabase, {
+      actorClerkUserId: userId,
+      gameId,
+      payload: {
+        auctionId: auction.id,
+        status: "passed",
+      },
+      type: "AUCTION_CLOSED",
+    });
     return;
   }
 
@@ -4748,6 +4877,15 @@ async function resolveDeadlineAuction(supabase: SupabaseServiceClient, auctionId
     await markDeadlineAuctionPassed(supabase, auction.id, auction.passed_club_ids ?? []);
     await openNextDeadlineAuction(supabase, gameId, Number(auction.season_number ?? 1));
     await touchGameSave(supabase, gameId, userId);
+    await emitGameEvent(supabase, {
+      actorClerkUserId: userId,
+      gameId,
+      payload: {
+        auctionId: auction.id,
+        status: "passed",
+      },
+      type: "AUCTION_CLOSED",
+    });
     return;
   }
 
@@ -4827,6 +4965,18 @@ async function resolveDeadlineAuction(supabase: SupabaseServiceClient, auctionId
 
   await openNextDeadlineAuction(supabase, gameId, Number(auction.season_number ?? 1));
   await touchGameSave(supabase, gameId, userId);
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: {
+      amount: winningAmount,
+      auctionId: auction.id,
+      playerId: auction.player_id,
+      status: "resolved",
+      winningClubId: auction.winning_club_id,
+    },
+    type: "AUCTION_CLOSED",
+  });
 }
 
 async function markDeadlineAuctionPassed(supabase: SupabaseServiceClient, auctionId: string, passedClubIds: string[]) {
@@ -4907,6 +5057,27 @@ async function touchGameSave(supabase: SupabaseServiceClient, gameId: string, us
 }
 
 // ─── Staff Recruitment ────────────────────────────────────────────────────────
+
+async function emitGameEvent(
+  supabase: SupabaseServiceClient,
+  params: {
+    actorClerkUserId?: string | null;
+    gameId: string;
+    payload?: Record<string, unknown>;
+    type: GameEventType;
+  },
+) {
+  const { error } = await supabase.rpc("append_game_event", {
+    p_actor_clerk_user_id: params.actorClerkUserId ?? null,
+    p_game_id: params.gameId,
+    p_payload: params.payload ?? {},
+    p_type: params.type,
+  });
+
+  if (error) {
+    throw error;
+  }
+}
 
 export async function recruitStaffOpenAction(formData: FormData) {
   const { userId } = await auth();

@@ -48,8 +48,9 @@ import { getTrainingStatus, parseTrainingEvent } from "@/lib/lobby/training";
 import type { ClubStatus } from "@/lib/game/types";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
 
-const GAME_SELECT =
+const GAME_SELECT_LEGACY =
   "id, room_code, phase, host_clerk_user_id, current_turn_club_id, settings, save_name, save_status, save_version, last_saved_at, last_saved_by_clerk_user_id, created_at, updated_at";
+const GAME_SELECT = `${GAME_SELECT_LEGACY}, live_seq`;
 
 const CLUB_SELECT_LEGACY =
   "id, game_id, clerk_user_id, club_template_id, club_name, club_slogan, club_color, manager_name, money, points, season_rank, status, stadium_level, scouting_level, training_level, offseason_scouting_capacity, offseason_training_capacity, supercup_cards, captain_boost_rank, is_ready, image_url, created_at";
@@ -86,11 +87,20 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
   }
 
   const roomCode = normalizeRoomCode(roomCodeParam);
-  const { data: game, error: gameError } = await supabase
+  const gameResult = await supabase
     .from("games")
     .select(GAME_SELECT)
     .eq("room_code", roomCode)
     .maybeSingle<LobbyGame>();
+  const fallbackGameResult = isUndefinedColumnError(gameResult.error)
+    ? await supabase
+        .from("games")
+        .select(GAME_SELECT_LEGACY)
+        .eq("room_code", roomCode)
+        .maybeSingle<LobbyGame>()
+    : gameResult;
+  const game = fallbackGameResult.data ? { ...fallbackGameResult.data, live_seq: fallbackGameResult.data.live_seq ?? 0 } : null;
+  const gameError = fallbackGameResult.error;
 
   if (gameError) {
     throw gameError;

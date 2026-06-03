@@ -43,6 +43,7 @@ create table public.games (
   save_name text not null default 'Superclub Spielstand',
   save_status text not null default 'active' check (save_status in ('active', 'paused', 'completed')),
   save_version int not null default 1 check (save_version > 0),
+  live_seq bigint not null default 0,
   last_saved_at timestamptz not null default now(),
   last_saved_by_clerk_user_id text,
   created_at timestamptz not null default now(),
@@ -61,6 +62,20 @@ create table public.game_members (
   joined_at timestamptz not null default now(),
   unique (game_id, clerk_user_id)
 );
+
+create table public.game_events (
+  id uuid primary key default gen_random_uuid(),
+  game_id uuid not null references public.games(id) on delete cascade,
+  seq bigint not null,
+  type text not null,
+  actor_clerk_user_id text,
+  payload jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  unique (game_id, seq)
+);
+
+create index game_events_game_seq_idx
+on public.game_events (game_id, seq);
 
 create table public.club_templates (
   id text primary key,
@@ -638,8 +653,44 @@ as $$
   );
 $$;
 
+create or replace function public.append_game_event(
+  p_game_id uuid,
+  p_type text,
+  p_actor_clerk_user_id text default null,
+  p_payload jsonb default '{}'::jsonb
+)
+returns public.game_events
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_seq bigint;
+  v_event public.game_events;
+begin
+  update public.games
+  set live_seq = live_seq + 1
+  where id = p_game_id
+  returning live_seq into v_seq;
+
+  if v_seq is null then
+    raise exception 'Game % not found', p_game_id;
+  end if;
+
+  insert into public.game_events (game_id, seq, type, actor_clerk_user_id, payload)
+  values (p_game_id, v_seq, p_type, p_actor_clerk_user_id, coalesce(p_payload, '{}'::jsonb))
+  returning * into v_event;
+
+  return v_event;
+end;
+$$;
+
+revoke all on function public.append_game_event(uuid, text, text, jsonb) from public, anon, authenticated;
+grant execute on function public.append_game_event(uuid, text, text, jsonb) to service_role;
+
 alter table public.games enable row level security;
 alter table public.game_members enable row level security;
+alter table public.game_events enable row level security;
 alter table public.club_templates enable row level security;
 alter table public.clubs enable row level security;
 alter table public.players enable row level security;
@@ -714,6 +765,11 @@ on public.game_members for update
 to authenticated
 using (clerk_user_id = public.requesting_clerk_user_id())
 with check (clerk_user_id = public.requesting_clerk_user_id());
+
+create policy "members can read game events"
+on public.game_events for select
+to authenticated
+using (public.is_game_member(game_id));
 
 create policy "authenticated users can read club templates"
 on public.club_templates for select
@@ -1465,6 +1521,7 @@ on conflict (content_key) do update
 grant usage on schema public to authenticated;
 grant select, insert, update on public.games to authenticated;
 grant select, insert, update on public.game_members to authenticated;
+grant select on public.game_events to authenticated;
 grant select on public.club_templates to authenticated;
 grant select, insert, update on public.clubs to authenticated;
 grant select on public.players, public.decks, public.club_players, public.draft_rounds, public.scouting_draws to authenticated;
@@ -1507,6 +1564,15 @@ begin
       and tablename = 'game_members'
   ) then
     alter publication supabase_realtime add table public.game_members;
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'game_events'
+  ) then
+    alter publication supabase_realtime add table public.game_events;
   end if;
 
   if not exists (

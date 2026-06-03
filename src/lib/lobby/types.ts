@@ -42,6 +42,7 @@ export type LobbyGame = {
   host_clerk_user_id: string;
   current_turn_club_id?: string | null;
   settings: LobbySettings;
+  live_seq?: number;
   save_name?: string | null;
   save_status?: "active" | "paused" | "completed";
   save_version?: number;
@@ -337,6 +338,30 @@ export type TrainingStatusSnapshot = {
   guaranteed_bonus_used: boolean;
   max_gain_per_player: number;
   training_level: number;
+};
+
+export type GameEventType =
+  | "MEMBER_READY_CHANGED"
+  | "CLUB_SELECTED"
+  | "DRAFT_PICK_MADE"
+  | "SCOUTING_CARD_DRAWN"
+  | "SCOUTING_CARD_BOUGHT"
+  | "AUCTION_BID_PLACED"
+  | "AUCTION_CLOSED"
+  | "LINEUP_SAVED"
+  | "LINEUP_LOCKED"
+  | "MATCH_SIMULATED"
+  | "PHASE_CHANGED"
+  | "SAVE_UPDATED";
+
+export type GameEventSnapshot = {
+  actor_clerk_user_id?: string | null;
+  created_at: string;
+  game_id: string;
+  id: string;
+  payload: Record<string, unknown>;
+  seq: number;
+  type: GameEventType;
 };
 
 export type TransferOfferStatus = "accepted" | "cancelled" | "declined" | "expired" | "open";

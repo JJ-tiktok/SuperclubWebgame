@@ -36,7 +36,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import type { CSSProperties, ReactNode } from "react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   advancePhaseAction,
   deleteGameAction,
@@ -113,7 +113,8 @@ import { GameChangerChoiceModal } from "@/components/game/game-changer-choice-mo
 import { GameChangerPopup } from "@/components/game/game-changer-popup";
 import { GameEventsDock } from "@/components/game/game-events-dock";
 import { GameLineupBoard } from "@/components/game/game-lineup-board";
-import { GameRealtimeRefresh } from "@/components/game/game-realtime-refresh";
+import { GameRealtimeBridge } from "@/components/game/game-realtime-bridge";
+import { hydrateGameStore, useGameStore } from "@/components/game/game-store";
 import { CaptainPanel } from "@/components/game/captain-panel";
 import { AfterMatchCards, MatchCardsPanel } from "@/components/game/match-cards-panel";
 import { DrawnGameChangersList, PendingEffectsList } from "@/components/game/pending-effects-list";
@@ -187,7 +188,19 @@ const phaseMenu: Array<{ id: GameView; label: string; icon: typeof Home; phases:
   { id: "continental", label: "Continental Cup", icon: Trophy, phases: ["champions_league"] },
 ];
 
-export function GameDashboard({ activeView, currentUserId, snapshot }: GameDashboardProps) {
+export function GameDashboard(props: GameDashboardProps) {
+  const storeSnapshot = useGameStore((state) => state.snapshot);
+
+  useEffect(() => {
+    hydrateGameStore(props.snapshot);
+  }, [props.snapshot]);
+
+  const snapshot = storeSnapshot?.game.id === props.snapshot.game.id ? storeSnapshot : props.snapshot;
+
+  return <GameDashboardContent {...props} snapshot={snapshot} />;
+}
+
+function GameDashboardContent({ activeView, currentUserId, snapshot }: GameDashboardProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const view = normalizeView(activeView);
   const ownClub = snapshot.clubs.find((club) => club.clerk_user_id === currentUserId);
@@ -217,7 +230,7 @@ export function GameDashboard({ activeView, currentUserId, snapshot }: GameDashb
         } as CSSProperties
       }
     >
-      <GameRealtimeRefresh gameId={snapshot.game.id} />
+      <GameRealtimeBridge currentUserId={currentUserId} currentView={view} snapshot={snapshot} />
       <GameChangerPopup
         clubs={snapshot.clubs}
         gameId={snapshot.game.id}

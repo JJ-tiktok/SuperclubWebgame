@@ -53,6 +53,7 @@ export function GameRealtimeRefresh({ gameId }: { gameId: string }) {
         .on("postgres_changes", { event: "*", schema: "public", table: "club_players" }, refresh)
         .on("postgres_changes", { event: "*", schema: "public", table: "club_staff" }, refresh)
         .on("postgres_changes", { event: "*", schema: "public", table: "staff_offers" }, refresh)
+        .on("postgres_changes", { event: "*", schema: "public", table: "transfer_offers" }, refresh)
         .on("postgres_changes", { event: "*", schema: "public", table: "investments", filter: `game_id=eq.${gameId}` }, refresh)
         .on("postgres_changes", { event: "*", schema: "public", table: "club_game_changers" }, refresh)
         .on("postgres_changes", { event: "*", schema: "public", table: "match_news", filter: `game_id=eq.${gameId}` }, refresh)

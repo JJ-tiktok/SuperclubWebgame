@@ -50,12 +50,10 @@ import {
   buildZoneModifiers,
   effectToPendingScope,
   enqueuePendingEffect,
-  injuryDurationMatchday,
   mergeModifiersIntoPartialResult,
   parseEffects,
   pickWeightedIndex,
   rollRetroWin,
-  selectInjuryTarget,
   type GameChangerEffect,
   type ImmediateContext,
   type InjuryCandidate,
@@ -63,6 +61,7 @@ import {
   type PartialResult,
   type PendingChoice,
 } from "@/lib/game/game-changer-effects";
+import { dispatchGameChangerEffects } from "@/lib/game/dispatch-game-changer-effects";
 import type { GameChangerCategory } from "@/lib/lobby/types";
 import {
   canBuyScoutedPlayer,
@@ -86,6 +85,11 @@ import {
   resolveTrainingAttempt,
   type TrainingEventMetadata,
 } from "@/lib/lobby/training";
+import {
+  canAcceptTransferOffer,
+  canCreateTransferOffer,
+  normalizeTransferCashAmount,
+} from "@/lib/lobby/transfers";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
 import type { DraftPickSnapshot, DraftPlayerRow, LobbyClub, LobbyGame, LobbyPhase, ScoutingDrawSnapshot } from "@/lib/lobby/types";
 
@@ -1095,6 +1099,375 @@ export async function sellClubPlayerAction(formData: FormData) {
   redirect(`/games/${roomCode}?view=${returnView}`);
 }
 
+export async function createTransferOfferAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const targetClubPlayerId = String(formData.get("target_club_player_id") || "");
+  const offeredClubPlayerIdRaw = String(formData.get("offered_club_player_id") || "");
+  const offeredClubPlayerId = offeredClubPlayerIdRaw === "none" ? "" : offeredClubPlayerIdRaw;
+  const cashAmount = normalizeTransferCashAmount(Number(formData.get("cash_amount_millions") || 0) * 1_000_000);
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !targetClubPlayerId || !supabase) {
+    redirect(`/games/${roomCode}?view=transfer`);
+  }
+
+  const [{ game, ownClub }, { data: target, error: targetError }] = await Promise.all([
+    getGameClubContext(supabase, gameId, userId),
+    supabase
+      .from("club_players")
+      .select("id, club_id, player_id, club:clubs!inner(id, game_id, clerk_user_id)")
+      .eq("id", targetClubPlayerId)
+      .single<{
+        club: { game_id: string; id: string; clerk_user_id: string };
+        club_id: string;
+        id: string;
+        player_id: string;
+      }>(),
+  ]);
+
+  if (targetError) {
+    throw targetError;
+  }
+
+  if (target.club.game_id !== gameId) {
+    redirect(`/games/${roomCode}?view=transfer`);
+  }
+
+  let offeredPlayerId: string | null = null;
+  if (offeredClubPlayerId) {
+    const { data: offered, error: offeredError } = await supabase
+      .from("club_players")
+      .select("id, club_id, player_id")
+      .eq("id", offeredClubPlayerId)
+      .single<{ club_id: string; id: string; player_id: string }>();
+
+    if (offeredError) {
+      throw offeredError;
+    }
+
+    if (offered.club_id !== ownClub.id) {
+      redirect(`/games/${roomCode}?view=transfer`);
+    }
+
+    offeredPlayerId = offered.player_id;
+  }
+
+  const transfersBlocked =
+    (await isClubTransferBlocked(supabase, ownClub.id, game.phase)) ||
+    (await isClubTransferBlocked(supabase, target.club_id, game.phase));
+  const offerCheck = canCreateTransferOffer({
+    cashAmount,
+    hasOfferedPlayer: Boolean(offeredClubPlayerId),
+    isOffseason: isOffseasonPhase(game.phase),
+    targetOwnClub: target.club_id === ownClub.id,
+    transfersBlocked,
+  });
+
+  if (!offerCheck.ok) {
+    redirect(`/games/${roomCode}?view=transfer`);
+  }
+
+  const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
+  const [{ data: existingTargetOffers, error: existingTargetError }, offeredConflictResult] = await Promise.all([
+    supabase
+      .from("transfer_offers")
+      .select("id")
+      .eq("from_club_id", ownClub.id)
+      .eq("target_club_player_id", target.id)
+      .eq("status", "open")
+      .limit(1)
+      .returns<Array<{ id: string }>>(),
+    offeredClubPlayerId
+      ? supabase
+          .from("transfer_offers")
+          .select("id")
+          .eq("offered_club_player_id", offeredClubPlayerId)
+          .eq("status", "open")
+          .limit(1)
+          .returns<Array<{ id: string }>>()
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+
+  if (existingTargetError) {
+    throw existingTargetError;
+  }
+
+  if (offeredConflictResult.error) {
+    throw offeredConflictResult.error;
+  }
+
+  if (existingTargetOffers?.length || offeredConflictResult.data?.length) {
+    redirect(`/games/${roomCode}?view=transfer`);
+  }
+
+  const { error: insertError } = await supabase.from("transfer_offers").insert({
+    cash_amount: cashAmount,
+    from_club_id: ownClub.id,
+    game_id: gameId,
+    offered_club_player_id: offeredClubPlayerId || null,
+    offered_player_id: offeredPlayerId,
+    season_number: seasonNumber,
+    target_club_player_id: target.id,
+    target_player_id: target.player_id,
+    to_club_id: target.club_id,
+  });
+
+  if (insertError) {
+    throw insertError;
+  }
+
+  await touchGameSave(supabase, gameId, userId);
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=transfer`);
+}
+
+export async function acceptTransferOfferAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const offerId = String(formData.get("offer_id") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !offerId || !supabase) {
+    redirect(`/games/${roomCode}?view=transfer`);
+  }
+
+  const [{ game, ownClub }, offer] = await Promise.all([
+    getGameClubContext(supabase, gameId, userId),
+    getTransferOfferForAction(supabase, offerId, gameId),
+  ]);
+
+  if (!offer || offer.status !== "open" || offer.to_club_id !== ownClub.id) {
+    redirect(`/games/${roomCode}?view=transfer`);
+  }
+
+  const [
+    { data: clubs, error: clubsError },
+    { data: targetPlayer, error: targetPlayerError },
+    offeredPlayerResult,
+    buyerSquadSize,
+    sellerSquadSize,
+    buyerDepartureCount,
+    sellerDepartureCount,
+  ] = await Promise.all([
+    supabase
+      .from("clubs")
+      .select("id, money")
+      .in("id", [offer.from_club_id, offer.to_club_id])
+      .returns<Array<{ id: string; money: number | string }>>(),
+    supabase
+      .from("club_players")
+      .select("id, club_id, player_id")
+      .eq("id", offer.target_club_player_id)
+      .maybeSingle<{ club_id: string; id: string; player_id: string }>(),
+    offer.offered_club_player_id
+      ? supabase
+          .from("club_players")
+          .select("id, club_id, player_id")
+          .eq("id", offer.offered_club_player_id)
+          .maybeSingle<{ club_id: string; id: string; player_id: string }>()
+      : Promise.resolve({ data: null, error: null }),
+    getClubSquadCount(supabase, offer.from_club_id),
+    getClubSquadCount(supabase, offer.to_club_id),
+    getManagerTransferDepartureCount(supabase, gameId, offer.from_club_id, offer.season_number),
+    getManagerTransferDepartureCount(supabase, gameId, offer.to_club_id, offer.season_number),
+  ]);
+
+  if (clubsError) throw clubsError;
+  if (targetPlayerError) throw targetPlayerError;
+  if (offeredPlayerResult.error) throw offeredPlayerResult.error;
+
+  if (!targetPlayer || targetPlayer.club_id !== offer.to_club_id) {
+    await expireTransferOffer(supabase, offer.id);
+    redirect(`/games/${roomCode}?view=transfer`);
+  }
+
+  if (offer.offered_club_player_id && (!offeredPlayerResult.data || offeredPlayerResult.data.club_id !== offer.from_club_id)) {
+    await expireTransferOffer(supabase, offer.id);
+    redirect(`/games/${roomCode}?view=transfer`);
+  }
+
+  const buyer = clubs?.find((club) => club.id === offer.from_club_id);
+  const seller = clubs?.find((club) => club.id === offer.to_club_id);
+
+  if (!buyer || !seller) {
+    redirect(`/games/${roomCode}?view=transfer`);
+  }
+
+  const transfersBlocked =
+    (await isClubTransferBlocked(supabase, offer.from_club_id, game.phase)) ||
+    (await isClubTransferBlocked(supabase, offer.to_club_id, game.phase));
+  const acceptCheck = canAcceptTransferOffer({
+    buyerDepartureCount,
+    buyerGivesPlayer: Boolean(offer.offered_club_player_id),
+    buyerMoney: Number(buyer.money),
+    buyerSquadSize,
+    cashAmount: Number(offer.cash_amount),
+    isOffseason: isOffseasonPhase(game.phase),
+    sellerDepartureCount,
+    sellerSquadSize,
+    transfersBlocked,
+  });
+
+  if (!acceptCheck.ok) {
+    redirect(`/games/${roomCode}?view=transfer`);
+  }
+
+  const now = new Date().toISOString();
+  const movedClubPlayerIds = [offer.target_club_player_id, offer.offered_club_player_id].filter((id): id is string => Boolean(id));
+  const mutationResults = await Promise.all([
+    supabase.from("clubs").update({ money: Number(buyer.money) - Number(offer.cash_amount) }).eq("id", offer.from_club_id),
+    supabase.from("clubs").update({ money: Number(seller.money) + Number(offer.cash_amount) }).eq("id", offer.to_club_id),
+    supabase
+      .from("clubs")
+      .update({ captain_club_player_id: null })
+      .eq("id", offer.to_club_id)
+      .eq("captain_club_player_id", offer.target_club_player_id),
+    offer.offered_club_player_id
+      ? supabase
+          .from("clubs")
+          .update({ captain_club_player_id: null })
+          .eq("id", offer.from_club_id)
+          .eq("captain_club_player_id", offer.offered_club_player_id)
+      : Promise.resolve({ error: null }),
+    supabase
+      .from("club_players")
+      .update({
+        acquired_at: now,
+        club_id: offer.from_club_id,
+        current_zone: "bench",
+        lineup_slot: null,
+      })
+      .eq("id", offer.target_club_player_id)
+      .eq("club_id", offer.to_club_id),
+    offer.offered_club_player_id
+      ? supabase
+          .from("club_players")
+          .update({
+            acquired_at: now,
+            club_id: offer.to_club_id,
+            current_zone: "bench",
+            lineup_slot: null,
+          })
+          .eq("id", offer.offered_club_player_id)
+          .eq("club_id", offer.from_club_id)
+      : Promise.resolve({ error: null }),
+    supabase
+      .from("transfer_offers")
+      .update({ resolved_at: now, status: "accepted" })
+      .eq("id", offer.id)
+      .eq("status", "open"),
+  ]);
+  const mutationError = mutationResults.find((result) => result.error)?.error;
+  if (mutationError) {
+    throw mutationError;
+  }
+
+  await expireCompetingTransferOffers(supabase, {
+    acceptedOfferId: offer.id,
+    clubPlayerIds: movedClubPlayerIds,
+    gameId,
+    seasonNumber: offer.season_number,
+  });
+
+  const transactionRows = [
+    {
+      amount: -Number(offer.cash_amount),
+      club_id: offer.from_club_id,
+      game_id: gameId,
+      metadata: buildManagerTransferMetadata(offer, "buyer"),
+      reason: "manager_transfer",
+    },
+    {
+      amount: Number(offer.cash_amount),
+      club_id: offer.to_club_id,
+      game_id: gameId,
+      metadata: buildManagerTransferMetadata(offer, "seller"),
+      reason: "manager_transfer",
+    },
+  ];
+  const { error: transactionError } = await supabase.from("transactions").insert(transactionRows);
+  if (transactionError) {
+    throw transactionError;
+  }
+
+  await touchGameSave(supabase, gameId, userId);
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=transfer`);
+}
+
+export async function declineTransferOfferAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const offerId = String(formData.get("offer_id") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !offerId || !supabase) {
+    redirect(`/games/${roomCode}?view=transfer`);
+  }
+
+  const [{ ownClub }, offer] = await Promise.all([
+    getGameClubContext(supabase, gameId, userId),
+    getTransferOfferForAction(supabase, offerId, gameId),
+  ]);
+
+  if (!offer || offer.to_club_id !== ownClub.id || offer.status !== "open") {
+    redirect(`/games/${roomCode}?view=transfer`);
+  }
+
+  const { error } = await supabase
+    .from("transfer_offers")
+    .update({ resolved_at: new Date().toISOString(), status: "declined" })
+    .eq("id", offer.id)
+    .eq("status", "open");
+
+  if (error) {
+    throw error;
+  }
+
+  await touchGameSave(supabase, gameId, userId);
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=transfer`);
+}
+
+export async function cancelTransferOfferAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const offerId = String(formData.get("offer_id") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !offerId || !supabase) {
+    redirect(`/games/${roomCode}?view=transfer`);
+  }
+
+  const [{ ownClub }, offer] = await Promise.all([
+    getGameClubContext(supabase, gameId, userId),
+    getTransferOfferForAction(supabase, offerId, gameId),
+  ]);
+
+  if (!offer || offer.from_club_id !== ownClub.id || offer.status !== "open") {
+    redirect(`/games/${roomCode}?view=transfer`);
+  }
+
+  const { error } = await supabase
+    .from("transfer_offers")
+    .update({ resolved_at: new Date().toISOString(), status: "cancelled" })
+    .eq("id", offer.id)
+    .eq("status", "open");
+
+  if (error) {
+    throw error;
+  }
+
+  await touchGameSave(supabase, gameId, userId);
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=transfer`);
+}
+
 export async function initializeDeadlineDayAction(formData: FormData) {
   const { userId } = await auth();
   const gameId = String(formData.get("game_id") || "");
@@ -1729,6 +2102,10 @@ export async function advancePhaseAction(formData: FormData) {
 
   if (nextPhase === "champions_league") {
     await ensureContinentalTournament(supabase, gameId, Number(game.settings?.seasonNumber ?? 1));
+  }
+
+  if (nextPhase === "season" || nextPhase === "prematch" || nextPhase === "match") {
+    await expireOpenTransferOffers(supabase, gameId, Number(game.settings?.seasonNumber ?? 1));
   }
 
   if (shouldPromoteOffseasonEffectsOnPhaseAdvance(game.phase, nextPhase)) {
@@ -2465,121 +2842,6 @@ async function assignRandomGameChanger(
   }
 
   return { card, clubGameChangerId: inserted?.id ?? null };
-}
-
-/**
- * Loads injury candidates (non-bench, non-injured) for a club so we can apply
- * targeted_injury cards. Returns at most a few hundred rows.
- */
-async function loadInjuryCandidates(
-  supabase: SupabaseServiceClient,
-  clubId: string,
-): Promise<InjuryCandidate[]> {
-  const { data } = await supabase
-    .from("club_players")
-    .select("id, current_stars, current_zone, injured, player:players(display_name, position)")
-    .eq("club_id", clubId)
-    .eq("injured", false)
-    .returns<Array<{ id: string; current_stars: number | string; current_zone: string; injured: boolean; player: { display_name: string; position: string | null } | null }>>();
-  return (data ?? []).map((row) => ({
-    id: row.id,
-    current_stars: Number(row.current_stars),
-    current_zone: row.current_zone,
-    position: row.player?.position ?? null,
-    display_name: row.player?.display_name ?? "Spieler",
-  }));
-}
-
-async function applyTargetedInjury(
-  supabase: SupabaseServiceClient,
-  clubId: string,
-  effect: Extract<GameChangerEffect, { type: "targeted_injury" }>,
-  ctx: { matchday: number },
-): Promise<{ applied: boolean; detail?: string; clubPlayerId?: string }> {
-  const candidates = await loadInjuryCandidates(supabase, clubId);
-  const target = selectInjuryTarget(effect, candidates);
-  if (!target) return { applied: false };
-  const until = injuryDurationMatchday(effect, ctx.matchday);
-  await supabase
-    .from("club_players")
-    .update({ injured: true, injured_until_matchday: until })
-    .eq("id", target.id);
-  const durationLabel = effect.duration === "season" ? "Rest der Saison" : "naechstes Spiel";
-  return { applied: true, detail: `${target.display_name} verletzt (${durationLabel})`, clubPlayerId: target.id };
-}
-
-/**
- * Central dispatcher for a newly drawn Good/Bad News card. Decides per effect:
- *   - persistent  -> insert into club_pending_effects
- *   - choice      -> set club_game_changers.status='pending' with choice_payload
- *   - immediate   -> apply now (money_change, status_tier_change, etc.)
- *   - targeted_injury -> resolve via selector, apply injury, no choice
- */
-async function dispatchGameChangerEffects(params: {
-  supabase: SupabaseServiceClient;
-  clubId: string;
-  clubGameChangerId: string | null;
-  effects: GameChangerEffect[];
-  ctx: ImmediateContext & { matchday: number };
-}): Promise<{ status: "resolved" | "pending"; choice: PendingChoice | null; details: string[] }> {
-  const { supabase, clubId, clubGameChangerId, effects, ctx } = params;
-  const details: string[] = [];
-  let pendingChoice: PendingChoice | null = null;
-  let pendingChoiceEffectIdx = -1;
-
-  // Find first effect that requires a player/zone choice. Only one choice per card.
-  for (let i = 0; i < effects.length; i++) {
-    const choice = buildPendingChoice(effects[i]);
-    if (choice) {
-      pendingChoice = choice;
-      pendingChoiceEffectIdx = i;
-      break;
-    }
-  }
-
-  for (let i = 0; i < effects.length; i++) {
-    if (i === pendingChoiceEffectIdx) continue;
-    const effect = effects[i];
-
-    if (effect.type === "targeted_injury") {
-      const result = await applyTargetedInjury(supabase, clubId, effect, { matchday: ctx.matchday });
-      if (result.detail) details.push(result.detail);
-      continue;
-    }
-
-    const persistent = effectToPendingScope(effect);
-    if (persistent) {
-      await enqueuePendingEffect(supabase, clubId, effect, {
-        ...ctx,
-        sourceClubGameChangerId: clubGameChangerId ?? undefined,
-      });
-      continue;
-    }
-
-    const result = await applyImmediateEffect(supabase, clubId, effect, ctx);
-    if (result.detail) details.push(result.detail);
-  }
-
-  if (pendingChoice && clubGameChangerId) {
-    await supabase
-      .from("club_game_changers")
-      .update({ status: "pending", choice_payload: pendingChoice as unknown as Record<string, unknown> })
-      .eq("id", clubGameChangerId);
-    return { status: "pending", choice: pendingChoice, details };
-  }
-
-  if (clubGameChangerId) {
-    await supabase
-      .from("club_game_changers")
-      .update({
-        status: "resolved",
-        used_at: new Date().toISOString(),
-        fixture_id: ctx.fixtureId ?? null,
-      })
-      .eq("id", clubGameChangerId);
-  }
-
-  return { status: "resolved", choice: null, details };
 }
 
 /**
@@ -4205,6 +4467,158 @@ async function getPlayerSaleCount(supabase: SupabaseServiceClient, gameId: strin
   }
 
   return count ?? 0;
+}
+
+type TransferOfferActionRow = {
+  cash_amount: number | string;
+  from_club_id: string;
+  game_id: string;
+  id: string;
+  offered_club_player_id?: string | null;
+  offered_player_id?: string | null;
+  season_number: number;
+  status: "accepted" | "cancelled" | "declined" | "expired" | "open";
+  target_club_player_id: string;
+  target_player_id: string;
+  to_club_id: string;
+};
+
+async function getTransferOfferForAction(supabase: SupabaseServiceClient, offerId: string, gameId: string) {
+  const { data, error } = await supabase
+    .from("transfer_offers")
+    .select(
+      "id, game_id, season_number, from_club_id, to_club_id, target_club_player_id, target_player_id, offered_club_player_id, offered_player_id, cash_amount, status",
+    )
+    .eq("id", offerId)
+    .eq("game_id", gameId)
+    .maybeSingle<TransferOfferActionRow>();
+
+  if (error) {
+    throw error;
+  }
+
+  return data;
+}
+
+async function getManagerTransferDepartureCount(
+  supabase: SupabaseServiceClient,
+  gameId: string,
+  clubId: string,
+  seasonNumber: number,
+) {
+  const { data, error } = await supabase
+    .from("transfer_offers")
+    .select("from_club_id, to_club_id, offered_club_player_id")
+    .eq("game_id", gameId)
+    .eq("season_number", seasonNumber)
+    .eq("status", "accepted")
+    .or(`from_club_id.eq.${clubId},to_club_id.eq.${clubId}`)
+    .returns<Array<{ from_club_id: string; offered_club_player_id: string | null; to_club_id: string }>>();
+
+  if (error) {
+    throw error;
+  }
+
+  return (data ?? []).reduce((count, row) => {
+    if (row.to_club_id === clubId) {
+      count += 1;
+    }
+    if (row.from_club_id === clubId && row.offered_club_player_id) {
+      count += 1;
+    }
+    return count;
+  }, 0);
+}
+
+async function isClubTransferBlocked(supabase: SupabaseServiceClient, clubId: string, phase: string) {
+  const pendingEffects = await getActivePendingEffects(supabase, clubId);
+  return isOffseasonTransfersBlocked(pendingEffects, phase);
+}
+
+async function expireTransferOffer(supabase: SupabaseServiceClient, offerId: string) {
+  const { error } = await supabase
+    .from("transfer_offers")
+    .update({ resolved_at: new Date().toISOString(), status: "expired" })
+    .eq("id", offerId)
+    .eq("status", "open");
+
+  if (error) {
+    throw error;
+  }
+}
+
+async function expireCompetingTransferOffers(
+  supabase: SupabaseServiceClient,
+  params: {
+    acceptedOfferId: string;
+    clubPlayerIds: string[];
+    gameId: string;
+    seasonNumber: number;
+  },
+) {
+  if (params.clubPlayerIds.length === 0) {
+    return;
+  }
+
+  const { data, error } = await supabase
+    .from("transfer_offers")
+    .select("id, offered_club_player_id, target_club_player_id")
+    .eq("game_id", params.gameId)
+    .eq("season_number", params.seasonNumber)
+    .eq("status", "open")
+    .neq("id", params.acceptedOfferId)
+    .returns<Array<{ id: string; offered_club_player_id: string | null; target_club_player_id: string }>>();
+
+  if (error) {
+    throw error;
+  }
+
+  const movedIds = new Set(params.clubPlayerIds);
+  const competingIds = (data ?? [])
+    .filter((row) => movedIds.has(row.target_club_player_id) || (row.offered_club_player_id && movedIds.has(row.offered_club_player_id)))
+    .map((row) => row.id);
+
+  if (competingIds.length === 0) {
+    return;
+  }
+
+  const { error: updateError } = await supabase
+    .from("transfer_offers")
+    .update({ resolved_at: new Date().toISOString(), status: "expired" })
+    .in("id", competingIds)
+    .eq("status", "open");
+
+  if (updateError) {
+    throw updateError;
+  }
+}
+
+async function expireOpenTransferOffers(supabase: SupabaseServiceClient, gameId: string, seasonNumber: number) {
+  const { error } = await supabase
+    .from("transfer_offers")
+    .update({ resolved_at: new Date().toISOString(), status: "expired" })
+    .eq("game_id", gameId)
+    .eq("season_number", seasonNumber)
+    .eq("status", "open");
+
+  if (error) {
+    throw error;
+  }
+}
+
+function buildManagerTransferMetadata(offer: TransferOfferActionRow, role: "buyer" | "seller") {
+  return {
+    cash_amount: Number(offer.cash_amount),
+    from_club_id: offer.from_club_id,
+    offered_club_player_id: offer.offered_club_player_id ?? null,
+    offered_player_id: offer.offered_player_id ?? null,
+    role,
+    season_number: offer.season_number,
+    target_club_player_id: offer.target_club_player_id,
+    target_player_id: offer.target_player_id,
+    to_club_id: offer.to_club_id,
+    transfer_offer_id: offer.id,
+  };
 }
 
 async function getDeadlineAuctions(supabase: SupabaseServiceClient, gameId: string, seasonNumber: number) {

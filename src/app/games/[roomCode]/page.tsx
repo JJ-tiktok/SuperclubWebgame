@@ -13,7 +13,7 @@ export default async function GameLoadPage({
 }) {
   const { roomCode } = await params;
   const { view } = await searchParams;
-  const { snapshot, currentUserId } = await getLobbySnapshotByRoomCode(roomCode);
+  const { snapshot, currentUserId } = await getLobbySnapshotByRoomCode(roomCode, { activeView: view });
 
   if (!snapshot) {
     notFound();

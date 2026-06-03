@@ -339,6 +339,41 @@ export type TrainingStatusSnapshot = {
   training_level: number;
 };
 
+export type TransferOfferStatus = "accepted" | "cancelled" | "declined" | "expired" | "open";
+
+export type TransferOfferSnapshot = {
+  cash_amount: number;
+  created_at: string;
+  from_club: Pick<LobbyClub, "club_color" | "club_name" | "id">;
+  from_club_id: string;
+  game_id: string;
+  id: string;
+  offered_club_player?: ClubPlayerSnapshot | null;
+  offered_club_player_id?: string | null;
+  offered_player_id?: string | null;
+  resolved_at?: string | null;
+  season_number: number;
+  status: TransferOfferStatus;
+  target_club_player?: ClubPlayerSnapshot | null;
+  target_club_player_id: string;
+  target_player_id: string;
+  to_club: Pick<LobbyClub, "club_color" | "club_name" | "id">;
+  to_club_id: string;
+};
+
+export type TransferMarketClubSnapshot = {
+  club: Pick<LobbyClub, "club_color" | "club_name" | "id" | "manager_name">;
+  squad: ClubPlayerSnapshot[];
+};
+
+export type TransferMarketSnapshot = {
+  incoming_offers: TransferOfferSnapshot[];
+  manager_departures_count: number;
+  other_clubs: TransferMarketClubSnapshot[];
+  outgoing_offers: TransferOfferSnapshot[];
+  setup_error?: string;
+};
+
 export type ClubOverviewSnapshot = {
   season_number: number;
   sales_count: number;
@@ -518,6 +553,7 @@ export type LobbySnapshot = {
   continental: ContinentalTournamentSnapshot | null;
   scouting: ScoutingSnapshot | null;
   club_overview: ClubOverviewSnapshot | null;
+  transfer_market: TransferMarketSnapshot | null;
   match_news: MatchNewsSnapshot[];
 };
 

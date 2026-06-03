@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import type { LobbyClub, MatchNewsSnapshot } from "@/lib/lobby/types";
 import {
@@ -29,12 +29,12 @@ export function GameEventsDock({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [filter, setFilter] = useState<FilterTab>("all");
-  const [hydrated, setHydrated] = useState(false);
+  const hydrated = useSyncExternalStore(
+    () => () => undefined,
+    () => true,
+    () => false,
+  );
   const chipRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    setHydrated(true);
-  }, []);
 
   const unreadCount = hydrated ? countUnreadOwnNews(news, ownClubId, gameId) : 0;
 

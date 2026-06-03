@@ -68,6 +68,12 @@ import {
   recruitStaffResolveAction,
 } from "@/app/games/actions/staff";
 import {
+  acceptTransferOfferAction,
+  cancelTransferOfferAction,
+  createTransferOfferAction,
+  declineTransferOfferAction,
+} from "@/app/games/actions/transfers";
+import {
   advanceContinentalRoundAction,
   initializeContinentalCupAction,
   lockContinentalLineupAction,
@@ -136,6 +142,7 @@ import {
 } from "@/lib/lobby/scouting";
 import { getClubTheme } from "@/lib/lobby/theme";
 import { canTrainOwnedPlayer } from "@/lib/lobby/training";
+import { MANAGER_TRANSFER_DEPARTURE_LIMIT } from "@/lib/lobby/transfers";
 import type {
   ContinentalFixtureSnapshot,
   CpuStrengthTier,
@@ -144,6 +151,7 @@ import type {
   LobbySnapshot,
   SeasonFixtureSnapshot,
   StaffOfferSnapshot,
+  TransferOfferSnapshot,
 } from "@/lib/lobby/types";
 import { cn } from "@/lib/utils";
 import { getPositionLabel, type PlayerCardData, type PlayerCardPosition } from "@/types/player-card";
@@ -1402,6 +1410,7 @@ function ScoutingDrawsPanel({
 
 function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snapshot: LobbySnapshot }) {
   const overview = snapshot.club_overview;
+  const transferMarket = snapshot.transfer_market;
 
   if (!ownClub || !overview) {
     return (
@@ -1420,6 +1429,11 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
   const salesCount = overview.sales_count;
   const isOffseason = isOffseasonPhase(snapshot.game.phase);
   const saleCheck = canSellClubPlayer({ isOffseason, salesCount });
+  const transfersBlocked = isOffseasonTransfersBlocked(overview.pending_effects ?? [], snapshot.game.phase);
+  const managerTransfersEnabled = isOffseason && !transfersBlocked && !transferMarket?.setup_error;
+  const managerDeparturesCount = transferMarket?.manager_departures_count ?? 0;
+  const offeredPlayerIds = new Set((transferMarket?.outgoing_offers ?? []).flatMap((offer) => offer.offered_club_player_id ? [offer.offered_club_player_id] : []));
+  const ownOfferPlayers = overview.squad.filter((owned) => !offeredPlayerIds.has(owned.id));
 
   return (
     <div className="space-y-4">
@@ -1431,12 +1445,25 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
           </div>
           <ShoppingCart size={18} className="text-[var(--club-color)]" aria-hidden />
         </PanelHeader>
-        <div className="grid gap-3 md:grid-cols-3">
+        <div className="grid gap-3 md:grid-cols-4">
           <Metric detail="aktueller Kontostand" icon={Banknote} label="Budget" value={formatMoney(overview.finance.money)} />
-          <Metric detail="Offseason-Limit" icon={UserMinus} label="Verkaeufe" value={`${salesCount}/2`} />
-          <Metric detail={isOffseason ? "Verkauf aktiv" : "nur in der Offseason"} icon={CalendarDays} label="Phase" value={snapshot.game.phase} />
+          <Metric detail="Pool-Verkaufslimit" icon={UserMinus} label="Verkaeufe" value={`${salesCount}/2`} />
+          <Metric detail="Manager-Transferlimit" icon={ArrowLeftRight} label="Manager-Abgaenge" value={`${managerDeparturesCount}/${MANAGER_TRANSFER_DEPARTURE_LIMIT}`} />
+          <Metric detail={transfersBlocked ? "Game-Changer-Sperre" : isOffseason ? "Transfers aktiv" : "nur Offseason"} icon={CalendarDays} label="Phase" value={snapshot.game.phase} />
         </div>
       </Panel>
+
+      {transferMarket?.setup_error ? (
+        <Panel className="border-amber-700 bg-amber-950/25">
+          <PanelHeader>
+            <div>
+              <PanelTitle>Manager-Transfers nicht bereit</PanelTitle>
+              <PanelDescription>{transferMarket.setup_error}</PanelDescription>
+            </div>
+            <Gavel size={18} className="text-amber-200" aria-hidden />
+          </PanelHeader>
+        </Panel>
+      ) : null}
 
       <Panel className="border-[var(--club-border)] bg-zinc-950/85">
         <PanelHeader>
@@ -1510,31 +1537,210 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
         )}
       </Panel>
 
+      <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+        <PanelHeader>
+          <div>
+            <PanelTitle>Andere Manager-Kader</PanelTitle>
+            <PanelDescription>Frage Spieler an und biete Geld plus optional einen eigenen Spieler.</PanelDescription>
+          </div>
+          <ArrowLeftRight size={18} className="text-[var(--club-color)]" aria-hidden />
+        </PanelHeader>
+        {!transferMarket || transferMarket.other_clubs.length === 0 ? (
+          <div className="rounded-md border border-dashed border-zinc-800 bg-zinc-900/45 p-4 text-sm text-zinc-500">
+            Keine anderen Manager-Clubs im Spielstand.
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {transferMarket.other_clubs.map((clubMarket) => (
+              <div className="rounded-lg border border-zinc-800 bg-zinc-900/45 p-3" key={clubMarket.club.id}>
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="font-semibold text-zinc-50">{clubMarket.club.club_name}</p>
+                    <p className="text-xs text-zinc-500">{clubMarket.club.manager_name}</p>
+                  </div>
+                  <Badge tone="blue">{clubMarket.squad.length} Spieler</Badge>
+                </div>
+                {clubMarket.squad.length === 0 ? (
+                  <p className="rounded-md border border-dashed border-zinc-800 bg-zinc-950/60 p-3 text-sm text-zinc-500">
+                    Dieser Club hat aktuell keinen Kader.
+                  </p>
+                ) : (
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    {[...clubMarket.squad]
+                      .sort((a, b) => Number(b.current_stars) - Number(a.current_stars))
+                      .map((owned) => {
+                        const card = mapOwnedPlayerToCardData(owned);
+                        const defaultCashMillions = Math.max(1, Math.round(Number(owned.player.minimum_bid ?? 0) / 1_000_000));
+
+                        return (
+                          <div className="grid gap-3 rounded-md border border-zinc-800 bg-zinc-950/70 p-3 sm:grid-cols-[112px_minmax(0,1fr)]" key={owned.id}>
+                            <PlayerCard disabled={owned.injured} player={card} variant="draft" />
+                            <div className="min-w-0">
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                  <p className="truncate font-semibold text-zinc-50">{owned.player.display_name}</p>
+                                  <p className="mt-1 text-xs text-zinc-500">{getPlayerPositionLabel(owned.player)}</p>
+                                </div>
+                                <Badge tone={owned.injured ? "red" : "green"}>{owned.injured ? "verletzt" : "fit"}</Badge>
+                              </div>
+                              <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-zinc-400">
+                                <SmallInfo label="Staerke" value={formatStars(Number(owned.current_stars))} />
+                                <SmallInfo label="Marktwert" value={formatMoney(Number(owned.player.minimum_bid ?? 0))} />
+                              </div>
+                              <form action={createTransferOfferAction} className="mt-3 grid gap-2">
+                                <input name="game_id" type="hidden" value={snapshot.game.id} />
+                                <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                                <input name="target_club_player_id" type="hidden" value={owned.id} />
+                                <label className="grid gap-1 text-xs text-zinc-400">
+                                  Geldangebot in Mio
+                                  <input
+                                    className="h-9 rounded-md border border-zinc-700 bg-zinc-950 px-3 text-sm text-zinc-100 outline-none focus:border-lime-300"
+                                    min={0}
+                                    name="cash_amount_millions"
+                                    step={1}
+                                    type="number"
+                                    defaultValue={defaultCashMillions}
+                                  />
+                                </label>
+                                <label className="grid gap-1 text-xs text-zinc-400">
+                                  Eigener Spieler optional
+                                  <select
+                                    className="h-9 rounded-md border border-zinc-700 bg-zinc-950 px-3 text-sm text-zinc-100 outline-none focus:border-lime-300"
+                                    name="offered_club_player_id"
+                                    defaultValue="none"
+                                  >
+                                    <option value="none">Kein Spieler</option>
+                                    {ownOfferPlayers.map((ownPlayer) => (
+                                      <option key={ownPlayer.id} value={ownPlayer.id}>
+                                        {ownPlayer.player.display_name} ({formatStars(Number(ownPlayer.current_stars))})
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
+                                <Button disabled={!managerTransfersEnabled} size="sm" type="submit" variant="primary">
+                                  <ArrowUpRight size={14} aria-hidden />
+                                  Angebot senden
+                                </Button>
+                              </form>
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+
       <div className="grid gap-4 xl:grid-cols-2">
         <Panel className="border-zinc-800 bg-zinc-950/75">
           <PanelHeader>
             <div>
               <PanelTitle>Eingehende Angebote</PanelTitle>
-              <PanelDescription>Annehmen oder ablehnen kommt in der naechsten Transfer-Ausbaustufe.</PanelDescription>
+              <PanelDescription>Akzeptiere oder lehne offene Anfragen anderer Manager ab.</PanelDescription>
             </div>
             <Gavel size={18} className="text-[var(--club-color)]" aria-hidden />
           </PanelHeader>
-          <div className="rounded-md border border-dashed border-zinc-800 bg-zinc-900/45 p-4 text-sm text-zinc-500">
-            Noch keine Angebotslogik aktiv.
-          </div>
+          {!transferMarket || transferMarket.incoming_offers.length === 0 ? (
+            <div className="rounded-md border border-dashed border-zinc-800 bg-zinc-900/45 p-4 text-sm text-zinc-500">
+              Keine eingehenden Angebote.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {transferMarket.incoming_offers.map((offer) => (
+                <TransferOfferCard direction="incoming" key={offer.id} offer={offer} snapshot={snapshot} />
+              ))}
+            </div>
+          )}
         </Panel>
         <Panel className="border-zinc-800 bg-zinc-950/75">
           <PanelHeader>
             <div>
               <PanelTitle>Ausgehende Anfragen</PanelTitle>
-              <PanelDescription>Hier landen spaeter Angebote an andere Manager.</PanelDescription>
+              <PanelDescription>Offene Angebote, die du zurueckziehen kannst.</PanelDescription>
             </div>
             <ShoppingCart size={18} className="text-[var(--club-color)]" aria-hidden />
           </PanelHeader>
-          <div className="rounded-md border border-dashed border-zinc-800 bg-zinc-900/45 p-4 text-sm text-zinc-500">
-            Vorgemerkt fuer Spieler-zu-Spieler-Transfers.
-          </div>
+          {!transferMarket || transferMarket.outgoing_offers.length === 0 ? (
+            <div className="rounded-md border border-dashed border-zinc-800 bg-zinc-900/45 p-4 text-sm text-zinc-500">
+              Keine ausgehenden Angebote.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {transferMarket.outgoing_offers.map((offer) => (
+                <TransferOfferCard direction="outgoing" key={offer.id} offer={offer} snapshot={snapshot} />
+              ))}
+            </div>
+          )}
         </Panel>
+      </div>
+    </div>
+  );
+}
+
+function TransferOfferCard({
+  direction,
+  offer,
+  snapshot,
+}: {
+  direction: "incoming" | "outgoing";
+  offer: TransferOfferSnapshot;
+  snapshot: LobbySnapshot;
+}) {
+  const targetName = offer.target_club_player?.player.display_name ?? "Spieler";
+  const offeredName = offer.offered_club_player?.player.display_name ?? null;
+  const counterparty = direction === "incoming" ? offer.from_club.club_name : offer.to_club.club_name;
+
+  return (
+    <div className="rounded-md border border-zinc-800 bg-zinc-900/60 p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-semibold text-zinc-50">{counterparty}</p>
+          <p className="mt-1 text-xs text-zinc-500">{formatSavedAt(offer.created_at)}</p>
+        </div>
+        <Badge tone="amber">offen</Badge>
+      </div>
+      <div className="mt-3 grid gap-2 text-xs text-zinc-400 sm:grid-cols-2">
+        <SmallInfo label="Angefragt" value={targetName} />
+        <SmallInfo label="Geld" value={formatMoney(offer.cash_amount)} />
+        <SmallInfo label="Spielerangebot" value={offeredName ?? "Kein Spieler"} />
+        <SmallInfo label="Von" value={offer.from_club.club_name} />
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {direction === "incoming" ? (
+          <>
+            <form action={acceptTransferOfferAction}>
+              <input name="game_id" type="hidden" value={snapshot.game.id} />
+              <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+              <input name="offer_id" type="hidden" value={offer.id} />
+              <Button size="sm" type="submit" variant="primary">
+                <UserCheck size={14} aria-hidden />
+                Annehmen
+              </Button>
+            </form>
+            <form action={declineTransferOfferAction}>
+              <input name="game_id" type="hidden" value={snapshot.game.id} />
+              <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+              <input name="offer_id" type="hidden" value={offer.id} />
+              <Button size="sm" type="submit" variant="outline">
+                <X size={14} aria-hidden />
+                Ablehnen
+              </Button>
+            </form>
+          </>
+        ) : (
+          <form action={cancelTransferOfferAction}>
+            <input name="game_id" type="hidden" value={snapshot.game.id} />
+            <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+            <input name="offer_id" type="hidden" value={offer.id} />
+            <Button size="sm" type="submit" variant="outline">
+              <X size={14} aria-hidden />
+              Zurueckziehen
+            </Button>
+          </form>
+        )}
       </div>
     </div>
   );

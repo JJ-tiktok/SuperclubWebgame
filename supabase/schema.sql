@@ -243,6 +243,36 @@ create unique index staff_offers_open_per_club
   on public.staff_offers (club_id, season_number)
   where status = 'open';
 
+create table public.transfer_offers (
+  id uuid primary key default gen_random_uuid(),
+  game_id uuid not null references public.games(id) on delete cascade,
+  season_number int not null,
+  from_club_id uuid not null references public.clubs(id) on delete cascade,
+  to_club_id uuid not null references public.clubs(id) on delete cascade,
+  target_club_player_id uuid not null references public.club_players(id) on delete cascade,
+  target_player_id uuid not null references public.players(id) on delete restrict,
+  offered_club_player_id uuid references public.club_players(id) on delete set null,
+  offered_player_id uuid references public.players(id) on delete restrict,
+  cash_amount bigint not null default 0 check (cash_amount >= 0),
+  status text not null default 'open' check (status in ('open', 'accepted', 'declined', 'cancelled', 'expired')),
+  created_at timestamptz not null default now(),
+  resolved_at timestamptz,
+  check (from_club_id <> to_club_id),
+  check (
+    (offered_club_player_id is null and offered_player_id is null)
+    or
+    (offered_club_player_id is not null and offered_player_id is not null)
+  )
+);
+
+create unique index transfer_offers_open_buyer_target_unique
+  on public.transfer_offers (from_club_id, target_club_player_id)
+  where status = 'open';
+
+create unique index transfer_offers_open_offered_player_unique
+  on public.transfer_offers (offered_club_player_id)
+  where offered_club_player_id is not null and status = 'open';
+
 create table public.game_changer_cards (
   id uuid primary key default gen_random_uuid(),
   content_key text not null unique,
@@ -620,6 +650,7 @@ alter table public.scouting_draws enable row level security;
 alter table public.staff_cards enable row level security;
 alter table public.club_staff enable row level security;
 alter table public.staff_offers enable row level security;
+alter table public.transfer_offers enable row level security;
 alter table public.game_changer_cards enable row level security;
 alter table public.club_game_changers enable row level security;
 alter table public.investments enable row level security;
@@ -806,6 +837,19 @@ with check (
     from public.clubs c
     where c.id = staff_offers.club_id
       and c.clerk_user_id = public.requesting_clerk_user_id()
+  )
+);
+
+create policy "involved managers can read transfer offers"
+on public.transfer_offers for select
+to authenticated
+using (
+  exists (
+    select 1
+    from public.clubs c
+    where c.game_id = transfer_offers.game_id
+      and c.clerk_user_id = public.requesting_clerk_user_id()
+      and (c.id = transfer_offers.from_club_id or c.id = transfer_offers.to_club_id)
   )
 );
 
@@ -1426,6 +1470,7 @@ grant select, insert, update on public.clubs to authenticated;
 grant select on public.players, public.decks, public.club_players, public.draft_rounds, public.scouting_draws to authenticated;
 grant select on public.staff_cards, public.club_staff, public.game_changer_cards, public.club_game_changers to authenticated;
 grant select, insert, update on public.staff_offers to authenticated;
+grant select on public.transfer_offers to authenticated;
 grant select on public.investments, public.auctions, public.bids, public.matches, public.lineups, public.match_events, public.transactions to authenticated;
 grant select on public.cpu_teams, public.cpu_lineups, public.season_participants, public.fixtures, public.season_standings to authenticated;
 grant select on public.continental_cpu_teams, public.continental_cpu_lineups, public.continental_tournaments, public.continental_participants, public.continental_fixtures to authenticated;
@@ -1552,13 +1597,32 @@ begin
       and tablename = 'staff_offers'
   ) then
     alter publication supabase_realtime add table public.staff_offers;
-  exception when duplicate_object then null;
-  end;
-  begin
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'transfer_offers'
+  ) then
+    alter publication supabase_realtime add table public.transfer_offers;
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'match_news'
+  ) then
     alter publication supabase_realtime add table public.match_news;
-  exception when duplicate_object then null;
-  end;
-  begin
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'club_game_changers'
+  ) then
     alter publication supabase_realtime add table public.club_game_changers;
   end if;
 end;

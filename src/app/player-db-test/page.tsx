@@ -44,6 +44,12 @@ export default async function PlayerDbTestPage() {
               >
                 Draft-Test
               </Link>
+              <Link
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-zinc-700 bg-transparent px-4 text-sm font-medium text-zinc-100 transition hover:bg-zinc-800"
+                href="/game-changer-lab"
+              >
+                Game-Changer-Lab
+              </Link>
             </div>
           </div>
         </header>

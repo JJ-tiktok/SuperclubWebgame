@@ -31,6 +31,8 @@ import type {
   SeasonStandingSnapshot,
   StaffCardRow,
   StaffOfferSnapshot,
+  TransferMarketSnapshot,
+  TransferOfferSnapshot,
 } from "./types";
 import { calculateManagerScore, getManagerScoreBand, getPlacementReward, getStadiumIncome, getTrainingCapacity } from "@/lib/game/rules";
 import { getDeadlineAuctionCount } from "@/lib/lobby/deadline";
@@ -71,7 +73,11 @@ function isUndefinedColumnError(error: { code?: string } | null | undefined): bo
   return Boolean(error && error.code === "42703");
 }
 
-export async function getLobbySnapshotByRoomCode(roomCodeParam: string) {
+function isUndefinedTableError(error: { code?: string } | null | undefined): boolean {
+  return Boolean(error && error.code === "42P01");
+}
+
+export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?: { activeView?: string }) {
   const { userId } = await auth();
   const supabase = createSupabaseServiceClient();
 
@@ -150,6 +156,10 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string) {
   const continental = await getContinentalSnapshot(game);
   const ownClub = clubsWithStars.find((club) => club.clerk_user_id === userId);
   const clubOverview = ownClub ? await getClubOverviewSnapshot(game, ownClub, clubsWithStars.length) : null;
+  const transferMarket =
+    ownClub && options?.activeView === "transfer"
+      ? await getTransferMarketSnapshot(game, ownClub, clubsWithStars)
+      : null;
   const matchNews = await getMatchNewsSnapshot(game);
 
   const snapshot: LobbySnapshot = {
@@ -162,6 +172,7 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string) {
     continental,
     scouting,
     club_overview: clubOverview,
+    transfer_market: transferMarket,
     match_news: matchNews,
   };
 
@@ -420,6 +431,148 @@ async function getContinentalSnapshot(game: LobbyGame): Promise<ContinentalTourn
     })),
     fixtures: fixtures ?? [],
   };
+}
+
+type TransferOfferRow = Omit<TransferOfferSnapshot, "cash_amount" | "from_club" | "offered_club_player" | "status" | "target_club_player" | "to_club"> & {
+  cash_amount: number | string;
+  from_club: Pick<LobbyClub, "club_color" | "club_name" | "id"> | null;
+  offered_club_player?: ClubPlayerSnapshot | null;
+  status: string;
+  target_club_player?: ClubPlayerSnapshot | null;
+  to_club: Pick<LobbyClub, "club_color" | "club_name" | "id"> | null;
+};
+
+async function getTransferMarketSnapshot(
+  game: LobbyGame,
+  ownClub: LobbyClub,
+  clubs: LobbyClub[],
+): Promise<TransferMarketSnapshot | null> {
+  const supabase = createSupabaseServiceClient();
+
+  if (!supabase) {
+    return null;
+  }
+
+  const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
+  const otherClubIds = clubs.filter((club) => club.id !== ownClub.id).map((club) => club.id);
+  const transferOfferSelect = `id, game_id, season_number, from_club_id, to_club_id, target_club_player_id, target_player_id,
+    offered_club_player_id, offered_player_id, cash_amount, status, created_at, resolved_at,
+    from_club:clubs!transfer_offers_from_club_id_fkey(id, club_name, club_color),
+    to_club:clubs!transfer_offers_to_club_id_fkey(id, club_name, club_color),
+    target_club_player:club_players!transfer_offers_target_club_player_id_fkey(id, club_id, player_id, current_stars, current_zone, injured, lineup_slot, acquired_at, player:players(${DRAFT_PLAYER_SELECT})),
+    offered_club_player:club_players!transfer_offers_offered_club_player_id_fkey(id, club_id, player_id, current_stars, current_zone, injured, lineup_slot, acquired_at, player:players(${DRAFT_PLAYER_SELECT}))`;
+
+  const [
+    { data: otherPlayers, error: otherPlayersError },
+    { data: offerRows, error: offersError },
+    { data: acceptedRows, error: acceptedError },
+  ] = await Promise.all([
+    otherClubIds.length
+      ? supabase
+          .from("club_players")
+          .select(
+            `id, club_id, player_id, current_stars, current_zone, injured, lineup_slot, acquired_at,
+            player:players(${DRAFT_PLAYER_SELECT})`,
+          )
+          .in("club_id", otherClubIds)
+          .order("acquired_at", { ascending: true })
+          .returns<ClubPlayerSnapshot[]>()
+      : Promise.resolve({ data: [], error: null }),
+    supabase
+      .from("transfer_offers")
+      .select(transferOfferSelect)
+      .eq("game_id", game.id)
+      .eq("season_number", seasonNumber)
+      .eq("status", "open")
+      .or(`from_club_id.eq.${ownClub.id},to_club_id.eq.${ownClub.id}`)
+      .order("created_at", { ascending: false })
+      .returns<TransferOfferRow[]>(),
+    supabase
+      .from("transfer_offers")
+      .select("from_club_id, to_club_id, offered_club_player_id")
+      .eq("game_id", game.id)
+      .eq("season_number", seasonNumber)
+      .eq("status", "accepted")
+      .or(`from_club_id.eq.${ownClub.id},to_club_id.eq.${ownClub.id}`)
+      .returns<Array<{ from_club_id: string; offered_club_player_id: string | null; to_club_id: string }>>(),
+  ]);
+
+  if (isUndefinedTableError(offersError) || isUndefinedTableError(acceptedError)) {
+    return {
+      incoming_offers: [],
+      manager_departures_count: 0,
+      other_clubs: [],
+      outgoing_offers: [],
+      setup_error: "Manager-Transfers fehlen noch in Supabase. Bitte `supabase/manager_transfers_upgrade.sql` ausfuehren.",
+    };
+  }
+
+  if (otherPlayersError) {
+    throw otherPlayersError;
+  }
+
+  if (offersError) {
+    throw offersError;
+  }
+
+  if (acceptedError) {
+    throw acceptedError;
+  }
+
+  const otherPlayersByClubId = new Map<string, ClubPlayerSnapshot[]>();
+  for (const row of otherPlayers ?? []) {
+    const rows = otherPlayersByClubId.get(row.club_id) ?? [];
+    rows.push(row);
+    otherPlayersByClubId.set(row.club_id, rows);
+  }
+
+  const offers = (offerRows ?? []).map(normalizeTransferOfferRow);
+  const managerDeparturesCount = (acceptedRows ?? []).reduce((count, row) => {
+    if (row.to_club_id === ownClub.id) {
+      count += 1;
+    }
+    if (row.from_club_id === ownClub.id && row.offered_club_player_id) {
+      count += 1;
+    }
+    return count;
+  }, 0);
+
+  return {
+    incoming_offers: offers.filter((offer) => offer.to_club_id === ownClub.id),
+    manager_departures_count: managerDeparturesCount,
+    other_clubs: clubs
+      .filter((club) => club.id !== ownClub.id)
+      .map((club) => ({
+        club: {
+          club_color: club.club_color,
+          club_name: club.club_name,
+          id: club.id,
+          manager_name: club.manager_name,
+        },
+        squad: otherPlayersByClubId.get(club.id) ?? [],
+      })),
+    outgoing_offers: offers.filter((offer) => offer.from_club_id === ownClub.id),
+  };
+}
+
+function normalizeTransferOfferRow(row: TransferOfferRow): TransferOfferSnapshot {
+  return {
+    ...row,
+    cash_amount: Number(row.cash_amount ?? 0),
+    from_club: row.from_club ?? { club_color: null, club_name: "Club", id: row.from_club_id },
+    offered_club_player: row.offered_club_player ?? null,
+    status: normalizeTransferOfferStatus(row.status),
+    target_club_player: row.target_club_player ?? null,
+    to_club: row.to_club ?? { club_color: null, club_name: "Club", id: row.to_club_id },
+  };
+}
+
+function normalizeTransferOfferStatus(status: string): TransferOfferSnapshot["status"] {
+  if (status === "accepted" || status === "cancelled" || status === "declined" || status === "expired") {
+    return status;
+  }
+
+  return "open";
 }
 
 async function getSeasonSnapshot(game: LobbyGame): Promise<SeasonSnapshot | null> {

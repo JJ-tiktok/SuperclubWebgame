@@ -265,7 +265,7 @@ export async function processSponsorContractsAtSeasonEnd(
       .eq("id", contract.club_id)
       .maybeSingle<{ money: number | string; stadium_level: number | null }>();
 
-    let progress = applySeasonEndToProgress(snapshot.progress, {
+    const progress = applySeasonEndToProgress(snapshot.progress, {
       wins: standing?.wins ?? snapshot.progress.wins ?? 0,
       losses: standing?.losses ?? snapshot.progress.losses ?? 0,
       rank: standing?.rank ?? totalParticipants,

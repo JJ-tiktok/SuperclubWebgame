@@ -2,7 +2,7 @@
 
 import { Handshake, Trophy } from "lucide-react";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { pickSponsorRewardPlayerAction, signSponsorDealAction } from "@/app/games/actions/offseason";
 import { resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
 import { SPONSOR_PRESTIGE_LABELS } from "@/lib/lobby/sponsor-deals";
@@ -72,16 +72,9 @@ export function SponsorPanel({
     [dealsByTier],
   );
 
-  const [activeTier, setActiveTier] = useState<string>(() =>
-    tierOrder.includes(currentStatus) ? currentStatus : (tierOrder[0] ?? currentStatus),
-  );
-
-  useEffect(() => {
-    if (tierOrder.length === 0) return;
-    if (!tierOrder.includes(activeTier)) {
-      setActiveTier(tierOrder.includes(currentStatus) ? currentStatus : tierOrder[0]!);
-    }
-  }, [activeTier, currentStatus, tierOrder]);
+  const [selectedTier, setSelectedTier] = useState<string | null>(null);
+  const fallbackTier = tierOrder.includes(currentStatus) ? currentStatus : (tierOrder[0] ?? currentStatus);
+  const activeTier = selectedTier && tierOrder.includes(selectedTier) ? selectedTier : fallbackTier;
 
   const visibleDeals = dealsByTier.get(activeTier) ?? [];
 
@@ -157,7 +150,7 @@ export function SponsorPanel({
                 <button
                   key={tier}
                   type="button"
-                  onClick={() => setActiveTier(tier)}
+                  onClick={() => setSelectedTier(tier)}
                   className={cn(
                     "rounded-md border px-3 py-1.5 text-xs font-medium transition",
                     activeTier === tier

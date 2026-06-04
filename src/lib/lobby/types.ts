@@ -111,6 +111,8 @@ export type DraftPlayerRow = {
   display_name: string;
   position: string;
   eligible_positions?: string[] | null;
+  attacker_archetype?: PlayerArchetype | null;
+  defender_archetype?: PlayerArchetype | null;
   role?: string | null;
   nationality?: string | null;
   age?: number | null;
@@ -128,6 +130,8 @@ export type DraftPlayerRow = {
   metadata?: Record<string, unknown> | null;
   visibility?: string | null;
 };
+
+export type PlayerArchetype = "alpha" | "beta" | "gamma";
 
 export type DraftRoundSnapshot = {
   id: string;

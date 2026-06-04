@@ -128,6 +128,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelDescription, PanelHeader, PanelTitle } from "@/components/ui/panel";
 import { DEADLINE_BID_STEP, DEADLINE_TURN_SECONDS, getMinimumNextBid } from "@/lib/lobby/deadline";
+import { ARCHETYPE_META, type PlayerArchetype } from "@/lib/lobby/archetypes";
 import { mapDbPlayerToPlayerCardData } from "@/lib/lobby/draft";
 import { canUpgradeFacility, getStaffRecruitBlockReason, getStaffRecruitHint, getStaffRecruitReasonLabel, getUpgradeCost, getUpgradeReasonLabel, type UpgradeAction } from "@/lib/lobby/investments";
 import { isOffseasonPendingScopeActive } from "@/lib/lobby/offseason-pending-effects";
@@ -4312,10 +4313,22 @@ function describeStaffEffects(effects: unknown[]): string {
 }
 
 type FixtureThird = {
-  away: { dice: [number, number]; total: number; zone_stars: number };
-  home: { dice: [number, number]; total: number; zone_stars: number };
+  archetype_effects?: FixtureArchetypeEffect[];
+  away: { dice: [number, number]; dice_faces?: number; total: number; zone_stars: number };
+  home: { dice: [number, number]; dice_faces?: number; total: number; zone_stars: number };
   index: number;
   label: "away_attack" | "home_attack" | "midfield";
+};
+
+type FixtureArchetypeEffect = {
+  attacker_archetype?: PlayerArchetype | null;
+  attacker_delta: number;
+  attacker_player_name?: string | null;
+  defender_archetype?: PlayerArchetype | null;
+  defender_delta: number;
+  defender_player_name?: string | null;
+  pair: "best" | "worst";
+  winner: "attacker" | "defender" | "neutral";
 };
 
 type FixtureEvent = {
@@ -4393,6 +4406,7 @@ function MatchResultDetail({
 
   function ThirdRow({
     diceSum,
+    diceType,
     isWinner,
     label,
     side,
@@ -4400,6 +4414,7 @@ function MatchResultDetail({
     total,
   }: {
     diceSum: string;
+    diceType: string;
     isWinner: boolean;
     label: string;
     side: "Heim" | "Ausw";
@@ -4419,7 +4434,7 @@ function MatchResultDetail({
           <span className="text-zinc-600">+ {label}</span>
         </div>
         <div className="flex items-center gap-1.5">
-          <span className="text-zinc-600">+</span>
+          <span className="text-[10px] font-semibold text-zinc-500">{diceType}</span>
           <span className={cn(
             "flex h-7 w-7 items-center justify-center rounded font-bold",
             isWinner ? "border border-emerald-600/50 bg-emerald-900/50 text-emerald-300" : "border border-zinc-700 bg-zinc-800 text-zinc-300",
@@ -4429,6 +4444,21 @@ function MatchResultDetail({
         </div>
       </div>
     );
+  }
+
+  function formatArchetypeEffect(effect: FixtureArchetypeEffect) {
+    const attackerName = effect.attacker_player_name ?? "Angriff";
+    const defenderName = effect.defender_player_name ?? "Abwehr";
+    const attackerType = effect.attacker_archetype ? ARCHETYPE_META[effect.attacker_archetype].attackLabel : "neutral";
+    const defenderType = effect.defender_archetype ? ARCHETYPE_META[effect.defender_archetype].defenseLabel : "neutral";
+    const delta =
+      effect.winner === "attacker"
+        ? `ATT +${effect.attacker_delta} / DEF ${effect.defender_delta}`
+        : effect.winner === "defender"
+          ? `DEF +${effect.defender_delta} / ATT ${effect.attacker_delta}`
+          : "neutral";
+
+    return `${effect.pair === "best" ? "Top" : "Low"}: ${attackerName} (${attackerType}) vs ${defenderName} (${defenderType}) - ${delta}`;
   }
 
   return (
@@ -4517,20 +4547,31 @@ function MatchResultDetail({
               <div className="space-y-1.5">
                 <ThirdRow
                   diceSum={third.home.dice.join("+")}
+                  diceType={`2W${third.home.dice_faces ?? 6}`}
                   isWinner={homeWinsThird}
-                  label={`Links ${third.home.dice[0] + third.home.dice[1]}`}
+                  label={`Wurf ${third.home.dice[0] + third.home.dice[1]}`}
                   side="Heim"
                   stars={third.home.zone_stars}
                   total={third.home.total}
                 />
                 <ThirdRow
                   diceSum={third.away.dice.join("+")}
+                  diceType={`2W${third.away.dice_faces ?? 6}`}
                   isWinner={awayWinsThird}
-                  label={`Links ${third.away.dice[0] + third.away.dice[1]}`}
+                  label={`Wurf ${third.away.dice[0] + third.away.dice[1]}`}
                   side="Ausw"
                   stars={third.away.zone_stars}
                   total={third.away.total}
                 />
+                {third.archetype_effects?.length ? (
+                  <div className="mt-2 space-y-1 rounded border border-zinc-800 bg-black/20 p-2">
+                    {third.archetype_effects.map((effect, effectIndex) => (
+                      <p className="text-[11px] leading-snug text-zinc-400" key={`${third.index}-${effect.pair}-${effectIndex}`}>
+                        {formatArchetypeEffect(effect)}
+                      </p>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             </div>
           );

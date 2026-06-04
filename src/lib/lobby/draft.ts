@@ -1,4 +1,5 @@
 import type { DraftPlayerRow } from "./types";
+import { ARCHETYPE_META, normalizePlayerArchetype } from "@/lib/lobby/archetypes";
 import type {
   CardTier,
   ChemistrySymbol,
@@ -8,7 +9,7 @@ import type {
 } from "@/types/player-card";
 
 export const DRAFT_PLAYER_SELECT =
-  "id, content_key, display_name, position, eligible_positions, role, nationality, age, age_group, base_stars, potential_stars, skill_max, veteran_fallback, chemistry_left, chemistry_right, chemistry_symbol, scouting_price, minimum_bid, region, metadata, visibility";
+  "id, content_key, display_name, position, eligible_positions, attacker_archetype, defender_archetype, role, nationality, age, age_group, base_stars, potential_stars, skill_max, veteran_fallback, chemistry_left, chemistry_right, chemistry_symbol, scouting_price, minimum_bid, region, metadata, visibility";
 
 const positions = new Set<PlayerCardPosition>(["GK", "DEF", "MID", "ATT"]);
 const ageGroups = new Set<PlayerAgeGroup>(["talent", "prime", "veteran"]);
@@ -21,6 +22,8 @@ export function mapDbPlayerToPlayerCardData(player: DraftPlayerRow): PlayerCardD
   const maxStars = Math.max(Number(player.skill_max ?? 5), potentialStars);
   const marketTransfer = moneyToMillions(player.minimum_bid ?? 0);
   const marketScouting = moneyToMillions(player.scouting_price ?? 0);
+  const attackerArchetype = normalizePlayerArchetype(player.attacker_archetype);
+  const defenderArchetype = normalizePlayerArchetype(player.defender_archetype);
 
   return {
     id: player.id,
@@ -43,6 +46,24 @@ export function mapDbPlayerToPlayerCardData(player: DraftPlayerRow): PlayerCardD
       symbol: chemistrySymbols.has(player.chemistry_symbol as ChemistrySymbol)
         ? (player.chemistry_symbol as ChemistrySymbol)
         : "star",
+    },
+    archetypes: {
+      attack: attackerArchetype
+        ? {
+            key: attackerArchetype,
+            label: ARCHETYPE_META[attackerArchetype].attackLabel,
+            role: "attack",
+            symbol: ARCHETYPE_META[attackerArchetype].symbol,
+          }
+        : null,
+      defense: defenderArchetype
+        ? {
+            key: defenderArchetype,
+            label: ARCHETYPE_META[defenderArchetype].defenseLabel,
+            role: "defense",
+            symbol: ARCHETYPE_META[defenderArchetype].symbol,
+          }
+        : null,
     },
     market: {
       transferFee: marketTransfer,

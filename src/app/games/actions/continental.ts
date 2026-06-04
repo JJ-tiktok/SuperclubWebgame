@@ -15,6 +15,7 @@ import {
   type ContinentalRound,
 } from "@/lib/lobby/continental-cup";
 import { calculateLineupPower, type CaptainBoost } from "@/lib/lobby/lineup-power";
+import { normalizePlayerArchetype } from "@/lib/lobby/archetypes";
 import { getMatchPointsMode, resolveFixture, type FixtureSideInput } from "@/lib/lobby/season";
 import type { LobbyGame } from "@/lib/lobby/types";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
@@ -55,10 +56,6 @@ type ContinentalLineupRow = {
 
 const FIXTURE_SELECT =
   "id, tournament_id, round, match_index, home_participant_id, away_participant_id, home_continental_cpu_lineup_id, away_continental_cpu_lineup_id, home_lineup_locked, away_lineup_locked, home_locked_def, home_locked_mid, home_locked_att, away_locked_def, away_locked_mid, away_locked_att, status, match_state, winner_participant_id";
-
-function rollDie() {
-  return Math.floor(Math.random() * 6) + 1;
-}
 
 async function touchGameSave(supabase: SupabaseServiceClient, gameId: string, userId: string) {
   await supabase
@@ -327,6 +324,7 @@ async function buildContinentalFixtureSide(
         DEF: Number(data.def_stars),
         MID: Number(data.mid_stars),
       },
+      zone_players: [],
     };
   }
 
@@ -337,7 +335,7 @@ async function buildContinentalFixtureSide(
   const [{ data: playerData }, { data: staffData }] = await Promise.all([
     supabase
       .from("club_players")
-      .select("id, current_stars, current_zone, lineup_slot, player:players(chemistry_left, chemistry_right, position, eligible_positions)")
+      .select("id, current_stars, current_zone, lineup_slot, player:players(attacker_archetype, chemistry_left, chemistry_right, defender_archetype, display_name, position, eligible_positions)")
       .eq("club_id", participant.club_id)
       .neq("current_zone", "bench")
       .eq("injured", false),
@@ -378,6 +376,26 @@ async function buildContinentalFixtureSide(
     lineup: { ATT: [], DEF: [], GK: [], MID: [] },
     participantId: participant.id,
     powers: { ATT: powers.ATT.total, DEF: powers.DEF.total, MID: powers.MID.total },
+    zone_players: (playerData ?? [])
+      .filter((p) => ["ATT", "DEF", "GK", "MID"].includes(String(p.current_zone)))
+      .map((p) => {
+        const player = p.player as {
+          attacker_archetype?: string | null;
+          defender_archetype?: string | null;
+          display_name?: string | null;
+          position?: string | null;
+        } | null;
+        return {
+          attacker_archetype: normalizePlayerArchetype(player?.attacker_archetype),
+          current_stars: Number(p.current_stars ?? 0),
+          current_zone: p.current_zone as "ATT" | "DEF" | "GK" | "MID",
+          defender_archetype: normalizePlayerArchetype(player?.defender_archetype),
+          display_name: player?.display_name ?? null,
+          id: p.id as string,
+          lineup_slot: p.lineup_slot as number | null,
+          position: player?.position ?? null,
+        };
+      }),
   };
 }
 
@@ -441,7 +459,6 @@ async function resolveContinentalFixtureServer(
 
   const resolution = resolveFixture({
     away: awaySide,
-    diceRolls: Array.from({ length: 6 }, () => [rollDie(), rollDie()] as [number, number]),
     home: homeSide,
     matchPointsMode: getMatchPointsMode(game.settings),
   });

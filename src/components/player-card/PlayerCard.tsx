@@ -1,9 +1,10 @@
+import { Circle, Square, Triangle } from "lucide-react";
 import { CardBadge } from "@/components/player-card/CardBadge";
 import { ChemistryLinks } from "@/components/player-card/ChemistryLinks";
 import { MarketValues } from "@/components/player-card/MarketValues";
 import { SkillStars } from "@/components/player-card/SkillStars";
 import { cn } from "@/lib/utils";
-import { getPositionLabel, getPositionTheme, getSkillStarStates, getTotalSkillValue, type PlayerCardData } from "@/types/player-card";
+import { getPositionLabel, getPositionTheme, getSkillStarStates, getTotalSkillValue, type PlayerCardArchetype, type PlayerCardData } from "@/types/player-card";
 
 type PlayerCardVariant = "draft" | "lineup";
 
@@ -58,7 +59,10 @@ function DraftPlayerCard({
             <p className="truncate text-sm font-black leading-tight">{player.name}</p>
             <p className={cn("mt-1 truncate text-xs font-semibold", theme.muted)}>{player.role ?? getPositionLabel(player.positions)}</p>
           </div>
-          <CardBadge position={player.position} positions={player.positions} />
+          <div className="flex shrink-0 flex-col items-end gap-1">
+            <CardBadge position={player.position} positions={player.positions} />
+            <ArchetypeBadges player={player} />
+          </div>
         </div>
 
         <div className="flex items-end justify-between gap-3">
@@ -105,12 +109,51 @@ function LineupPlayerCard({
         <span>{getPositionLabel(player.positions)}</span>
         <span>{getTotalSkillValue(player)}</span>
       </div>
+      <ArchetypeBadges compact player={player} />
       <div className="relative z-10 min-w-0">
         <p className="truncate text-[11px] font-black leading-tight">{player.name}</p>
         <SkillStars className="mx-auto mt-1 max-w-[58px]" label="Skill" size="xs" states={starStates} wrap />
       </div>
     </article>
   );
+}
+
+function ArchetypeBadges({ compact = false, player }: { compact?: boolean; player: PlayerCardData }) {
+  const items = [player.archetypes?.attack, player.archetypes?.defense].filter(Boolean) as PlayerCardArchetype[];
+
+  if (items.length === 0) return null;
+
+  return (
+    <div className={cn("flex items-center gap-1", compact ? "justify-center" : "justify-end")}>
+      {items.map((archetype) => (
+        <span
+          className={cn(
+            "inline-flex items-center justify-center rounded border border-white/45 bg-black/20 text-white shadow-sm backdrop-blur",
+            compact ? "h-4 w-4" : "h-5 min-w-5 px-1",
+          )}
+          key={`${archetype.role}-${archetype.key}`}
+          title={`${archetype.role === "attack" ? "Angriff" : "Abwehr"}: ${archetype.label}`}
+        >
+          <ArchetypeIcon archetype={archetype} compact={compact} />
+          {!compact ? <span className="ml-0.5 text-[8px] font-black uppercase leading-none">{archetype.role === "attack" ? "A" : "D"}</span> : null}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function ArchetypeIcon({ archetype, compact }: { archetype: PlayerCardArchetype; compact: boolean }) {
+  const className = compact ? "h-2.5 w-2.5" : "h-3 w-3";
+
+  if (archetype.symbol === "triangle") {
+    return <Triangle className={className} fill="currentColor" strokeWidth={2.4} />;
+  }
+
+  if (archetype.symbol === "circle") {
+    return <Circle className={className} fill="currentColor" strokeWidth={2.4} />;
+  }
+
+  return <Square className={className} fill="currentColor" strokeWidth={2.4} />;
 }
 
 function PositionCardShape({ subtle = false }: { subtle?: boolean }) {

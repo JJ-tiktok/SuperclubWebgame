@@ -13,6 +13,7 @@ import {
   getNextDeadlineBidClubId,
 } from "@/lib/lobby/deadline";
 import { DRAFT_PLAYER_SELECT } from "@/lib/lobby/draft";
+import { normalizePlayerArchetype } from "@/lib/lobby/archetypes";
 import { createDraftRound, getSquadCounts, allDraftSquadsComplete } from "@/lib/lobby/draft-server";
 import { getActiveCpuTeams, pickCpuTeamsForSeason } from "@/lib/lobby/cpu-teams";
 import { canRecruitStaff, canUpgradeFacility, type UpgradeAction } from "@/lib/lobby/investments";
@@ -2791,7 +2792,6 @@ async function resolveFixtureServer(params: {
   ]);
   const resolution = resolveFixture({
     away: awaySide,
-    diceRolls: Array.from({ length: 6 }, () => [rollDie(), rollDie()] as [number, number]),
     home: homeSide,
     matchPointsMode: getMatchPointsMode(game.settings),
     zoneModifiers: updatedPartial.pending_modifiers ?? [],
@@ -2941,6 +2941,7 @@ async function buildFixtureSide(supabase: SupabaseServiceClient, participant: Fi
         DEF: Number(data.def_stars),
         MID: Number(data.mid_stars),
       },
+      zone_players: [],
     };
   }
 
@@ -2951,7 +2952,7 @@ async function buildFixtureSide(supabase: SupabaseServiceClient, participant: Fi
   const [{ data, error }, { data: staffData }] = await Promise.all([
     supabase
       .from("club_players")
-      .select("id, current_stars, current_zone, lineup_slot, player:players(chemistry_left, chemistry_right, position, eligible_positions)")
+      .select("id, current_stars, current_zone, lineup_slot, player:players(attacker_archetype, chemistry_left, chemistry_right, defender_archetype, display_name, position, eligible_positions)")
       .eq("club_id", participant.club_id)
       .neq("current_zone", "bench")
       .eq("injured", false)
@@ -2962,7 +2963,15 @@ async function buildFixtureSide(supabase: SupabaseServiceClient, participant: Fi
           current_zone: string;
           id: string;
           lineup_slot: number | null;
-          player: { chemistry_left?: boolean | null; chemistry_right?: boolean | null; position?: string | null; eligible_positions?: string[] | null };
+          player: {
+            attacker_archetype?: string | null;
+            chemistry_left?: boolean | null;
+            chemistry_right?: boolean | null;
+            defender_archetype?: string | null;
+            display_name?: string | null;
+            position?: string | null;
+            eligible_positions?: string[] | null;
+          };
         }>
       >(),
     supabase
@@ -3015,6 +3024,18 @@ async function buildFixtureSide(supabase: SupabaseServiceClient, participant: Fi
       DEF: powers.DEF.total,
       MID: powers.MID.total,
     },
+    zone_players: (data ?? [])
+      .filter((player) => ["ATT", "DEF", "GK", "MID"].includes(player.current_zone))
+      .map((player) => ({
+        attacker_archetype: normalizePlayerArchetype(player.player?.attacker_archetype),
+        current_stars: Number(player.current_stars ?? 0),
+        current_zone: player.current_zone as TacticalZone | "GK",
+        defender_archetype: normalizePlayerArchetype(player.player?.defender_archetype),
+        display_name: player.player?.display_name ?? null,
+        id: player.id,
+        lineup_slot: player.lineup_slot,
+        position: player.player?.position ?? null,
+      })),
   };
 }
 
@@ -3544,8 +3565,6 @@ export async function markReadyForNextThirdAction(formData: FormData) {
     index: nextIndex,
     home: homeSide,
     away: awaySide,
-    homeDice: [rollDie(), rollDie()],
-    awayDice: [rollDie(), rollDie()],
     priorThirds,
     zoneModifiers: modifiers,
   });
@@ -4659,10 +4678,6 @@ async function areSeasonFixturesComplete(supabase: SupabaseServiceClient, gameId
   }
 
   return Boolean(data?.length) && data.every((fixture) => fixture.status === "completed");
-}
-
-function rollDie() {
-  return Math.floor(Math.random() * 6) + 1;
 }
 
 type SubmittedLineupItem = {

@@ -76,8 +76,11 @@ describe("Player card schema blueprint", () => {
     assert.match(schema, /role text/);
     assert.match(schema, /nationality text/);
     assert.match(schema, /create type public\.player_position as enum \('GK', 'DEF', 'MID', 'ATT'\)/);
+    assert.match(schema, /create type public\.player_archetype as enum \('alpha', 'beta', 'gamma'\)/);
     assert.doesNotMatch(schema, /'UTIL'/);
     assert.match(schema, /eligible_positions public\.player_position\[\] not null default '\{\}'/);
+    assert.match(schema, /attacker_archetype public\.player_archetype/);
+    assert.match(schema, /defender_archetype public\.player_archetype/);
     assert.match(schema, /age_group text not null default 'prime'/);
     assert.match(schema, /skill_max numeric\(3,1\) not null default 5/);
     assert.match(schema, /veteran_fallback numeric\(3,1\)/);
@@ -86,5 +89,16 @@ describe("Player card schema blueprint", () => {
     assert.match(schema, /chemistry_symbol text not null default 'star'/);
     assert.doesNotMatch(schema, /card_tier/);
     assert.doesNotMatch(schema, /card_theme/);
+  });
+
+  it("ships an idempotent deterministic archetype backfill migration", () => {
+    const migration = readFileSync("supabase/player_archetypes_upgrade.sql", "utf8");
+
+    assert.match(migration, /add column if not exists attacker_archetype public\.player_archetype/);
+    assert.match(migration, /add column if not exists defender_archetype public\.player_archetype/);
+    assert.match(migration, /hashtext\(coalesce\(content_key, id::text\) \|\| ':attacker'\)/);
+    assert.match(migration, /\(c\.assign_hash % 10\) < 7/);
+    assert.match(migration, /'DEF'::public\.player_position = any\(eligible_positions\)/);
+    assert.doesNotMatch(migration, /position = 'GK'::public\.player_position/);
   });
 });

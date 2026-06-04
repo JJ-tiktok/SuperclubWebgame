@@ -1,4 +1,5 @@
 import type { PlayerCard } from "@/lib/game/types";
+import type { ArchetypeRole, ArchetypeSymbol, PlayerArchetype } from "@/lib/lobby/archetypes";
 
 export type PlayerAgeGroup = "talent" | "prime" | "veteran";
 export type ChemistrySymbol = "star" | "dot" | "link";
@@ -6,6 +7,12 @@ export type CardTier = "standard" | "rare" | "epic" | "legend" | "veteran";
 export type PlayerCardPosition = "GK" | "DEF" | "MID" | "ATT";
 export type PlayerPositionGroup = "GK" | "DEF" | "DEF_MID" | "MID" | "MID_ATT" | "ATT" | "ALL";
 export type StarState = "filled" | "empty" | "veteran" | "disabled";
+export type PlayerCardArchetype = {
+  key: PlayerArchetype;
+  label: string;
+  role: ArchetypeRole;
+  symbol: ArchetypeSymbol;
+};
 
 export const MINIMUM_FORMATION_COUNTS = {
   ATT: 2,
@@ -32,6 +39,10 @@ export type PlayerCardData = {
     left: boolean;
     right: boolean;
     symbol: ChemistrySymbol;
+  };
+  archetypes?: {
+    attack?: PlayerCardArchetype | null;
+    defense?: PlayerCardArchetype | null;
   };
   market: {
     transferFee: number;

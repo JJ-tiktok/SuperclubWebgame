@@ -27,7 +27,7 @@ security definer
 set search_path = public
 as $$
 declare
-  v_seq bigint;
+  v_seq bigint; 
   v_event public.game_events;
 begin
   update public.games
@@ -70,5 +70,15 @@ begin
       and tablename = 'game_events'
   ) then
     alter publication supabase_realtime add table public.game_events;
+  end if;
+
+  if not exists (
+    select 1
+    from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'draft_rounds'
+  ) then
+    alter publication supabase_realtime add table public.draft_rounds;
   end if;
 end $$;

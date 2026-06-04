@@ -29,6 +29,8 @@ type Props = {
   cards: GameChangerCatalogCard[];
   isDev: boolean;
   applyFeedback: ApplyFeedback | null;
+  initialTab?: TabId;
+  initialRoomCode?: string;
 };
 
 const CATEGORY_OPTIONS: { value: "all" | GameChangerCategory; label: string }[] = [
@@ -54,13 +56,13 @@ const MODE_TONE: Record<GameChangerApplicationMode, "green" | "amber" | "red" | 
   unsupported: "neutral",
 };
 
-export function GameChangerLab({ cards, isDev, applyFeedback }: Props) {
-  const [tab, setTab] = useState<TabId>("glossary");
+export function GameChangerLab({ cards, isDev, applyFeedback, initialTab = "glossary", initialRoomCode = "" }: Props) {
+  const [tab, setTab] = useState<TabId>(initialTab);
   const [query, setQuery] = useState("");
   const [categoryFilter, setCategoryFilter] = useState<"all" | GameChangerCategory>("all");
   const [playWindowFilter, setPlayWindowFilter] = useState("all");
   const [selectedId, setSelectedId] = useState<string | null>(cards[0]?.id ?? null);
-  const [roomCode, setRoomCode] = useState(applyFeedback?.room ?? "");
+  const [roomCode, setRoomCode] = useState(applyFeedback?.room ?? initialRoomCode);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

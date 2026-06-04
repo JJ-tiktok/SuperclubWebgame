@@ -14,6 +14,7 @@ type LobbyEntryFormsProps = {
     starting_money: number;
     max_draft_stars: number;
     turn_timeout_seconds: number;
+    continental_cup_enabled?: boolean;
   };
   cpuTeams: CpuTeamCatalogRow[];
 };
@@ -41,6 +42,7 @@ export function LobbyEntryForms({ defaultSettings, cpuTeams }: LobbyEntryFormsPr
         <form action={createFormAction} className="space-y-4">
           <ClubTemplateSelect name="club_template_id" />
           <CpuTeamSelect teams={cpuTeams} />
+          <ContinentalCupToggle defaultEnabled={defaultSettings.continental_cup_enabled ?? true} />
           <div className="grid gap-3 sm:grid-cols-3">
             <NumberField label="Startgeld" name="starting_money" defaultValue={defaultSettings.starting_money} />
             <NumberField label="Max Draft" name="max_draft_stars" defaultValue={defaultSettings.max_draft_stars} />
@@ -79,6 +81,31 @@ export function LobbyEntryForms({ defaultSettings, cpuTeams }: LobbyEntryFormsPr
         </form>
       </Panel>
     </div>
+  );
+}
+
+function ContinentalCupToggle({ defaultEnabled }: { defaultEnabled: boolean }) {
+  const [enabled, setEnabled] = useState(defaultEnabled);
+
+  return (
+    <fieldset className="space-y-2 rounded-md border border-zinc-800 bg-zinc-900/50 p-3">
+      <legend className="px-1 text-sm font-medium text-zinc-300">Continental Cup</legend>
+      <input name="continental_cup_enabled" type="hidden" value={enabled ? "1" : "0"} />
+      <label className="flex cursor-pointer items-start gap-3">
+        <input
+          checked={enabled}
+          className="mt-1 h-4 w-4 rounded border-zinc-600 bg-zinc-900 text-lime-400 focus:ring-lime-300"
+          onChange={(event) => setEnabled(event.target.checked)}
+          type="checkbox"
+        />
+        <span className="text-sm text-zinc-300">
+          Nach geraden Saisons ab Saison 2 ein K.o.-Turnier (32 Teams, 100 Mio. Praemie).
+          <span className="mt-1 block text-xs text-zinc-500">
+            Ausgeschaltet: nach Saisonende direkt in die naechste Off-Season ohne Continental Cup.
+          </span>
+        </span>
+      </label>
+    </fieldset>
   );
 }
 

@@ -62,6 +62,7 @@ import {
   type PendingChoice,
 } from "@/lib/game/game-changer-effects";
 import { dispatchGameChangerEffects } from "@/lib/game/dispatch-game-changer-effects";
+import { formatGameChangerNewsDetail } from "@/lib/game/game-changer-ui";
 import type { GameChangerCategory } from "@/lib/lobby/types";
 import {
   canBuyScoutedPlayer,
@@ -91,7 +92,8 @@ import {
   normalizeTransferCashAmount,
 } from "@/lib/lobby/transfers";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
-import type { DraftPickSnapshot, DraftPlayerRow, GameEventType, LobbyClub, LobbyGame, LobbyPhase, ScoutingDrawSnapshot } from "@/lib/lobby/types";
+import { emitGameEvent } from "@/lib/lobby/emit-game-event";
+import type { DraftPickSnapshot, DraftPlayerRow, LobbyClub, LobbyGame, LobbyPhase, ScoutingDrawSnapshot } from "@/lib/lobby/types";
 
 export async function setReadyFromDashboardAction(formData: FormData) {
   const { userId } = await auth();
@@ -1023,6 +1025,17 @@ export async function passScoutedPlayerAction(formData: FormData) {
   }
 
   await touchGameSave(supabase, gameId, userId);
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: {
+      clubId: ownClub.id,
+      drawId: draw.id,
+      playerId: draw.player_id,
+      seasonNumber,
+    },
+    type: "SCOUTING_CARD_PASSED",
+  });
   revalidatePath(`/games/${roomCode}`);
   redirect(`/games/${roomCode}?view=scouting`);
 }
@@ -1064,6 +1077,17 @@ export async function passAllScoutedPlayersAction(formData: FormData) {
   }
 
   await touchGameSave(supabase, gameId, userId);
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: {
+      clubId: ownClub.id,
+      drawIds: openDrawIds,
+      needsRefetch: true,
+      seasonNumber,
+    },
+    type: "SCOUTING_STATUS_CHANGED",
+  });
   revalidatePath(`/games/${roomCode}`);
   redirect(`/games/${roomCode}?view=scouting`);
 }
@@ -1167,10 +1191,16 @@ export async function createTransferOfferAction(formData: FormData) {
   const offeredClubPlayerIdRaw = String(formData.get("offered_club_player_id") || "");
   const offeredClubPlayerId = offeredClubPlayerIdRaw === "none" ? "" : offeredClubPlayerIdRaw;
   const cashAmount = normalizeTransferCashAmount(Number(formData.get("cash_amount_millions") || 0) * 1_000_000);
+  const returnView = String(formData.get("return_view") || "") === "squad" ? "squad" : "transfer";
+  const returnClubId = String(formData.get("return_club_id") || "");
+  const returnPath =
+    returnView === "squad" && returnClubId
+      ? `/games/${roomCode}?view=squad&club=${encodeURIComponent(returnClubId)}`
+      : `/games/${roomCode}?view=${returnView}`;
   const supabase = createSupabaseServiceClient();
 
   if (!userId || !gameId || !roomCode || !targetClubPlayerId || !supabase) {
-    redirect(`/games/${roomCode}?view=transfer`);
+    redirect(returnPath);
   }
 
   const [{ game, ownClub }, { data: target, error: targetError }] = await Promise.all([
@@ -1192,7 +1222,7 @@ export async function createTransferOfferAction(formData: FormData) {
   }
 
   if (target.club.game_id !== gameId) {
-    redirect(`/games/${roomCode}?view=transfer`);
+    redirect(returnPath);
   }
 
   let offeredPlayerId: string | null = null;
@@ -1208,7 +1238,7 @@ export async function createTransferOfferAction(formData: FormData) {
     }
 
     if (offered.club_id !== ownClub.id) {
-      redirect(`/games/${roomCode}?view=transfer`);
+      redirect(returnPath);
     }
 
     offeredPlayerId = offered.player_id;
@@ -1226,7 +1256,7 @@ export async function createTransferOfferAction(formData: FormData) {
   });
 
   if (!offerCheck.ok) {
-    redirect(`/games/${roomCode}?view=transfer`);
+    redirect(returnPath);
   }
 
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
@@ -1259,10 +1289,10 @@ export async function createTransferOfferAction(formData: FormData) {
   }
 
   if (existingTargetOffers?.length || offeredConflictResult.data?.length) {
-    redirect(`/games/${roomCode}?view=transfer`);
+    redirect(returnPath);
   }
 
-  const { error: insertError } = await supabase.from("transfer_offers").insert({
+  const { data: insertedOffer, error: insertError } = await supabase.from("transfer_offers").insert({
     cash_amount: cashAmount,
     from_club_id: ownClub.id,
     game_id: gameId,
@@ -1272,15 +1302,26 @@ export async function createTransferOfferAction(formData: FormData) {
     target_club_player_id: target.id,
     target_player_id: target.player_id,
     to_club_id: target.club_id,
-  });
+  }).select("id").single<{ id: string }>();
 
   if (insertError) {
     throw insertError;
   }
 
   await touchGameSave(supabase, gameId, userId);
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: {
+      fromClubId: ownClub.id,
+      needsRefetch: true,
+      offerId: insertedOffer?.id,
+      toClubId: target.club_id,
+    },
+    type: "TRANSFER_OFFER_CREATED",
+  });
   revalidatePath(`/games/${roomCode}`);
-  redirect(`/games/${roomCode}?view=transfer`);
+  redirect(returnPath);
 }
 
 export async function acceptTransferOfferAction(formData: FormData) {
@@ -1454,6 +1495,18 @@ export async function acceptTransferOfferAction(formData: FormData) {
   }
 
   await touchGameSave(supabase, gameId, userId);
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: {
+      fromClubId: offer.from_club_id,
+      needsRefetch: true,
+      offerId: offer.id,
+      status: "accepted",
+      toClubId: offer.to_club_id,
+    },
+    type: "TRANSFER_OFFER_RESOLVED",
+  });
   revalidatePath(`/games/${roomCode}`);
   redirect(`/games/${roomCode}?view=transfer`);
 }
@@ -1489,6 +1542,18 @@ export async function declineTransferOfferAction(formData: FormData) {
   }
 
   await touchGameSave(supabase, gameId, userId);
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: {
+      fromClubId: offer.from_club_id,
+      needsRefetch: true,
+      offerId: offer.id,
+      status: "declined",
+      toClubId: offer.to_club_id,
+    },
+    type: "TRANSFER_OFFER_RESOLVED",
+  });
   revalidatePath(`/games/${roomCode}`);
   redirect(`/games/${roomCode}?view=transfer`);
 }
@@ -1524,6 +1589,18 @@ export async function cancelTransferOfferAction(formData: FormData) {
   }
 
   await touchGameSave(supabase, gameId, userId);
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: {
+      fromClubId: offer.from_club_id,
+      needsRefetch: true,
+      offerId: offer.id,
+      status: "cancelled",
+      toClubId: offer.to_club_id,
+    },
+    type: "TRANSFER_OFFER_RESOLVED",
+  });
   revalidatePath(`/games/${roomCode}`);
   redirect(`/games/${roomCode}?view=transfer`);
 }
@@ -1559,27 +1636,38 @@ export async function initializeDeadlineDayAction(formData: FormData) {
   }
 
   const now = new Date().toISOString();
-  const { error } = await supabase.from("auctions").insert(
-    players.map((player, index) => ({
-      auction_index: index,
-      bid_order_club_ids: bidOrderClubIds,
-      current_amount: 0,
-      current_bid_club_id: index === 0 ? firstClubId : null,
-      game_id: gameId,
-      minimum_bid: Number(player.minimum_bid ?? 0),
-      passed_club_ids: [],
-      player_id: player.id,
-      season_number: seasonNumber,
-      status: index === 0 ? "open" : "scheduled",
-      turn_started_at: index === 0 ? now : null,
-    })),
-  );
+  const auctionRows = players.map((player, index) => ({
+    auction_index: index,
+    bid_order_club_ids: bidOrderClubIds,
+    current_amount: 0,
+    current_bid_club_id: index === 0 ? firstClubId : null,
+    game_id: gameId,
+    minimum_bid: Number(player.minimum_bid ?? 0),
+    passed_club_ids: [],
+    player_id: player.id,
+    season_number: seasonNumber,
+    status: index === 0 ? "open" : "scheduled",
+    turn_started_at: index === 0 ? now : null,
+  }));
+  const { data: insertedAuctions, error } = await supabase.from("auctions").insert(
+    auctionRows,
+  ).select("id, status").returns<Array<{ id: string; status: string }>>();
 
   if (error) {
     throw error;
   }
 
   await touchGameSave(supabase, gameId, userId);
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: {
+      activeAuctionId: insertedAuctions?.find((auction) => auction.status === "open")?.id ?? null,
+      auctionCount: insertedAuctions?.length ?? auctionRows.length,
+      needsRefetch: true,
+    },
+    type: "DEADLINE_INITIALIZED",
+  });
   revalidatePath(`/games/${roomCode}`);
   redirect(`/games/${roomCode}?view=deadline`);
 }
@@ -1641,7 +1729,7 @@ export async function placeDeadlineBidAction(formData: FormData) {
     passedClubIds: auction.passed_club_ids,
   });
 
-  const { error: bidError } = await supabase.from("bids").upsert(
+  const { data: bidRow, error: bidError } = await supabase.from("bids").upsert(
     {
       amount: bidCheck.normalizedAmount,
       auction_id: auction.id,
@@ -1649,19 +1737,20 @@ export async function placeDeadlineBidAction(formData: FormData) {
       locked: true,
     },
     { onConflict: "auction_id,club_id" },
-  );
+  ).select("id").single<{ id: string }>();
 
   if (bidError) {
     throw bidError;
   }
 
+  const turnStartedAt = nextClubId ? new Date().toISOString() : null;
   const { error: auctionError } = await supabase
     .from("auctions")
     .update({
       current_amount: bidCheck.normalizedAmount,
       current_bid_club_id: nextClubId,
       status: nextClubId ? "open" : "resolving",
-      turn_started_at: nextClubId ? new Date().toISOString() : null,
+      turn_started_at: turnStartedAt,
       winning_club_id: ownClub.id,
     })
     .eq("id", auction.id);
@@ -1682,10 +1771,14 @@ export async function placeDeadlineBidAction(formData: FormData) {
     payload: {
       amount: bidCheck.normalizedAmount,
       auctionId: auction.id,
+      bidId: bidRow?.id,
       clubId: ownClub.id,
+      currentAmount: bidCheck.normalizedAmount,
       nextClubId,
+      passedClubIds: auction.passed_club_ids,
       status: nextClubId ? "open" : "resolving",
-      turnStartedAt: nextClubId ? new Date().toISOString() : null,
+      turnStartedAt,
+      winningClubId: ownClub.id,
     },
     type: "AUCTION_BID_PLACED",
   });
@@ -1721,7 +1814,7 @@ export async function passDeadlineBidAction(formData: FormData) {
     passedClubIds,
   });
 
-  const { error: bidError } = await supabase.from("bids").upsert(
+  const { data: bidRow, error: bidError } = await supabase.from("bids").upsert(
     {
       amount: 0,
       auction_id: auction.id,
@@ -1729,16 +1822,38 @@ export async function passDeadlineBidAction(formData: FormData) {
       locked: true,
     },
     { onConflict: "auction_id,club_id" },
-  );
+  ).select("id").single<{ id: string }>();
 
   if (bidError) {
     throw bidError;
   }
 
+  let passStatus: "open" | "passed" | "resolving" = "open";
+  let turnStartedAt: string | null = null;
+  let needsRefetch = false;
+  let shouldEmitPassEvent = true;
+
   if (!highestBidClubId && !nextClubId) {
     await markDeadlineAuctionPassed(supabase, auction.id, passedClubIds);
-    await openNextDeadlineAuction(supabase, gameId, Number(game.settings?.seasonNumber ?? 1));
+    const nextAuction = await openNextDeadlineAuction(supabase, gameId, Number(game.settings?.seasonNumber ?? 1));
     await touchGameSave(supabase, gameId, userId);
+    await emitGameEvent(supabase, {
+      actorClerkUserId: userId,
+      gameId,
+      payload: {
+        auctionId: auction.id,
+        needsRefetch: true,
+        nextAuctionId: nextAuction?.id ?? null,
+        nextClubId: nextAuction?.firstClubId ?? null,
+        nextTurnStartedAt: nextAuction?.turnStartedAt ?? null,
+        passedClubIds,
+        status: "passed",
+      },
+      type: "AUCTION_CLOSED",
+    });
+    passStatus = "passed";
+    needsRefetch = true;
+    shouldEmitPassEvent = false;
   } else if (!nextClubId) {
     const { error } = await supabase
       .from("auctions")
@@ -1750,13 +1865,17 @@ export async function passDeadlineBidAction(formData: FormData) {
     }
 
     await resolveDeadlineAuction(supabase, auction.id, gameId, userId);
+    passStatus = "resolving";
+    needsRefetch = true;
+    shouldEmitPassEvent = false;
   } else {
+    turnStartedAt = new Date().toISOString();
     const { error } = await supabase
       .from("auctions")
       .update({
         current_bid_club_id: nextClubId,
         passed_club_ids: passedClubIds,
-        turn_started_at: new Date().toISOString(),
+        turn_started_at: turnStartedAt,
       })
       .eq("id", auction.id);
 
@@ -1765,6 +1884,24 @@ export async function passDeadlineBidAction(formData: FormData) {
     }
 
     await touchGameSave(supabase, gameId, userId);
+  }
+
+  if (shouldEmitPassEvent) {
+    await emitGameEvent(supabase, {
+      actorClerkUserId: userId,
+      gameId,
+      payload: {
+        auctionId: auction.id,
+        bidId: bidRow?.id,
+        clubId: ownClub.id,
+        needsRefetch,
+        nextClubId,
+        passedClubIds,
+        status: passStatus,
+        turnStartedAt,
+      },
+      type: "AUCTION_PASSED",
+    });
   }
 
   revalidatePath(`/games/${roomCode}`);
@@ -1962,7 +2099,15 @@ export async function lockFixtureLineupAction(formData: FormData) {
     gameId,
     payload: {
       clubId: ownClub.id,
+      fixturePatch: {
+        ...(side === "home"
+          ? { home_lineup_locked: true, home_locked_att: powers.ATT, home_locked_def: powers.DEF, home_locked_mid: powers.MID }
+          : { away_lineup_locked: true, away_locked_att: powers.ATT, away_locked_def: powers.DEF, away_locked_mid: powers.MID }),
+      },
       fixtureId,
+      lockedAtt: powers.ATT,
+      lockedDef: powers.DEF,
+      lockedMid: powers.MID,
       powers,
       side,
     },
@@ -2148,11 +2293,11 @@ export async function advancePhaseAction(formData: FormData) {
   ]);
 
   if (gameError) {
-    throw gameError;
+    throw new Error(gameError.message ?? "Spielstand konnte nicht geladen werden.");
   }
 
   if (membersError) {
-    throw membersError;
+    throw new Error(membersError.message ?? "Mitglieder konnten nicht geladen werden.");
   }
 
   if (!game || game.host_clerk_user_id !== userId) {
@@ -2242,7 +2387,7 @@ export async function advancePhaseAction(formData: FormData) {
     .eq("id", gameId);
 
   if (updateGameError) {
-    throw updateGameError;
+    throw new Error(updateGameError.message ?? "Phase konnte nicht aktualisiert werden.");
   }
 
   const { error: resetError } = await supabase
@@ -2251,7 +2396,7 @@ export async function advancePhaseAction(formData: FormData) {
     .eq("game_id", gameId);
 
   if (resetError) {
-    throw resetError;
+    throw new Error(resetError.message ?? "Phase-Status konnte nicht zurueckgesetzt werden.");
   }
 
   // Auto-simulate CPU-vs-CPU fixtures when entering the season phase
@@ -2592,7 +2737,7 @@ async function resolveFixtureServer(params: {
   const { fixture, game, participants, supabase, userId } = params;
 
   // Apply next_match pending effects (zone deltas, staff disable) before resolving CPU-only fixtures.
-  const { consumedIds: preMatchConsumed } = await injectNextMatchEffects(supabase, {
+  const { consumedIds: preMatchConsumed, updatedPartial, staffDisabled } = await injectNextMatchEffects(supabase, {
     fixtureId: fixture.id,
     homeClubId: participants.home.club_id ?? null,
     awayClubId: participants.away.club_id ?? null,
@@ -2600,14 +2745,15 @@ async function resolveFixtureServer(params: {
   });
 
   const [homeSide, awaySide] = await Promise.all([
-    buildFixtureSide(supabase, participants.home, fixture.home_cpu_lineup_id),
-    buildFixtureSide(supabase, participants.away, fixture.away_cpu_lineup_id),
+    buildFixtureSide(supabase, participants.home, fixture.home_cpu_lineup_id, { suppressStaff: staffDisabled.home }),
+    buildFixtureSide(supabase, participants.away, fixture.away_cpu_lineup_id, { suppressStaff: staffDisabled.away }),
   ]);
   const resolution = resolveFixture({
     away: awaySide,
     diceRolls: Array.from({ length: 6 }, () => [rollDie(), rollDie()] as [number, number]),
     home: homeSide,
     matchPointsMode: getMatchPointsMode(game.settings),
+    zoneModifiers: updatedPartial.pending_modifiers ?? [],
   });
 
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
@@ -2643,8 +2789,9 @@ async function resolveFixtureServer(params: {
         const { card, clubGameChangerId } = result;
         const effects = parseEffects(card.effects);
 
+        let dispatchDetails: string[] = [];
         if (category !== "secret_weapon") {
-          await dispatchGameChangerEffects({
+          const dispatchResult = await dispatchGameChangerEffects({
             supabase,
             clubId: event.club_id,
             clubGameChangerId,
@@ -2655,6 +2802,7 @@ async function resolveFixtureServer(params: {
               seasonNumber,
             },
           });
+          dispatchDetails = dispatchResult.details;
         }
 
         await writeMatchNews(supabase, {
@@ -2664,7 +2812,7 @@ async function resolveFixtureServer(params: {
           clubGameChangerId,
           category,
           headline: `Game Changer: ${card.display_name}`,
-          detail: card.description || undefined,
+          detail: formatGameChangerNewsDetail(card.description, dispatchDetails),
         });
       }
     }
@@ -3211,11 +3359,23 @@ export async function startMatchAction(formData: FormData) {
     }
   }
 
+  const startPatch = { match_state: "in_progress", current_third: 0, partial_result: updatedPartial };
   await supabase
     .from("fixtures")
-    .update({ match_state: "in_progress", current_third: 0, partial_result: updatedPartial })
+    .update(startPatch)
     .eq("id", fixtureId);
   await consumePendingEffects(supabase, consumedIds);
+  await touchGameSave(supabase, gameId, userId);
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: {
+      fixtureId,
+      fixturePatch: startPatch,
+      needsRefetch: consumedIds.length > 0,
+    },
+    type: "MATCH_STARTED",
+  });
 
   revalidatePath(`/games/${roomCode}`);
   redirect(`/games/${roomCode}?view=matchday`);
@@ -3274,6 +3434,19 @@ export async function markReadyForNextThirdAction(formData: FormData) {
     (side === "away" ? true : refreshed?.away_ready_for_next_third ?? false);
 
   if (!bothReady) {
+    await touchGameSave(supabase, gameId, userId);
+    await emitGameEvent(supabase, {
+      actorClerkUserId: userId,
+      gameId,
+      payload: {
+        fixtureId,
+        fixturePatch: {
+          [readyField]: true,
+        },
+        side,
+      },
+      type: "MATCH_THIRD_READY_CHANGED",
+    });
     revalidatePath(`/games/${roomCode}`);
     redirect(`/games/${roomCode}?view=matchday`);
   }
@@ -3354,8 +3527,9 @@ export async function markReadyForNextThirdAction(formData: FormData) {
         const { card, clubGameChangerId } = result;
         const effects = parseEffects(card.effects);
 
+        let dispatchDetails: string[] = [];
         if (category !== "secret_weapon") {
-          await dispatchGameChangerEffects({
+          const dispatchResult = await dispatchGameChangerEffects({
             supabase,
             clubId: event.club_id,
             clubGameChangerId,
@@ -3366,6 +3540,7 @@ export async function markReadyForNextThirdAction(formData: FormData) {
               seasonNumber,
             },
           });
+          dispatchDetails = dispatchResult.details;
         }
 
         await writeMatchNews(supabase, {
@@ -3375,7 +3550,7 @@ export async function markReadyForNextThirdAction(formData: FormData) {
           clubGameChangerId,
           category,
           headline: `Game Changer: ${card.display_name}`,
-          detail: card.description || undefined,
+          detail: formatGameChangerNewsDetail(card.description, dispatchDetails),
         });
       }
     }
@@ -3405,22 +3580,24 @@ export async function markReadyForNextThirdAction(formData: FormData) {
     const matchPoints = getMatchPoints(winnerSide, getMatchPointsMode(game.settings));
     const allEvents = newThirds.flatMap((t) => getDoubleDiceEventsFromThird(t, homeSide, awaySide));
 
+    const completedAt = new Date().toISOString();
+    const fixturePatch = {
+      away_ready_for_next_third: false,
+      away_score: matchPoints.away,
+      away_third_points: scores.away,
+      completed_at: completedAt,
+      current_third: 3,
+      home_ready_for_next_third: false,
+      home_score: matchPoints.home,
+      home_third_points: scores.home,
+      match_state: "completed",
+      partial_result: newPartial,
+      result: { thirds: newThirds, events: allEvents, home_match_points: matchPoints.home, away_match_points: matchPoints.away },
+      status: "completed",
+    };
     const { error: updateError } = await supabase
       .from("fixtures")
-      .update({
-        match_state: "completed",
-        status: "completed",
-        current_third: 3,
-        home_ready_for_next_third: false,
-        away_ready_for_next_third: false,
-        home_score: matchPoints.home,
-        away_score: matchPoints.away,
-        home_third_points: scores.home,
-        away_third_points: scores.away,
-        result: { thirds: newThirds, events: allEvents, home_match_points: matchPoints.home, away_match_points: matchPoints.away },
-        partial_result: newPartial,
-        completed_at: new Date().toISOString(),
-      })
+      .update(fixturePatch)
       .eq("id", fixtureId);
 
     if (updateError) throw updateError;
@@ -3428,16 +3605,42 @@ export async function markReadyForNextThirdAction(formData: FormData) {
     await rebuildSeasonStandings(supabase, gameId, fixture.season_number);
     await touchGameSave(supabase, gameId, userId);
     await autoSimulateCpuOnlyFixtures(supabase, gameId, game, userId);
+    await emitGameEvent(supabase, {
+      actorClerkUserId: userId,
+      gameId,
+      payload: {
+        events,
+        fixtureId,
+        fixturePatch,
+        needsRefetch: true,
+        third,
+      },
+      type: "MATCH_THIRD_RESOLVED",
+    });
   } else {
+    const fixturePatch = {
+      away_ready_for_next_third: false,
+      current_third: newThirdCount,
+      home_ready_for_next_third: false,
+      partial_result: newPartial,
+    };
     await supabase
       .from("fixtures")
-      .update({
-        current_third: newThirdCount,
-        home_ready_for_next_third: false,
-        away_ready_for_next_third: false,
-        partial_result: newPartial,
-      })
+      .update(fixturePatch)
       .eq("id", fixtureId);
+    await touchGameSave(supabase, gameId, userId);
+    await emitGameEvent(supabase, {
+      actorClerkUserId: userId,
+      gameId,
+      payload: {
+        events,
+        fixtureId,
+        fixturePatch,
+        needsRefetch: events.length > 0,
+        third,
+      },
+      type: "MATCH_THIRD_RESOLVED",
+    });
   }
 
   revalidatePath(`/games/${roomCode}`);
@@ -3539,6 +3742,19 @@ export async function playSecretWeaponAction(formData: FormData) {
     }),
   ]);
 
+  await touchGameSave(supabase, gameId, userId);
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: {
+      clubGameChangerId,
+      clubId: ownClub.id,
+      fixtureId,
+      fixturePatch: { partial_result: updatedPartial },
+      needsRefetch: true,
+    },
+    type: "SECRET_WEAPON_PLAYED",
+  });
   revalidatePath(`/games/${roomCode}`);
   redirect(`/games/${roomCode}?view=matchday`);
 }
@@ -4849,13 +5065,18 @@ async function resolveDeadlineAuction(supabase: SupabaseServiceClient, auctionId
 
   if (!auction.winning_club_id || Number(auction.current_amount ?? 0) <= 0) {
     await markDeadlineAuctionPassed(supabase, auction.id, auction.passed_club_ids ?? []);
-    await openNextDeadlineAuction(supabase, gameId, Number(auction.season_number ?? 1));
+    const nextAuction = await openNextDeadlineAuction(supabase, gameId, Number(auction.season_number ?? 1));
     await touchGameSave(supabase, gameId, userId);
     await emitGameEvent(supabase, {
       actorClerkUserId: userId,
       gameId,
       payload: {
         auctionId: auction.id,
+        needsRefetch: true,
+        nextAuctionId: nextAuction?.id ?? null,
+        nextClubId: nextAuction?.firstClubId ?? null,
+        nextTurnStartedAt: nextAuction?.turnStartedAt ?? null,
+        passedClubIds: auction.passed_club_ids ?? [],
         status: "passed",
       },
       type: "AUCTION_CLOSED",
@@ -4875,13 +5096,18 @@ async function resolveDeadlineAuction(supabase: SupabaseServiceClient, auctionId
   const winningAmount = Number(auction.current_amount ?? 0);
   if (Number(club.money) < winningAmount || squadCount >= 23) {
     await markDeadlineAuctionPassed(supabase, auction.id, auction.passed_club_ids ?? []);
-    await openNextDeadlineAuction(supabase, gameId, Number(auction.season_number ?? 1));
+    const nextAuction = await openNextDeadlineAuction(supabase, gameId, Number(auction.season_number ?? 1));
     await touchGameSave(supabase, gameId, userId);
     await emitGameEvent(supabase, {
       actorClerkUserId: userId,
       gameId,
       payload: {
         auctionId: auction.id,
+        needsRefetch: true,
+        nextAuctionId: nextAuction?.id ?? null,
+        nextClubId: nextAuction?.firstClubId ?? null,
+        nextTurnStartedAt: nextAuction?.turnStartedAt ?? null,
+        passedClubIds: auction.passed_club_ids ?? [],
         status: "passed",
       },
       type: "AUCTION_CLOSED",
@@ -4963,7 +5189,7 @@ async function resolveDeadlineAuction(supabase: SupabaseServiceClient, auctionId
     throw transactionError;
   }
 
-  await openNextDeadlineAuction(supabase, gameId, Number(auction.season_number ?? 1));
+  const nextAuction = await openNextDeadlineAuction(supabase, gameId, Number(auction.season_number ?? 1));
   await touchGameSave(supabase, gameId, userId);
   await emitGameEvent(supabase, {
     actorClerkUserId: userId,
@@ -4971,7 +5197,12 @@ async function resolveDeadlineAuction(supabase: SupabaseServiceClient, auctionId
     payload: {
       amount: winningAmount,
       auctionId: auction.id,
+      needsRefetch: true,
+      nextAuctionId: nextAuction?.id ?? null,
+      nextClubId: nextAuction?.firstClubId ?? null,
+      nextTurnStartedAt: nextAuction?.turnStartedAt ?? null,
       playerId: auction.player_id,
+      resolvedAt: new Date().toISOString(),
       status: "resolved",
       winningClubId: auction.winning_club_id,
     },
@@ -5012,22 +5243,29 @@ async function openNextDeadlineAuction(supabase: SupabaseServiceClient, gameId: 
   }
 
   if (!nextAuction) {
-    return;
+    return null;
   }
 
   const firstClubId = nextAuction.bid_order_club_ids?.[0] ?? null;
+  const turnStartedAt = firstClubId ? new Date().toISOString() : null;
   const { error } = await supabase
     .from("auctions")
     .update({
       current_bid_club_id: firstClubId,
       status: "open",
-      turn_started_at: firstClubId ? new Date().toISOString() : null,
+      turn_started_at: turnStartedAt,
     })
     .eq("id", nextAuction.id);
 
   if (error) {
     throw error;
   }
+
+  return {
+    firstClubId,
+    id: nextAuction.id,
+    turnStartedAt,
+  };
 }
 
 function shuffle<T>(items: T[]) {
@@ -5057,27 +5295,6 @@ async function touchGameSave(supabase: SupabaseServiceClient, gameId: string, us
 }
 
 // ─── Staff Recruitment ────────────────────────────────────────────────────────
-
-async function emitGameEvent(
-  supabase: SupabaseServiceClient,
-  params: {
-    actorClerkUserId?: string | null;
-    gameId: string;
-    payload?: Record<string, unknown>;
-    type: GameEventType;
-  },
-) {
-  const { error } = await supabase.rpc("append_game_event", {
-    p_actor_clerk_user_id: params.actorClerkUserId ?? null,
-    p_game_id: params.gameId,
-    p_payload: params.payload ?? {},
-    p_type: params.type,
-  });
-
-  if (error) {
-    throw error;
-  }
-}
 
 export async function recruitStaffOpenAction(formData: FormData) {
   const { userId } = await auth();
@@ -5114,13 +5331,12 @@ export async function recruitStaffOpenAction(formData: FormData) {
     .filter((e) => e.type === "investment_action_bonus")
     .reduce((sum, e) => sum + Number(e.extra ?? 0), 0);
 
-  // Free staff offer Pending-Effect: allows opening an additional staff offer
-  // without consuming an investment action this offseason.
+  // Free staff offer: no investment row, but still requires a free investment slot this offseason.
   const staffPendingEffects = await getActivePendingEffects(supabase, clubId, "current_offseason");
   const freeOfferEffect = staffPendingEffects.find((eff) => eff.effect_type === "free_staff_offer");
 
   const check = canRecruitStaff({
-    actionsThisSeason: freeOfferEffect ? [] : (investments ?? []).map((i) => i.action),
+    actionsThisSeason: (investments ?? []).map((i) => i.action),
     currentStaffCount: existingStaff?.length ?? 0,
     hasOpenOffer: (openOffer?.length ?? 0) > 0,
     extraActionBonus: extraBonus,
@@ -5410,6 +5626,7 @@ export async function triggerDrawRerollAction(formData: FormData) {
   const dice2 = Math.floor(Math.random() * 6) + 1;
   const total = dice1 + dice2;
   const rerollWin = total >= threshold;
+  let fixturePatch: Record<string, unknown> | null = null;
 
   if (rerollWin) {
     const winnerParticipantId = ownSide === "home" ? fixture.home_participant_id : fixture.away_participant_id;
@@ -5417,10 +5634,11 @@ export async function triggerDrawRerollAction(formData: FormData) {
 
     const newHomeScore = ownSide === "home" ? fixture.home_score + 1 : fixture.home_score;
     const newAwayScore = ownSide === "away" ? fixture.away_score + 1 : fixture.away_score;
+    fixturePatch = { home_score: newHomeScore, away_score: newAwayScore };
 
     const { error: fixtureUpdateError } = await supabase
       .from("fixtures")
-      .update({ home_score: newHomeScore, away_score: newAwayScore })
+      .update(fixturePatch)
       .eq("id", fixtureId);
 
     if (fixtureUpdateError) throw fixtureUpdateError;
@@ -5472,6 +5690,20 @@ export async function triggerDrawRerollAction(formData: FormData) {
   }
 
   await touchGameSave(supabase, gameId, userId);
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: {
+      clubId,
+      dice: [dice1, dice2],
+      fixtureId,
+      fixturePatch,
+      needsRefetch: true,
+      success: rerollWin,
+      threshold,
+    },
+    type: "DRAW_REROLL_TRIGGERED",
+  });
   revalidatePath(`/games/${roomCode}`);
   redirect(`/games/${roomCode}`);
 }

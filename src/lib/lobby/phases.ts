@@ -19,10 +19,10 @@ export function getSeasonNumber(settings: Pick<LobbySettings, "seasonNumber"> | 
 
 export function getNextLobbyPhase(
   phase: LobbyPhase,
-  settings?: Pick<LobbySettings, "seasonNumber"> | null,
+  settings?: Pick<LobbySettings, "seasonNumber" | "continental_cup_enabled"> | null,
 ): LobbyPhase {
   if (phase === "season_end") {
-    return shouldRunContinentalCup(getSeasonNumber(settings)) ? "champions_league" : "off_season";
+    return shouldRunContinentalCup(getSeasonNumber(settings), settings) ? "champions_league" : "off_season";
   }
 
   const nextByPhase: Partial<Record<LobbyPhase, LobbyPhase>> = {

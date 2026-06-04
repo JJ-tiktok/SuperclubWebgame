@@ -6,6 +6,7 @@ import type { CSSProperties } from "react";
 import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { saveGameAction, setReadyAction, startGameAction } from "@/app/lobby/actions";
+import { DevAdminMenu } from "@/components/dev/dev-admin-menu";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelDescription, PanelHeader, PanelTitle } from "@/components/ui/panel";
@@ -218,6 +219,9 @@ export function LobbyRealtime({
                 {readyCount}/{clubs.length} bereit
               </Badge>
               <Badge>Save v{game.save_version ?? 1}</Badge>
+              <Badge tone={game.settings.continental_cup_enabled === false ? "neutral" : "blue"}>
+                Continental Cup {game.settings.continental_cup_enabled === false ? "aus" : "an"}
+              </Badge>
             </div>
             <h1 className="mt-3 text-2xl font-semibold text-zinc-50">{ownClub?.club_name ?? "Lobby"}</h1>
             <p className="mt-1 text-sm text-zinc-500">
@@ -257,6 +261,11 @@ export function LobbyRealtime({
             <UserButton />
           </div>
           </div>
+          {isHost ? (
+            <div className="border-t border-zinc-800 px-4 py-3">
+              <DevAdminMenu hostOnly isHost roomCode={game.room_code} variant="compact" />
+            </div>
+          ) : null}
         </header>
 
         {!supabaseConfigured ? (
@@ -272,6 +281,8 @@ export function LobbyRealtime({
         {status?.ok && status.message ? (
           <div className="rounded-md border border-emerald-800 bg-emerald-950 px-4 py-3 text-sm text-emerald-100">{status.message}</div>
         ) : null}
+
+        {isHost ? <DevAdminMenu hostOnly isHost roomCode={game.room_code} variant="panel" /> : null}
 
         <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
           <Panel className="border-[var(--club-border)] bg-zinc-950/85">

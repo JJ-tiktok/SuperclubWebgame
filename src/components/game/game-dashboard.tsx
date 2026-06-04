@@ -89,6 +89,7 @@ import {
 } from "@/app/games/actions/match";
 import { CONTINENTAL_ROUNDS, getContinentalRoundLabel } from "@/lib/lobby/continental-cup";
 import { healInjuredPlayerAction } from "@/app/games/actions/game-changers";
+import { resolveDisplayZoneBoosts } from "@/lib/game/game-changer-effects";
 import {
   formatMoney,
   formatSavedAt,
@@ -97,6 +98,7 @@ import {
   getAuctionBadgeTone,
   getAuctionStatusLabel,
   getClubStatusLabel,
+  getEffectiveClubStatusLabel,
   getDeadlineBidTitle,
   getInvestmentLabel,
   getScoutingCheckLabel,
@@ -110,6 +112,8 @@ import { Metric, SmallInfo } from "@/components/game/shared/metric";
 import { SquadPositionBreakdown } from "@/components/game/shared/squad-breakdown";
 import { ActiveEffectsChip } from "@/components/game/active-effects-chip";
 import { GameChangerChoiceModal } from "@/components/game/game-changer-choice-modal";
+import { DevAdminMenu } from "@/components/dev/dev-admin-menu";
+import { isDevEnvironment } from "@/lib/dev/dev-tools";
 import { GameChangerPopup } from "@/components/game/game-changer-popup";
 import { GameEventsDock } from "@/components/game/game-events-dock";
 import { GameLineupBoard } from "@/components/game/game-lineup-board";
@@ -124,9 +128,11 @@ import { Button } from "@/components/ui/button";
 import { Panel, PanelDescription, PanelHeader, PanelTitle } from "@/components/ui/panel";
 import { DEADLINE_BID_STEP, DEADLINE_TURN_SECONDS, getMinimumNextBid } from "@/lib/lobby/deadline";
 import { mapDbPlayerToPlayerCardData } from "@/lib/lobby/draft";
-import { canRecruitStaff, canUpgradeFacility, getStaffRecruitReasonLabel, getUpgradeCost, getUpgradeReasonLabel, type UpgradeAction } from "@/lib/lobby/investments";
+import { canUpgradeFacility, getStaffRecruitBlockReason, getStaffRecruitHint, getStaffRecruitReasonLabel, getUpgradeCost, getUpgradeReasonLabel, type UpgradeAction } from "@/lib/lobby/investments";
+import { isOffseasonPendingScopeActive } from "@/lib/lobby/offseason-pending-effects";
 import { calculateLineupPower } from "@/lib/lobby/lineup-power";
 import { getPhaseLabel, isInvestmentPhase } from "@/lib/lobby/phases";
+import { isClubStatusOverrideActive, resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
 import { getManagerScoreBand, getPlacementReward, getScoutingCapacity, getStadiumIncome, getTrainingCapacity, MAX_SQUAD_SIZE } from "@/lib/game/rules";
 import { CPU_TIER_LABEL } from "@/lib/lobby/cpu-teams";
 import { canStartLobby } from "@/lib/lobby/rules";
@@ -146,6 +152,7 @@ import { canTrainOwnedPlayer } from "@/lib/lobby/training";
 import { MANAGER_TRANSFER_DEPARTURE_LIMIT } from "@/lib/lobby/transfers";
 import type {
   ContinentalFixtureSnapshot,
+  ClubPlayerSnapshot,
   CpuStrengthTier,
   DraftPlayerRow,
   LobbyClub,
@@ -355,6 +362,18 @@ function AppSidebar({
           </div>
         </div>
 
+        {isDevEnvironment() && isHost ? (
+          <div className="mt-5 border-t border-zinc-800 pt-4">
+            <DevAdminMenu
+              collapsed={collapsed}
+              hostOnly
+              isHost={isHost}
+              roomCode={snapshot.game.room_code}
+              variant="sidebar"
+            />
+          </div>
+        ) : null}
+
         <div className="mt-5 border-t border-zinc-800 pt-4">
           {collapsed ? (
             <div className="flex justify-center">
@@ -366,7 +385,12 @@ function AppSidebar({
                 <span className="text-zinc-400">Phase</span>
                 <Badge>{getPhaseLabel(snapshot.game.phase)}</Badge>
               </div>
-              {isHost ? <p className="mt-3 px-2 text-xs text-zinc-500">Host-Tools sind oben rechts verfuegbar.</p> : null}
+              {isHost ? (
+                <p className="mt-3 px-2 text-xs text-zinc-500">
+                  Host-Tools sind oben rechts verfuegbar.
+                  {isDevEnvironment() ? " Dev-Menue siehe Abschnitt unten." : null}
+                </p>
+              ) : null}
             </>
           )}
         </div>
@@ -508,6 +532,8 @@ function GameHeader({
   snapshot: LobbySnapshot;
   startState: ReturnType<typeof canStartLobby>;
 }) {
+  const seasonNumber = Number(snapshot.game.settings?.seasonNumber ?? 1);
+
   return (
     <header className="overflow-hidden rounded-lg border border-[var(--club-border)] bg-zinc-950/90 shadow-sm shadow-black/30">
       <div className="h-1.5 bg-[var(--club-color)]" />
@@ -525,6 +551,11 @@ function GameHeader({
               effects={snapshot.club_overview?.pending_effects ?? []}
               roomCode={snapshot.game.room_code}
             />
+            {ownClub && isClubStatusOverrideActive(ownClub, seasonNumber) ? (
+              <Badge tone="green" title="Game-Changer-Status bis Saisonende">
+                Status: {getEffectiveClubStatusLabel(ownClub, seasonNumber)}
+              </Badge>
+            ) : null}
           </div>
           <h1 className="mt-3 text-2xl font-semibold text-zinc-50">{ownClub?.club_name ?? "Spielstand"}</h1>
           <p className="mt-1 text-sm text-zinc-400">
@@ -612,6 +643,7 @@ function DashboardView({
   snapshot: LobbySnapshot;
 }) {
   const readyCount = snapshot.clubs.filter((club) => club.is_ready).length;
+  const seasonNumber = Number(snapshot.game.settings?.seasonNumber ?? 1);
 
   return (
     <div className="space-y-4">
@@ -627,7 +659,12 @@ function DashboardView({
           <Metric icon={Users} label="Manager" value={String(snapshot.clubs.length)} detail={`${readyCount}/${snapshot.clubs.length} bereit`} />
           <Metric icon={Banknote} label="Budget" value={formatMoney(ownClub?.money ?? 0)} detail="aktueller Verein" />
           <Metric icon={Sparkles} label="Staerkelevel" value={`${formatStars(ownClub?.squad_stars ?? 0)} Sterne`} detail="gesamter Kader" />
-          <Metric icon={Target} label="Positionierung" value={`#${ownClub?.season_rank ?? 1}`} detail={getClubStatusLabel(ownClub?.status)} />
+          <Metric
+            icon={Target}
+            label="Positionierung"
+            value={`#${ownClub?.season_rank ?? 1}`}
+            detail={getEffectiveClubStatusLabel(ownClub, seasonNumber)}
+          />
           <Metric icon={ListOrdered} label="Am Zug" value={currentTurnClub?.club_name ?? getTurnFallback(snapshot.game.phase, isHost)} detail={snapshot.game.phase} />
         </div>
       </Panel>
@@ -1443,10 +1480,7 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
   const isOffseason = isOffseasonPhase(snapshot.game.phase);
   const saleCheck = canSellClubPlayer({ isOffseason, salesCount });
   const transfersBlocked = isOffseasonTransfersBlocked(overview.pending_effects ?? [], snapshot.game.phase);
-  const managerTransfersEnabled = isOffseason && !transfersBlocked && !transferMarket?.setup_error;
   const managerDeparturesCount = transferMarket?.manager_departures_count ?? 0;
-  const offeredPlayerIds = new Set((transferMarket?.outgoing_offers ?? []).flatMap((offer) => offer.offered_club_player_id ? [offer.offered_club_player_id] : []));
-  const ownOfferPlayers = overview.squad.filter((owned) => !offeredPlayerIds.has(owned.id));
 
   return (
     <div className="space-y-4">
@@ -1454,7 +1488,7 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
         <PanelHeader>
           <div>
             <PanelTitle>Transfermarkt</PanelTitle>
-            <PanelDescription>Verkaufe Spieler aus deinem Kader und bereite spaetere Angebote zwischen Clubs vor.</PanelDescription>
+            <PanelDescription>Verkaufe Spieler an den Pool und verwalte offene Manager-Angebote.</PanelDescription>
           </div>
           <ShoppingCart size={18} className="text-[var(--club-color)]" aria-hidden />
         </PanelHeader>
@@ -1546,103 +1580,6 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
                 </div>
               );
             })}
-          </div>
-        )}
-      </Panel>
-
-      <Panel className="border-[var(--club-border)] bg-zinc-950/85">
-        <PanelHeader>
-          <div>
-            <PanelTitle>Andere Manager-Kader</PanelTitle>
-            <PanelDescription>Frage Spieler an und biete Geld plus optional einen eigenen Spieler.</PanelDescription>
-          </div>
-          <ArrowLeftRight size={18} className="text-[var(--club-color)]" aria-hidden />
-        </PanelHeader>
-        {!transferMarket || transferMarket.other_clubs.length === 0 ? (
-          <div className="rounded-md border border-dashed border-zinc-800 bg-zinc-900/45 p-4 text-sm text-zinc-500">
-            Keine anderen Manager-Clubs im Spielstand.
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {transferMarket.other_clubs.map((clubMarket) => (
-              <div className="rounded-lg border border-zinc-800 bg-zinc-900/45 p-3" key={clubMarket.club.id}>
-                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <p className="font-semibold text-zinc-50">{clubMarket.club.club_name}</p>
-                    <p className="text-xs text-zinc-500">{clubMarket.club.manager_name}</p>
-                  </div>
-                  <Badge tone="blue">{clubMarket.squad.length} Spieler</Badge>
-                </div>
-                {clubMarket.squad.length === 0 ? (
-                  <p className="rounded-md border border-dashed border-zinc-800 bg-zinc-950/60 p-3 text-sm text-zinc-500">
-                    Dieser Club hat aktuell keinen Kader.
-                  </p>
-                ) : (
-                  <div className="grid gap-3 lg:grid-cols-2">
-                    {[...clubMarket.squad]
-                      .sort((a, b) => Number(b.current_stars) - Number(a.current_stars))
-                      .map((owned) => {
-                        const card = mapOwnedPlayerToCardData(owned);
-                        const defaultCashMillions = Math.max(1, Math.round(Number(owned.player.minimum_bid ?? 0) / 1_000_000));
-
-                        return (
-                          <div className="grid gap-3 rounded-md border border-zinc-800 bg-zinc-950/70 p-3 sm:grid-cols-[112px_minmax(0,1fr)]" key={owned.id}>
-                            <PlayerCard disabled={owned.injured} player={card} variant="draft" />
-                            <div className="min-w-0">
-                              <div className="flex items-start justify-between gap-2">
-                                <div className="min-w-0">
-                                  <p className="truncate font-semibold text-zinc-50">{owned.player.display_name}</p>
-                                  <p className="mt-1 text-xs text-zinc-500">{getPlayerPositionLabel(owned.player)}</p>
-                                </div>
-                                <Badge tone={owned.injured ? "red" : "green"}>{owned.injured ? "verletzt" : "fit"}</Badge>
-                              </div>
-                              <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-zinc-400">
-                                <SmallInfo label="Staerke" value={formatStars(Number(owned.current_stars))} />
-                                <SmallInfo label="Marktwert" value={formatMoney(Number(owned.player.minimum_bid ?? 0))} />
-                              </div>
-                              <form action={createTransferOfferAction} className="mt-3 grid gap-2">
-                                <input name="game_id" type="hidden" value={snapshot.game.id} />
-                                <input name="room_code" type="hidden" value={snapshot.game.room_code} />
-                                <input name="target_club_player_id" type="hidden" value={owned.id} />
-                                <label className="grid gap-1 text-xs text-zinc-400">
-                                  Geldangebot in Mio
-                                  <input
-                                    className="h-9 rounded-md border border-zinc-700 bg-zinc-950 px-3 text-sm text-zinc-100 outline-none focus:border-lime-300"
-                                    min={0}
-                                    name="cash_amount_millions"
-                                    step={1}
-                                    type="number"
-                                    defaultValue={defaultCashMillions}
-                                  />
-                                </label>
-                                <label className="grid gap-1 text-xs text-zinc-400">
-                                  Eigener Spieler optional
-                                  <select
-                                    className="h-9 rounded-md border border-zinc-700 bg-zinc-950 px-3 text-sm text-zinc-100 outline-none focus:border-lime-300"
-                                    name="offered_club_player_id"
-                                    defaultValue="none"
-                                  >
-                                    <option value="none">Kein Spieler</option>
-                                    {ownOfferPlayers.map((ownPlayer) => (
-                                      <option key={ownPlayer.id} value={ownPlayer.id}>
-                                        {ownPlayer.player.display_name} ({formatStars(Number(ownPlayer.current_stars))})
-                                      </option>
-                                    ))}
-                                  </select>
-                                </label>
-                                <Button disabled={!managerTransfersEnabled} size="sm" type="submit" variant="primary">
-                                  <ArrowUpRight size={14} aria-hidden />
-                                  Angebot senden
-                                </Button>
-                              </form>
-                            </div>
-                          </div>
-                        );
-                      })}
-                  </div>
-                )}
-              </div>
-            ))}
           </div>
         )}
       </Panel>
@@ -2099,7 +2036,7 @@ function ClubOverviewView({
       {focus === "grounds" && overview.open_staff_offer ? (
         <StaffMarketView offer={overview.open_staff_offer} ownClub={ownClub} snapshot={snapshot} />
       ) : null}
-      {focus === "squad" ? <SquadPanel ownClub={ownClub} overview={overview} snapshot={snapshot} title="Kaderuebersicht" /> : null}
+      {focus === "squad" ? <SquadHubPanel ownClub={ownClub} overview={overview} snapshot={snapshot} /> : null}
       {focus === "grounds" ? <ClubCardsPanel ownClub={ownClub} overview={overview} snapshot={snapshot} /> : null}
     </div>
   );
@@ -2116,17 +2053,18 @@ function ClubFinancePanel({
 }) {
   const finance = overview.finance;
   const season = snapshot.season;
+  const seasonNumber = Number(snapshot.game.settings?.seasonNumber ?? 1);
+  const effectiveStatus = resolveEffectiveClubStatus(ownClub, seasonNumber);
+  const statusOverrideActive = finance.status_override_active ?? isClubStatusOverrideActive(ownClub, seasonNumber);
 
   const managerStanding = season?.manager_standings.find((s) => s.club_id === ownClub.id);
   const hasActiveSeason = Boolean(season && !season.setup_error);
-  const managerScore = managerStanding?.season_score ?? Math.round(ownClub.squad_stars ?? 0);
-  const bookingStatus = getManagerScoreBand(managerScore).status;
-  const stadiumIncome = getStadiumIncome(ownClub.stadium_level ?? 1, bookingStatus);
   const managerRank = managerStanding?.rank ?? ownClub.season_rank ?? 1;
-  const placementReward = getPlacementReward(managerRank, snapshot.clubs.length);
-  const totalIncome = stadiumIncome + placementReward;
+  const placementReward = finance.placement_reward;
+  const stadiumIncome = finance.stadium_income;
+  const totalIncome = finance.projected_income;
   const wages = finance.wages;
-  const net = totalIncome - wages;
+  const net = finance.projected_net;
 
   const rankLabel = hasActiveSeason
     ? `Manager-Rang #${managerRank} · Spieltag ${season?.current_matchday ?? "–"}`
@@ -2155,7 +2093,10 @@ function ClubFinancePanel({
           <div className="flex items-center justify-between px-4 py-2.5">
             <div>
               <p className="text-sm text-zinc-200">Stadioneinnahmen</p>
-              <p className="text-xs text-zinc-500">Stadion L{ownClub.stadium_level ?? 1} · Status: {getClubStatusLabel(bookingStatus)}</p>
+              <p className="text-xs text-zinc-500">
+                Stadion L{ownClub.stadium_level ?? 1} · Status: {getClubStatusLabel(effectiveStatus)}
+                {statusOverrideActive ? " · Game Changer aktiv" : ""}
+              </p>
             </div>
             <p className="text-sm font-semibold text-emerald-300">+{formatMoney(stadiumIncome)}</p>
           </div>
@@ -2214,8 +2155,9 @@ function FacilityUpgradePanel({
   const investmentPhaseActive = isInvestmentPhase(snapshot.game.phase);
 
   const managerStanding = snapshot.season?.manager_standings.find((s) => s.club_id === ownClub.id);
-  const managerScore = managerStanding?.season_score ?? Math.round(ownClub.squad_stars ?? 0);
-  const clubStatus = getManagerScoreBand(managerScore).status;
+  const seasonNumber = Number(snapshot.game.settings?.seasonNumber ?? 1);
+  const clubStatus = resolveEffectiveClubStatus(ownClub, seasonNumber);
+  const statusOverrideActive = isClubStatusOverrideActive(ownClub, seasonNumber);
 
   const extraInvestmentSlots = overview.staff.reduce((sum, s) => {
     return sum + (s.card.effects as Array<{ type: string; extra?: number }>)
@@ -2282,6 +2224,11 @@ function FacilityUpgradePanel({
   function renderStadiumEffects(currentLevel: number) {
     return (
       <div className="mt-3 rounded-md border border-zinc-800 bg-zinc-950/50 p-3 text-xs">
+        {statusOverrideActive ? (
+          <p className="mb-2 text-[11px] text-emerald-300">
+            Game-Changer-Status aktiv: {getClubStatusLabel(clubStatus)} (Stadioneinnahmen bis Saisonende)
+          </p>
+        ) : null}
         <div className="mb-2 flex flex-wrap gap-1">
           {ALL_STATUSES.map((st) => {
             const isOwn = st === clubStatus;
@@ -2402,13 +2349,32 @@ function FacilityUpgradePanel({
 
         {/* Mitarbeiter-Karte */}
         {(() => {
-          const staffCheck = canRecruitStaff({
+          const hasFreeStaffOffer = overview.pending_effects.some(
+            (effect) =>
+              effect.effect_type === "free_staff_offer" &&
+              isOffseasonPendingScopeActive(effect.scope, snapshot.game.phase),
+          );
+          const hasFreeStaffSigning = overview.pending_effects.some(
+            (effect) =>
+              effect.effect_type === "free_staff_signing" &&
+              isOffseasonPendingScopeActive(effect.scope, snapshot.game.phase),
+          );
+          const staffRecruitInput = {
             actionsThisSeason,
             currentStaffCount: overview.staff.length,
             hasOpenOffer: Boolean(overview.open_staff_offer),
             extraActionBonus: extraInvestmentSlots,
+            hasFreeStaffOffer,
+          };
+          const staffBlockReason = getStaffRecruitBlockReason(staffRecruitInput);
+          const staffCheckOk = staffBlockReason === null;
+          const staffHint = getStaffRecruitHint({
+            hasFreeStaffOffer,
+            hasFreeStaffSigning,
+            actionsThisSeason,
+            extraActionBonus: extraInvestmentSlots,
           });
-          const staffDisabled = !investmentPhaseActive || !staffCheck.ok;
+          const staffDisabled = !investmentPhaseActive || !staffCheckOk;
           return (
             <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-4">
               <div className="flex items-start justify-between gap-3">
@@ -2422,6 +2388,12 @@ function FacilityUpgradePanel({
                 <p className="font-semibold text-zinc-400">Wie es funktioniert</p>
                 <p className="mt-1 text-zinc-300">2 zufaellige Mitarbeiterkarten werden gezogen. Einen kannst du rekrutieren oder beide ablehnen.</p>
                 <p className="mt-1.5 text-zinc-500">Max. 3 Mitarbeiter. Entlassen jederzeit moeglich.</p>
+                {hasFreeStaffOffer ? (
+                  <p className="mt-2 text-amber-200">
+                    Manager of the Year: Zuerst Mitarbeiter ziehen, solange noch Investment-Aktionen frei sind – danach geht der Gratis-Zug nicht mehr.
+                  </p>
+                ) : null}
+                {staffHint && !hasFreeStaffOffer ? <p className="mt-2 text-emerald-300">{staffHint}</p> : null}
               </div>
               <form action={recruitStaffOpenAction} className="mt-4">
                 <input name="game_id" type="hidden" value={snapshot.game.id} />
@@ -2430,10 +2402,24 @@ function FacilityUpgradePanel({
                 <Button
                   className="w-full"
                   disabled={staffDisabled}
-                  title={!investmentPhaseActive ? "Nur in der Investmentphase" : staffCheck.ok ? "Mitarbeitermarkt oeffnen" : getStaffRecruitReasonLabel(staffCheck.reason)}
+                  title={
+                    !investmentPhaseActive
+                      ? "Nur in der Investmentphase"
+                      : staffCheckOk
+                        ? hasFreeStaffOffer
+                          ? "Gratis Staff-Draw (Game Changer)"
+                          : "Mitarbeitermarkt oeffnen"
+                        : getStaffRecruitReasonLabel(staffBlockReason ?? "investment_action_limit")
+                  }
                   type="submit"
                 >
-                  {!investmentPhaseActive ? "Investmentphase abwarten" : staffCheck.ok ? "Mitarbeiter rekrutieren" : getStaffRecruitReasonLabel(staffCheck.reason)}
+                  {!investmentPhaseActive
+                    ? "Investmentphase abwarten"
+                    : staffCheckOk
+                      ? hasFreeStaffOffer
+                        ? "Gratis Mitarbeiter ziehen"
+                        : "Mitarbeiter rekrutieren"
+                      : getStaffRecruitReasonLabel(staffBlockReason ?? "investment_action_limit")}
                 </Button>
               </form>
             </div>
@@ -2451,6 +2437,254 @@ function FacilityUpgradePanel({
         </div>
       ) : null}
     </Panel>
+  );
+}
+
+function SquadHubPanel({
+  overview,
+  ownClub,
+  snapshot,
+}: {
+  overview: NonNullable<LobbySnapshot["club_overview"]>;
+  ownClub: LobbyClub;
+  snapshot: LobbySnapshot;
+}) {
+  const searchParams = useSearchParams();
+  const fallbackOwnSquad = {
+    club: {
+      club_color: ownClub.club_color,
+      club_name: ownClub.club_name,
+      id: ownClub.id,
+      image_url: ownClub.image_url,
+      manager_name: ownClub.manager_name,
+      squad_stars: ownClub.squad_stars,
+    },
+    injured_count: overview.squad.filter((player) => player.injured).length,
+    player_count: overview.squad.length,
+    squad: overview.squad,
+    squad_stars: overview.finance.squad_stars,
+  };
+  const clubSquads = snapshot.club_squads?.length ? snapshot.club_squads : [fallbackOwnSquad];
+  const requestedClubId = searchParams.get("club");
+  const selectedClubId = clubSquads.some((item) => item.club.id === requestedClubId) ? requestedClubId : ownClub.id;
+  const selectedSquad = clubSquads.find((item) => item.club.id === selectedClubId) ?? clubSquads[0] ?? fallbackOwnSquad;
+  const ownSelected = selectedSquad.club.id === ownClub.id;
+
+  return (
+    <div className="space-y-4">
+      <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+        <PanelHeader>
+          <div>
+            <PanelTitle>Kaderuebersicht</PanelTitle>
+            <PanelDescription>Eigene und fremde Manager-Kader im direkten Vergleich.</PanelDescription>
+          </div>
+          <Users size={18} className="text-[var(--club-color)]" aria-hidden />
+        </PanelHeader>
+        <div className="overflow-x-auto pb-1">
+          <div className="flex min-w-max gap-2">
+            {clubSquads.map((clubSquad) => {
+              const active = clubSquad.club.id === selectedSquad.club.id;
+
+              return (
+                <Link
+                  className={cn(
+                    "inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm font-semibold transition",
+                    active
+                      ? "border-[var(--club-color)] bg-[rgba(var(--club-rgb),0.22)] text-zinc-50"
+                      : "border-zinc-800 bg-zinc-950/65 text-zinc-400 hover:border-zinc-700 hover:text-zinc-100",
+                  )}
+                  href={`/games/${snapshot.game.room_code}?view=squad&club=${clubSquad.club.id}`}
+                  key={clubSquad.club.id}
+                >
+                  <span className="max-w-[12rem] truncate">{clubSquad.club.club_name}</span>
+                  <Badge tone={clubSquad.club.id === ownClub.id ? "green" : "blue"}>{clubSquad.player_count}</Badge>
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+      </Panel>
+
+      {ownSelected ? (
+        <SquadPanel ownClub={ownClub} overview={overview} snapshot={snapshot} title={ownClub.club_name} />
+      ) : (
+        <OtherClubSquadPanel overview={overview} selectedSquad={selectedSquad} snapshot={snapshot} />
+      )}
+    </div>
+  );
+}
+
+function OtherClubSquadPanel({
+  overview,
+  selectedSquad,
+  snapshot,
+}: {
+  overview: NonNullable<LobbySnapshot["club_overview"]>;
+  selectedSquad: NonNullable<LobbySnapshot["club_squads"]>[number];
+  snapshot: LobbySnapshot;
+}) {
+  const [offerTarget, setOfferTarget] = useState<ClubPlayerSnapshot | null>(null);
+  const sortedSquad = [...selectedSquad.squad].sort((a, b) => {
+    const posDiff = getPositionRank(a.player) - getPositionRank(b.player);
+    if (posDiff !== 0) return posDiff;
+    const starsDiff = Number(b.current_stars) - Number(a.current_stars);
+    if (starsDiff !== 0) return starsDiff;
+    return a.player.display_name.localeCompare(b.player.display_name, "de");
+  });
+  const isOffseason = isOffseasonPhase(snapshot.game.phase);
+  const transfersBlocked = isOffseasonTransfersBlocked(overview.pending_effects ?? [], snapshot.game.phase);
+  const managerTransfersEnabled = isOffseason && !transfersBlocked && !snapshot.transfer_market?.setup_error;
+  const offeredPlayerIds = new Set((snapshot.transfer_market?.outgoing_offers ?? []).flatMap((offer) => offer.offered_club_player_id ? [offer.offered_club_player_id] : []));
+  const targetedPlayerIds = new Set((snapshot.transfer_market?.outgoing_offers ?? []).map((offer) => offer.target_club_player_id));
+  const ownOfferPlayers = overview.squad.filter((owned) => !offeredPlayerIds.has(owned.id));
+  const transferHint = snapshot.transfer_market?.setup_error
+    ? snapshot.transfer_market.setup_error
+    : transfersBlocked
+      ? "Manager-Transfers sind durch einen Game-Changer gesperrt."
+      : isOffseason
+        ? "Manager-Angebote sind in dieser Phase moeglich."
+        : "Angebote sind erst in der Offseason moeglich.";
+
+  return (
+    <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+      <PanelHeader>
+        <div>
+          <PanelTitle>{selectedSquad.club.club_name}</PanelTitle>
+          <PanelDescription>{selectedSquad.club.manager_name} - {selectedSquad.player_count} von maximal {MAX_SQUAD_SIZE} Spielern im Kader.</PanelDescription>
+        </div>
+        <Eye size={18} className="text-[var(--club-color)]" aria-hidden />
+      </PanelHeader>
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Metric detail={`max. ${MAX_SQUAD_SIZE} Spieler`} icon={Users} label="Kadergroesse" value={`${selectedSquad.player_count} / ${MAX_SQUAD_SIZE}`} />
+        <Metric detail={`${selectedSquad.injured_count} verletzt`} icon={Sparkles} label="Kadersterne gesamt" value={formatStars(selectedSquad.squad_stars)} />
+        <Metric detail="Durchschnitt pro Spieler" icon={Sparkles} label="Sterne/Spieler" value={selectedSquad.player_count > 0 ? formatStars(selectedSquad.squad_stars / selectedSquad.player_count) : "-"} />
+      </div>
+      {selectedSquad.squad.length > 0 ? <SquadPositionBreakdown squad={selectedSquad.squad} /> : null}
+      <div className={cn("rounded-md border p-3 text-xs", managerTransfersEnabled ? "border-emerald-800 bg-emerald-950/20 text-emerald-300" : "border-zinc-800 bg-zinc-900/60 text-zinc-400")}>
+        {transferHint}
+      </div>
+      {selectedSquad.squad.length === 0 ? (
+        <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-4 text-sm text-zinc-400">
+          Dieser Club hat aktuell keinen Kader.
+        </div>
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {sortedSquad.map((owned) => {
+            const card = mapOwnedPlayerToCardData(owned);
+            const hasOpenOffer = targetedPlayerIds.has(owned.id);
+
+            return (
+              <div className="rounded-lg border border-zinc-800 bg-zinc-900/45 p-2" key={owned.id}>
+                <PlayerCard disabled={owned.injured} player={card} variant="draft" />
+                <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-zinc-400">
+                  <SmallInfo label="Status" value={owned.injured ? "Verletzt" : owned.current_zone === "bench" ? "Nicht aufgestellt" : "Aufgestellt"} />
+                  <SmallInfo label="Zone" value={owned.current_zone} />
+                  <SmallInfo label="Staerke" value={formatStars(Number(owned.current_stars))} />
+                  <SmallInfo label="Marktwert" value={formatMoney(Number(owned.player.minimum_bid ?? 0))} />
+                </div>
+                <Button
+                  className="mt-2 h-8 w-full text-xs"
+                  disabled={!managerTransfersEnabled || hasOpenOffer}
+                  onClick={() => setOfferTarget(owned)}
+                  type="button"
+                  variant={managerTransfersEnabled && !hasOpenOffer ? "primary" : "outline"}
+                >
+                  <ArrowUpRight size={13} aria-hidden />
+                  {hasOpenOffer ? "Angebot offen" : "Angebot machen"}
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {offerTarget ? (
+        <TransferOfferModal
+          enabled={managerTransfersEnabled}
+          offerPlayers={ownOfferPlayers}
+          onClose={() => setOfferTarget(null)}
+          returnClubId={selectedSquad.club.id}
+          snapshot={snapshot}
+          target={offerTarget}
+        />
+      ) : null}
+    </Panel>
+  );
+}
+
+function TransferOfferModal({
+  enabled,
+  offerPlayers,
+  onClose,
+  returnClubId,
+  snapshot,
+  target,
+}: {
+  enabled: boolean;
+  offerPlayers: ClubPlayerSnapshot[];
+  onClose: () => void;
+  returnClubId: string;
+  snapshot: LobbySnapshot;
+  target: ClubPlayerSnapshot;
+}) {
+  const defaultCashMillions = Math.max(1, Math.round(Number(target.player.minimum_bid ?? 0) / 1_000_000));
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 px-4 py-6">
+      <div className="w-full max-w-lg rounded-lg border border-zinc-700 bg-zinc-950 p-4 shadow-2xl shadow-black">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-lg font-bold text-zinc-50">Angebot machen</p>
+            <p className="mt-1 text-sm text-zinc-400">{target.player.display_name} - {formatStars(Number(target.current_stars))} Sterne</p>
+          </div>
+          <Button className="h-8 px-2" onClick={onClose} type="button" variant="outline">
+            <X size={15} aria-hidden />
+          </Button>
+        </div>
+
+        <form action={createTransferOfferAction} className="mt-4 grid gap-3">
+          <input name="game_id" type="hidden" value={snapshot.game.id} />
+          <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+          <input name="target_club_player_id" type="hidden" value={target.id} />
+          <input name="return_view" type="hidden" value="squad" />
+          <input name="return_club_id" type="hidden" value={returnClubId} />
+          <label className="grid gap-1 text-xs text-zinc-400">
+            Geldangebot in Mio
+            <input
+              className="h-10 rounded-md border border-zinc-700 bg-zinc-950 px-3 text-sm text-zinc-100 outline-none focus:border-lime-300"
+              min={0}
+              name="cash_amount_millions"
+              step={1}
+              type="number"
+              defaultValue={defaultCashMillions}
+            />
+          </label>
+          <label className="grid gap-1 text-xs text-zinc-400">
+            Eigener Spieler optional
+            <select
+              className="h-10 rounded-md border border-zinc-700 bg-zinc-950 px-3 text-sm text-zinc-100 outline-none focus:border-lime-300"
+              name="offered_club_player_id"
+              defaultValue="none"
+            >
+              <option value="none">Kein Spieler</option>
+              {offerPlayers.map((ownPlayer) => (
+                <option key={ownPlayer.id} value={ownPlayer.id}>
+                  {ownPlayer.player.display_name} ({formatStars(Number(ownPlayer.current_stars))})
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="flex flex-wrap justify-end gap-2 pt-1">
+            <Button onClick={onClose} type="button" variant="outline">
+              Abbrechen
+            </Button>
+            <Button disabled={!enabled} type="submit" variant="primary">
+              <ArrowUpRight size={14} aria-hidden />
+              Angebot senden
+            </Button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }
 
@@ -3102,6 +3336,20 @@ function FixtureCard({
   );
   const ownSquad = snapshot.club_overview?.squad ?? [];
   const partialThirds = ((fixture.partial_result as { thirds?: unknown[] } | null)?.thirds ?? []) as FixtureThird[];
+  const partialModifiers = (fixture.partial_result as { pending_modifiers?: Array<{ zone: "ATT" | "MID" | "DEF"; delta: number; for: "home" | "away" }> } | null)?.pending_modifiers;
+  const seasonZoneBoostsByClub = snapshot.season?.next_match_zone_boosts_by_club_id ?? {};
+  const homeDisplayZoneBoosts = resolveDisplayZoneBoosts({
+    clubId: home.club_id,
+    partialModifiers,
+    seasonBoostsByClubId: seasonZoneBoostsByClub,
+    side: "home",
+  });
+  const awayDisplayZoneBoosts = resolveDisplayZoneBoosts({
+    clubId: away.club_id,
+    partialModifiers,
+    seasonBoostsByClubId: seasonZoneBoostsByClub,
+    side: "away",
+  });
 
   // For PvP, suppress the old "Host resolves PvP" button — the new state machine handles it
   const canHostResolvePvpMatchLegacy = canHostResolvePvpMatch && !isPvP;
@@ -3142,6 +3390,7 @@ function FixtureCard({
               powerSummary={home.club_id === ownClub?.id && fixture.home_lineup_locked ? ownPowerSummary : null}
               score={fixture.home_score}
               thirdPoints={fixture.home_third_points}
+              zoneBoosts={homeDisplayZoneBoosts}
             />
             <FixtureSideCard
               locked={fixture.away_lineup_locked}
@@ -3150,6 +3399,7 @@ function FixtureCard({
               powerSummary={away.club_id === ownClub?.id && fixture.away_lineup_locked ? ownPowerSummary : null}
               score={fixture.away_score}
               thirdPoints={fixture.away_third_points}
+              zoneBoosts={awayDisplayZoneBoosts}
             />
           </div>
 
@@ -3330,6 +3580,7 @@ function FixtureSideCard({
   powerSummary,
   score,
   thirdPoints,
+  zoneBoosts,
 }: {
   lineup: NonNullable<LobbySnapshot["season"]>["fixtures"][number]["home_cpu_lineup"];
   locked: boolean;
@@ -3337,6 +3588,7 @@ function FixtureSideCard({
   powerSummary?: LineupPowerSummary | null;
   score?: number | null;
   thirdPoints?: number | null;
+  zoneBoosts?: Partial<Record<"ATT" | "MID" | "DEF", number>>;
 }) {
   const logoSrc = getClubLogoSrc(participant);
 
@@ -3374,15 +3626,17 @@ function FixtureSideCard({
               ? Number(zone === "DEF" ? lineup.def_stars : zone === "MID" ? lineup.mid_stars : lineup.att_stars)
               : (powerSummary?.[zone].total ?? 0);
             const staffBonus = powerSummary?.[zone].staffBonus ?? 0;
+            const gcBoost = zoneBoosts?.[zone] ?? 0;
+            const value = gcBoost !== 0
+              ? `${formatStars(total + gcBoost)} (+${gcBoost} GC)`
+              : staffBonus > 0
+                ? `${formatStars(total)} (+${staffBonus}★)`
+                : formatStars(total);
             return (
               <div key={zone}>
                 <SmallInfo
                   label={zone}
-                  value={
-                    staffBonus > 0
-                      ? `${formatStars(total)} (+${staffBonus}★)`
-                      : formatStars(total)
-                  }
+                  value={value}
                 />
               </div>
             );
@@ -4072,6 +4326,30 @@ function MatchResultDetail({
   const displayAwayThirdPoints = isCompleted ? (fixture.away_third_points ?? liveAwayThirdPoints) : liveAwayThirdPoints;
   const homeWins = displayHomeThirdPoints > displayAwayThirdPoints;
   const awayWins = displayAwayThirdPoints > displayHomeThirdPoints;
+  const partialModifiers = (fixture.partial_result as { pending_modifiers?: Array<{ zone: "ATT" | "MID" | "DEF"; delta: number; for: "home" | "away" }> } | null)?.pending_modifiers;
+  const seasonZoneBoostsByClub = snapshot.season?.next_match_zone_boosts_by_club_id ?? {};
+  const homeZoneBoosts = resolveDisplayZoneBoosts({
+    clubId: home.club_id,
+    partialModifiers,
+    seasonBoostsByClubId: seasonZoneBoostsByClub,
+    side: "home",
+  });
+  const awayZoneBoosts = resolveDisplayZoneBoosts({
+    clubId: away.club_id,
+    partialModifiers,
+    seasonBoostsByClubId: seasonZoneBoostsByClub,
+    side: "away",
+  });
+
+  function formatLockedZonePower(
+    base: number | null | undefined,
+    zone: "ATT" | "DEF" | "MID",
+    boosts: Record<"ATT" | "DEF" | "MID", number>,
+  ) {
+    if (base == null) return null;
+    const boost = boosts[zone] ?? 0;
+    return boost !== 0 ? `${base + boost} (+${boost})` : String(base);
+  }
 
   function ThirdIcon({ label }: { label: FixtureThird["label"] }) {
     if (label === "midfield") return <ArrowLeftRight className="h-4 w-4 text-zinc-500" />;
@@ -4130,13 +4408,13 @@ function MatchResultDetail({
             <p className="mt-0.5 text-xs text-zinc-600">{home.kind === "cpu" ? "CPU" : "Manager"}</p>
             <div className="mt-2 flex gap-2 text-xs">
               {[
-                { z: "DEF", v: fixture.home_locked_def },
-                { z: "MID", v: fixture.home_locked_mid },
-                { z: "ATT", v: fixture.home_locked_att },
+                { z: "DEF" as const, v: fixture.home_locked_def },
+                { z: "MID" as const, v: fixture.home_locked_mid },
+                { z: "ATT" as const, v: fixture.home_locked_att },
               ].map(({ z, v }) => v != null ? (
                 <div className="flex flex-col items-center rounded bg-zinc-800/60 px-2 py-1" key={z}>
                   <span className="text-zinc-500">{z}</span>
-                  <span className={cn("font-bold", homeWins ? "text-emerald-300" : "text-zinc-200")}>{v}</span>
+                  <span className={cn("font-bold", homeWins ? "text-emerald-300" : "text-zinc-200")}>{formatLockedZonePower(v, z, homeZoneBoosts)}</span>
                 </div>
               ) : null)}
             </div>
@@ -4168,13 +4446,13 @@ function MatchResultDetail({
             <p className="mt-0.5 text-xs text-zinc-600">{away.kind === "cpu" ? "CPU" : "Manager"}</p>
             <div className="mt-2 flex justify-end gap-2 text-xs">
               {[
-                { z: "DEF", v: fixture.away_locked_def },
-                { z: "MID", v: fixture.away_locked_mid },
-                { z: "ATT", v: fixture.away_locked_att },
+                { z: "DEF" as const, v: fixture.away_locked_def },
+                { z: "MID" as const, v: fixture.away_locked_mid },
+                { z: "ATT" as const, v: fixture.away_locked_att },
               ].map(({ z, v }) => v != null ? (
                 <div className="flex flex-col items-center rounded bg-zinc-800/60 px-2 py-1" key={z}>
                   <span className="text-zinc-500">{z}</span>
-                  <span className={cn("font-bold", awayWins ? "text-emerald-300" : "text-zinc-200")}>{v}</span>
+                  <span className={cn("font-bold", awayWins ? "text-emerald-300" : "text-zinc-200")}>{formatLockedZonePower(v, z, awayZoneBoosts)}</span>
                 </div>
               ) : null)}
             </div>

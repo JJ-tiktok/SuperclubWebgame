@@ -140,7 +140,7 @@ export function GameEventsDock({
                       {parseGameChangerHeadline(item.headline)}
                     </p>
                     {item.detail ? (
-                      <p className="mt-0.5 text-sm leading-relaxed text-zinc-400">{item.detail}</p>
+                      <p className="mt-0.5 whitespace-pre-line text-sm leading-relaxed text-zinc-400">{item.detail}</p>
                     ) : null}
                   </li>
                 );

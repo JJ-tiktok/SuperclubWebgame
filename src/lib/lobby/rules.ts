@@ -8,6 +8,7 @@ export const DEFAULT_LOBBY_SETTINGS: LobbySettings = {
   starting_money: 100_000_000,
   max_draft_stars: 3,
   turn_timeout_seconds: 60,
+  continental_cup_enabled: true,
 };
 
 export function generateRoomCode(random = Math.random) {
@@ -72,10 +73,28 @@ export function canStartLobby(game: Pick<LobbyGame, "phase" | "host_clerk_user_i
   return { ok: true } as const;
 }
 
+function parseBooleanSetting(value: FormDataEntryValue | undefined, defaultValue: boolean) {
+  if (value === undefined || value === null || value === "") {
+    return defaultValue;
+  }
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === "1" || normalized === "true" || normalized === "on" || normalized === "yes") {
+    return true;
+  }
+  if (normalized === "0" || normalized === "false" || normalized === "off" || normalized === "no") {
+    return false;
+  }
+  return defaultValue;
+}
+
 export function parseLobbySettings(input: Partial<Record<string, FormDataEntryValue>> = {}) {
   const startingMoney = Number(input.starting_money ?? DEFAULT_LOBBY_SETTINGS.starting_money);
   const maxDraftStars = Number(input.max_draft_stars ?? DEFAULT_LOBBY_SETTINGS.max_draft_stars);
   const turnTimeout = Number(input.turn_timeout_seconds ?? DEFAULT_LOBBY_SETTINGS.turn_timeout_seconds);
+  const continentalCupEnabled = parseBooleanSetting(
+    input.continental_cup_enabled,
+    DEFAULT_LOBBY_SETTINGS.continental_cup_enabled ?? true,
+  );
   const cpuTeamIdsRaw = input.cpu_team_ids;
   let cpu_team_ids: string[] | undefined;
   if (typeof cpuTeamIdsRaw === "string" && cpuTeamIdsRaw.trim()) {
@@ -93,6 +112,7 @@ export function parseLobbySettings(input: Partial<Record<string, FormDataEntryVa
     starting_money: Number.isFinite(startingMoney) ? Math.max(10_000_000, Math.trunc(startingMoney)) : DEFAULT_LOBBY_SETTINGS.starting_money,
     max_draft_stars: Number.isFinite(maxDraftStars) ? Math.min(Math.max(Math.trunc(maxDraftStars), 1), 6) : DEFAULT_LOBBY_SETTINGS.max_draft_stars,
     turn_timeout_seconds: Number.isFinite(turnTimeout) ? Math.min(Math.max(Math.trunc(turnTimeout), 15), 180) : DEFAULT_LOBBY_SETTINGS.turn_timeout_seconds,
+    continental_cup_enabled: continentalCupEnabled,
   } satisfies LobbySettings;
 
   if (cpu_team_ids && cpu_team_ids.length > 0) {

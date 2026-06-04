@@ -9,6 +9,7 @@
 import { getDeadlineActionLabel } from "@/lib/lobby/deadline";
 import { getScoutingActionLabel } from "@/lib/lobby/scouting";
 import { canTrainOwnedPlayer, getTrainingReasonLabel } from "@/lib/lobby/training";
+import { resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
 import type { LobbyClub } from "@/lib/lobby/types";
 
 export type GameView =
@@ -79,6 +80,13 @@ export function getClubStatusLabel(status: LobbyClub["status"]): string {
   };
 
   return labels[status ?? "newly_promoted"] ?? "Newly Promoted";
+}
+
+export function getEffectiveClubStatusLabel(club: LobbyClub | undefined, seasonNumber: number) {
+  if (!club) {
+    return getClubStatusLabel("newly_promoted");
+  }
+  return getClubStatusLabel(resolveEffectiveClubStatus(club, seasonNumber));
 }
 
 export function getTurnFallback(phase: string, isHost: boolean): string {

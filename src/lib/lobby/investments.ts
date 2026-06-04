@@ -33,12 +33,41 @@ export function canRecruitStaff(input: StaffRecruitCheckInput) {
 export function getStaffRecruitReasonLabel(reason: string) {
   const labels: Record<string, string> = {
     already_recruited_this_season: "Bereits rekrutiert diese Saison",
-    investment_action_limit: "Keine Aktionen mehr",
+    investment_action_limit: "Keine Investment-Aktionen mehr frei",
+    investment_action_limit_free_staff: "Gratis-Mitarbeiter (Game Changer): Zuerst ziehen, bevor alle Investment-Aktionen verbraucht sind",
     open_offer_pending: "Offenes Angebot ausstehend",
     staff_limit: "Max. 3 Mitarbeiter",
   };
 
   return labels[reason] ?? "Nicht moeglich";
+}
+
+export function getStaffRecruitBlockReason(input: StaffRecruitCheckInput & { hasFreeStaffOffer?: boolean }) {
+  const check = canRecruitStaff(input);
+  if (check.ok) {
+    return null;
+  }
+  if (check.reason === "investment_action_limit" && input.hasFreeStaffOffer) {
+    return "investment_action_limit_free_staff";
+  }
+  return check.reason;
+}
+
+export function getStaffRecruitHint(input: {
+  hasFreeStaffOffer?: boolean;
+  hasFreeStaffSigning?: boolean;
+  actionsThisSeason: string[];
+  extraActionBonus?: number;
+}) {
+  const limit = 2 + (input.extraActionBonus ?? 0);
+  const slotsLeft = limit - input.actionsThisSeason.length;
+  if (input.hasFreeStaffOffer && slotsLeft > 0) {
+    return "Game Changer aktiv: Mitarbeiter-Zug jetzt nutzen – kostet keine Aktion, braucht aber noch freie Investment-Slots.";
+  }
+  if (input.hasFreeStaffSigning && slotsLeft > 0) {
+    return "Gratis-Verpflichtung bereit, sobald du ein Staff-Angebot oeffnest.";
+  }
+  return null;
 }
 
 export const UPGRADE_COSTS: Record<UpgradeAction, number[]> = {

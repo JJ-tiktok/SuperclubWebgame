@@ -1,5 +1,9 @@
+import {
+  applyAndKeepUnmatchedModifiers,
+  type PartialResult,
+  type ZoneModifier,
+} from "@/lib/game/game-changer-effects";
 import type { LobbySettings } from "@/lib/lobby/types";
-import type { ZoneModifier } from "@/lib/game/game-changer-effects";
 
 export type SeasonMode = "double_round_robin" | "five_match";
 export type MatchPointsMode = "classic_6_2_0" | "football_3_1_0";
@@ -130,53 +134,38 @@ export function resolveFixture(params: {
   diceRolls: DicePair[];
   home: FixtureSideInput;
   matchPointsMode: MatchPointsMode;
+  zoneModifiers?: ZoneModifier[];
 }): FixtureResolution {
   const diceRolls = padDiceRolls(params.diceRolls);
   const thirds: ThirdResult[] = [];
   const events: MatchEventResult[] = [];
   let rollIndex = 0;
+  let partial: PartialResult = {
+    thirds: [],
+    pending_modifiers: [...(params.zoneModifiers ?? [])],
+  };
 
-  const midfield = compareThird({
-    away: params.away,
-    awayDice: diceRolls[rollIndex++],
-    awayZone: "MID",
-    home: params.home,
-    homeDice: diceRolls[rollIndex++],
-    homeZone: "MID",
-    index: 1,
-    label: "midfield",
-  });
-  thirds.push(midfield);
-  events.push(...getDoubleDiceEvents(midfield, params.home, params.away));
+  for (const index of [1, 2, 3] as const) {
+    const { homeZone, awayZone } = getThirdZones(
+      index,
+      thirds[0]?.winner_participant_id ?? null,
+      params.home.participantId,
+    );
+    const { active: modifiers, updated } = applyAndKeepUnmatchedModifiers(partial, homeZone, awayZone);
+    partial = updated;
 
-  const secondAttacker = midfield.winner_participant_id ?? params.home.participantId;
-  const homeAttacksSecond = secondAttacker === params.home.participantId;
-  const second = compareThird({
-    away: params.away,
-    awayDice: homeAttacksSecond ? diceRolls[rollIndex++] : diceRolls[rollIndex++],
-    awayZone: homeAttacksSecond ? "DEF" : "ATT",
-    home: params.home,
-    homeDice: homeAttacksSecond ? diceRolls[rollIndex++] : diceRolls[rollIndex++],
-    homeZone: homeAttacksSecond ? "ATT" : "DEF",
-    index: 2,
-    label: homeAttacksSecond ? "home_attack" : "away_attack",
-  });
-  thirds.push(second);
-  events.push(...getDoubleDiceEvents(second, params.home, params.away));
-
-  const homeAttacksThird = !homeAttacksSecond;
-  const third = compareThird({
-    away: params.away,
-    awayDice: homeAttacksThird ? diceRolls[rollIndex++] : diceRolls[rollIndex++],
-    awayZone: homeAttacksThird ? "DEF" : "ATT",
-    home: params.home,
-    homeDice: homeAttacksThird ? diceRolls[rollIndex++] : diceRolls[rollIndex++],
-    homeZone: homeAttacksThird ? "ATT" : "DEF",
-    index: 3,
-    label: homeAttacksThird ? "home_attack" : "away_attack",
-  });
-  thirds.push(third);
-  events.push(...getDoubleDiceEvents(third, params.home, params.away));
+    const { third, events: thirdEvents } = resolveOneThird({
+      index,
+      home: params.home,
+      away: params.away,
+      awayDice: diceRolls[rollIndex++],
+      homeDice: diceRolls[rollIndex++],
+      priorThirds: thirds,
+      zoneModifiers: modifiers,
+    });
+    thirds.push(third);
+    events.push(...thirdEvents);
+  }
 
   const scores = thirds.reduce(
     (total, item) => {

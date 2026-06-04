@@ -4,6 +4,7 @@ import {
   countUnreadOwnNews,
   describePendingEffect,
   findPendingEffectForNews,
+  formatGameChangerNewsDetail,
   getSeenStorageKey,
   getShownNewsIds,
   isNewsShownInSession,
@@ -40,6 +41,17 @@ describe("game-changer-ui", () => {
   it("parses game changer headlines", () => {
     assert.equal(parseGameChangerHeadline("Game Changer: Schnaeppchen"), "Schnaeppchen");
     assert.equal(parseGameChangerHeadline("Geheimwaffe eingesetzt: Turbo"), "Turbo");
+  });
+
+  it("prefers concrete effect outcomes in news detail", () => {
+    assert.equal(
+      formatGameChangerNewsDetail("Der Stuermer hat den Mettigel gegessen.", ["Max Mustermann verletzt (naechstes Spiel)"]),
+      "Der Stuermer hat den Mettigel gegessen.\nMax Mustermann verletzt (naechstes Spiel)",
+    );
+    assert.equal(
+      formatGameChangerNewsDetail(undefined, ["Anna Schmidt verletzt (naechstes Spiel)"]),
+      "Anna Schmidt verletzt (naechstes Spiel)",
+    );
   });
 
   it("describes transfer price delta", () => {

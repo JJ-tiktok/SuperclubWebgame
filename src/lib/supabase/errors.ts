@@ -23,8 +23,12 @@ export function getSupabaseSetupHint(error: unknown) {
     message.includes("club_slogan") ||
     message.includes("club_color") ||
     message.includes("club_templates") ||
+    message.includes("live_seq") ||
     message.includes("Could not find")
   ) {
+    if (message.includes("live_seq")) {
+      return "Die Live-Events-Erweiterung fehlt. Bitte supabase/live_events_upgrade.sql im Supabase SQL Editor ausfuehren.";
+    }
     return "Die Lobby-Schema-Erweiterungen fehlen. Bitte supabase/save_state_upgrade.sql im Supabase SQL Editor ausfuehren.";
   }
 

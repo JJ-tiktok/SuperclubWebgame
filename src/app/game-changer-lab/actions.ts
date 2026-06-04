@@ -1,6 +1,7 @@
 "use server";
 
 import { auth } from "@clerk/nextjs/server";
+import { isRedirectError } from "next/dist/client/components/redirect-error";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { dispatchGameChangerEffects } from "@/lib/game/dispatch-game-changer-effects";
@@ -135,6 +136,9 @@ export async function devApplyGameChangerAction(formData: FormData) {
       `/game-changer-lab?apply_ok=1&room=${encodeURIComponent(roomCode)}&card=${encodeURIComponent(card.display_name)}&status=${status}&details=${encodeURIComponent(details)}`,
     );
   } catch (err) {
+    if (isRedirectError(err)) {
+      throw err;
+    }
     const message = err instanceof Error ? err.message : "Unbekannter Fehler";
     redirect(`/game-changer-lab?apply_error=${encodeURIComponent(message)}`);
   }

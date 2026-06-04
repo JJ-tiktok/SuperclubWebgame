@@ -202,6 +202,42 @@ describe("v4 match card classification + modifiers", () => {
   });
 });
 
+describe("Next-match zone boost visibility", () => {
+  it("builds per-club boosts from pending effects", async () => {
+    const { buildNextMatchZoneBoostsByClubId, resolveDisplayZoneBoosts } = await import("@/lib/game/game-changer-effects");
+    const map = buildNextMatchZoneBoostsByClubId([
+      {
+        club_id: "club-a",
+        effect_type: "next_match_zone_delta",
+        scope: "next_match",
+        payload: { zone: "MID", delta: 2 },
+      },
+    ]);
+    assert.deepEqual(map["club-a"], { ATT: 0, MID: 2, DEF: 0 });
+    assert.deepEqual(
+      resolveDisplayZoneBoosts({
+        clubId: "club-a",
+        seasonBoostsByClubId: map,
+        side: "home",
+      }),
+      { ATT: 0, MID: 2, DEF: 0 },
+    );
+  });
+
+  it("prefers fixture partial modifiers over season pending boosts", async () => {
+    const { resolveDisplayZoneBoosts } = await import("@/lib/game/game-changer-effects");
+    assert.deepEqual(
+      resolveDisplayZoneBoosts({
+        clubId: "club-a",
+        partialModifiers: [{ zone: "ATT", delta: 2, for: "away", source_club_game_changer_id: "pending_effect" }],
+        seasonBoostsByClubId: { "club-a": { ATT: 0, MID: 2, DEF: 0 } },
+        side: "away",
+      }),
+      { ATT: 2, MID: 0, DEF: 0 },
+    );
+  });
+});
+
 describe("Weighted draw + retroactive win", () => {
   it("always picks the only positive-weight index", () => {
     assert.equal(pickWeightedIndex([0, 0, 1, 0], () => 0.5), 2);

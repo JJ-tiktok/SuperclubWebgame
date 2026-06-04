@@ -143,7 +143,7 @@ export function GameChangerPopup({
         </div>
 
         {current.detail ? (
-          <p id="gc-modal-detail" className="mt-4 text-sm leading-relaxed text-zinc-300">
+          <p id="gc-modal-detail" className="mt-4 whitespace-pre-line text-sm leading-relaxed text-zinc-300">
             {current.detail}
           </p>
         ) : null}

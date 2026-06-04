@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { refreshOffseasonScoutingSnapshot } from "@/lib/lobby/scouting";
+import { applyClubStatusDelta, normalizeClubStatus, resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
 import type { GameChangerCategory } from "@/lib/lobby/types";
 
 // ---------------------------------------------------------------------------
@@ -169,9 +170,9 @@ export function describeEffect(effect: GameChangerEffect): string {
     case "free_scouting_buy_next":
       return "Naechster Spieler-Kauf kostenlos";
     case "free_staff_offer":
-      return "Kostenloser Staff-Draw";
+      return "Gratis Staff-Draw (vor letzter Investment-Aktion nutzen)";
     case "free_staff_signing":
-      return "Naechste Staff-Verpflichtung kostenlos";
+      return "Gratis Staff-Verpflichtung (nach dem Draw)";
     case "training_capacity_delta":
       if (effect.delta === "double") {
         return `Trainingseinheiten verdoppelt (${labelScope(effect.scope)})`;
@@ -371,22 +372,56 @@ export async function applyImmediateEffect(
 
     case "status_tier_change": {
       const seasonNumber = Math.max(1, Math.trunc(ctx.seasonNumber ?? 1));
-      const { data: club } = await supabase
+      let { data: club, error: clubError } = await supabase
         .from("clubs")
-        .select("status, status_override")
+        .select("status, status_override, status_override_until_season")
         .eq("id", clubId)
-        .maybeSingle<{ status: string; status_override: string | null }>();
-      if (!club) return { applied: false };
-      const ORDER = ["newly_promoted", "established", "mid_table", "title_contender"];
-      const baseStatus = club.status_override ?? club.status;
-      const currentIdx = ORDER.indexOf(baseStatus);
-      const nextIdx = Math.max(0, Math.min(ORDER.length - 1, (currentIdx < 0 ? 0 : currentIdx) + effect.delta));
-      const newStatus = ORDER[nextIdx];
-      await supabase
+        .maybeSingle<{
+          status: string;
+          status_override: string | null;
+          status_override_until_season: number | null;
+        }>();
+
+      if (clubError?.code === "42703") {
+        const fallback = await supabase
+          .from("clubs")
+          .select("status")
+          .eq("id", clubId)
+          .maybeSingle<{ status: string }>();
+        if (fallback.error) {
+          return { applied: false, detail: fallback.error.message };
+        }
+        club = fallback.data
+          ? { status: fallback.data.status, status_override: null, status_override_until_season: null }
+          : null;
+      } else if (clubError) {
+        return { applied: false, detail: clubError.message };
+      }
+
+      if (!club) return { applied: false, detail: "Club nicht gefunden" };
+
+      const currentStatus = resolveEffectiveClubStatus(club, seasonNumber);
+      const newStatus = applyClubStatusDelta(currentStatus, effect.delta);
+
+      let { error: updateError } = await supabase
         .from("clubs")
         .update({ status_override: newStatus, status_override_until_season: seasonNumber })
         .eq("id", clubId);
-      return { applied: true, detail: `Status: ${newStatus}` };
+
+      if (updateError?.code === "42703") {
+        const fallback = await supabase.from("clubs").update({ status: newStatus }).eq("id", clubId);
+        updateError = fallback.error;
+      }
+
+      if (updateError) {
+        return { applied: false, detail: updateError.message };
+      }
+
+      const label = normalizeClubStatus(newStatus);
+      if (label === currentStatus && effect.delta > 0) {
+        return { applied: true, detail: `Status bereits maximal (${label})` };
+      }
+      return { applied: true, detail: `Status: ${label} (bis Saisonende)` };
     }
 
     case "stadium_income_cap": {
@@ -505,6 +540,64 @@ export type MatchCardModifierPayload = {
   // For man_marking: stars of the chosen defender (penalty = stars * per_star_attack_penalty).
   defender_stars?: number;
 };
+
+export function sumNextMatchZoneDeltas(
+  effects: Array<{ effect_type: string; scope: string; payload: Record<string, unknown> }>,
+): Record<TacticalZone, number> {
+  const sums: Record<TacticalZone, number> = { ATT: 0, MID: 0, DEF: 0 };
+  for (const effect of effects) {
+    if (effect.scope !== "next_match" || effect.effect_type !== "next_match_zone_delta") continue;
+    const zone = effect.payload.zone as TacticalZone | null | undefined;
+    const delta = Number(effect.payload.delta ?? 0);
+    if (!zone || !(zone in sums)) continue;
+    sums[zone] += delta;
+  }
+  return sums;
+}
+
+export function sumFixtureZoneModifiersForSide(
+  modifiers: ZoneModifier[] | undefined,
+  side: "home" | "away",
+): Record<TacticalZone, number> {
+  const sums: Record<TacticalZone, number> = { ATT: 0, MID: 0, DEF: 0 };
+  for (const mod of modifiers ?? []) {
+    if (mod.for !== side) continue;
+    sums[mod.zone] += mod.delta;
+  }
+  return sums;
+}
+
+export function resolveDisplayZoneBoosts(params: {
+  clubId: string | null | undefined;
+  partialModifiers?: ZoneModifier[];
+  seasonBoostsByClubId?: Record<string, Record<TacticalZone, number>>;
+  side: "home" | "away";
+}): Record<TacticalZone, number> {
+  const fromPartial = sumFixtureZoneModifiersForSide(params.partialModifiers, params.side);
+  if (Object.values(fromPartial).some((value) => value !== 0)) {
+    return fromPartial;
+  }
+  if (!params.clubId || !params.seasonBoostsByClubId) {
+    return { ATT: 0, MID: 0, DEF: 0 };
+  }
+  return params.seasonBoostsByClubId[params.clubId] ?? { ATT: 0, MID: 0, DEF: 0 };
+}
+
+export function buildNextMatchZoneBoostsByClubId(
+  effects: Array<{ club_id: string; effect_type: string; scope: string; payload: Record<string, unknown> }>,
+): Record<string, Record<TacticalZone, number>> {
+  const byClub = new Map<string, Array<{ effect_type: string; scope: string; payload: Record<string, unknown> }>>();
+  for (const effect of effects) {
+    const list = byClub.get(effect.club_id) ?? [];
+    list.push(effect);
+    byClub.set(effect.club_id, list);
+  }
+  const result: Record<string, Record<TacticalZone, number>> = {};
+  for (const [clubId, clubEffects] of byClub) {
+    result[clubId] = sumNextMatchZoneDeltas(clubEffects);
+  }
+  return result;
+}
 
 export function buildZoneModifiers(
   clubGameChangerId: string,

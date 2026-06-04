@@ -254,6 +254,7 @@ async function createGame(formData: FormData) {
     starting_money: formData.get("starting_money") ?? undefined,
     max_draft_stars: formData.get("max_draft_stars") ?? undefined,
     turn_timeout_seconds: formData.get("turn_timeout_seconds") ?? undefined,
+    continental_cup_enabled: formData.get("continental_cup_enabled") ?? undefined,
     cpu_team_ids: formData.get("cpu_team_ids") ?? undefined,
   });
   const cpuTeamIds = parseCpuTeamIdsFromFormData(formData);

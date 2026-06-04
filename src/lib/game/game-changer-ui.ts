@@ -111,6 +111,21 @@ export function resolveClubName(clubs: LobbyClub[], clubId: string | null | unde
   return clubs.find((c) => c.id === clubId)?.club_name ?? null;
 }
 
+export function formatGameChangerNewsDetail(
+  cardDescription: string | null | undefined,
+  effectDetails: string[],
+): string | undefined {
+  const outcome = effectDetails.map((detail) => detail.trim()).filter(Boolean).join(" · ");
+  const flavor = cardDescription?.trim() ?? "";
+  if (outcome && flavor) {
+    return `${flavor}\n${outcome}`;
+  }
+  if (outcome) {
+    return outcome;
+  }
+  return flavor || undefined;
+}
+
 export function parseGameChangerHeadline(headline: string): string {
   const prefix = "Game Changer: ";
   if (headline.startsWith(prefix)) return headline.slice(prefix.length);
@@ -164,9 +179,9 @@ export function describePendingEffect(effect: ClubPendingEffectSnapshot): string
     case "free_scouting_buy_next":
       return "Naechster Spielerkauf gratis";
     case "free_staff_offer":
-      return "Gratis Staff-Offerte";
+      return "Gratis Staff-Draw – vor den letzten Investment-Aktionen nutzen";
     case "free_staff_signing":
-      return "Gratis Staff-Verpflichtung";
+      return "Gratis Staff-Verpflichtung beim naechsten Angebot";
     case "next_transfer_price_delta": {
       const amount = Number(p.amount ?? 0);
       return amount >= 0

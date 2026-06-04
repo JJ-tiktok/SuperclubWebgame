@@ -24,6 +24,8 @@ export type LobbySettings = {
   turn_timeout_seconds: number;
   /** Host-selected CPU team IDs (global catalog); order preserved for season fill. */
   cpu_team_ids?: string[];
+  /** Continental Cup after even seasons from season 2 onward (default: enabled). */
+  continental_cup_enabled?: boolean;
 };
 
 export type ClubTemplate = {
@@ -314,6 +316,9 @@ export type ClubFinanceSnapshot = {
   placement_reward: number;
   projected_income: number;
   projected_net: number;
+  /** Status after Game Changer override (Fanmarsch / Pressekonferenz). */
+  effective_status?: string;
+  status_override_active?: boolean;
 };
 
 export type TrainingEventSnapshot = {
@@ -346,11 +351,22 @@ export type GameEventType =
   | "DRAFT_PICK_MADE"
   | "SCOUTING_CARD_DRAWN"
   | "SCOUTING_CARD_BOUGHT"
+  | "SCOUTING_CARD_PASSED"
+  | "SCOUTING_STATUS_CHANGED"
   | "AUCTION_BID_PLACED"
+  | "AUCTION_PASSED"
   | "AUCTION_CLOSED"
+  | "DEADLINE_INITIALIZED"
   | "LINEUP_SAVED"
   | "LINEUP_LOCKED"
+  | "MATCH_STARTED"
+  | "MATCH_THIRD_READY_CHANGED"
+  | "MATCH_THIRD_RESOLVED"
   | "MATCH_SIMULATED"
+  | "SECRET_WEAPON_PLAYED"
+  | "DRAW_REROLL_TRIGGERED"
+  | "TRANSFER_OFFER_CREATED"
+  | "TRANSFER_OFFER_RESOLVED"
   | "PHASE_CHANGED"
   | "SAVE_UPDATED";
 
@@ -389,6 +405,14 @@ export type TransferOfferSnapshot = {
 export type TransferMarketClubSnapshot = {
   club: Pick<LobbyClub, "club_color" | "club_name" | "id" | "manager_name">;
   squad: ClubPlayerSnapshot[];
+};
+
+export type ClubSquadSnapshot = {
+  club: Pick<LobbyClub, "club_color" | "club_name" | "id" | "image_url" | "manager_name" | "squad_stars">;
+  injured_count: number;
+  player_count: number;
+  squad: ClubPlayerSnapshot[];
+  squad_stars: number;
 };
 
 export type TransferMarketSnapshot = {
@@ -516,10 +540,14 @@ export type SeasonFixtureSnapshot = {
   status: "completed" | "scheduled";
 };
 
+export type SeasonZoneBoostSnapshot = Record<"ATT" | "DEF" | "MID", number>;
+
 export type SeasonSnapshot = {
   current_matchday: number;
   fixtures: SeasonFixtureSnapshot[];
   manager_standings: ManagerStandingSnapshot[];
+  /** Active next_match zone deltas per human club — visible to all managers on the matchday. */
+  next_match_zone_boosts_by_club_id?: Record<string, SeasonZoneBoostSnapshot>;
   setup_error?: string;
   standings: SeasonStandingSnapshot[];
 };
@@ -577,6 +605,7 @@ export type LobbySnapshot = {
   season: SeasonSnapshot | null;
   continental: ContinentalTournamentSnapshot | null;
   scouting: ScoutingSnapshot | null;
+  club_squads: ClubSquadSnapshot[] | null;
   club_overview: ClubOverviewSnapshot | null;
   transfer_market: TransferMarketSnapshot | null;
   match_news: MatchNewsSnapshot[];

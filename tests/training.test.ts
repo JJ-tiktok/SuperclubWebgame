@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { canTrainOwnedPlayer, getTrainingStatus, resolveTrainingAttempt } from "@/lib/lobby/training";
+import {
+  canTrainOwnedPlayer,
+  getTrainingStatus,
+  resolveTrainingAttempt,
+  type TrainingEventSnapshot,
+} from "@/lib/lobby/training";
 
 describe("Training rules", () => {
   it("keeps the player unchanged when the dice roll is not above the current stars", () => {
@@ -53,7 +58,7 @@ describe("Training rules", () => {
   });
 
   it("uses the level four guaranteed bonus once", () => {
-    const events = [];
+    const events: TrainingEventSnapshot[] = [];
     const status = getTrainingStatus({ events, trainingLevel: 4 });
     const result = resolveTrainingAttempt({
       currentStars: 3,

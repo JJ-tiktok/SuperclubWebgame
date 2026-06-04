@@ -1,12 +1,14 @@
 import { auth } from "@clerk/nextjs/server";
 import { normalizeRoomCode } from "./rules";
 import { DRAFT_PLAYER_SELECT } from "./draft";
+import { buildNextMatchZoneBoostsByClubId } from "@/lib/game/game-changer-effects";
 import type {
   ClubGameChangerSnapshot,
   CpuStrengthTier,
   ClubOverviewSnapshot,
   ClubPendingEffectSnapshot,
   ClubPlayerSnapshot,
+  ClubSquadSnapshot,
   DeadlineAuctionSnapshot,
   DeadlineBidSnapshot,
   DeadlineSnapshot,
@@ -45,7 +47,7 @@ import {
 } from "@/lib/lobby/scouting";
 import { computeTrainingExtraPlayers, isOffseasonPendingScopeActive } from "@/lib/lobby/offseason-pending-effects";
 import { getTrainingStatus, parseTrainingEvent } from "@/lib/lobby/training";
-import type { ClubStatus } from "@/lib/game/types";
+import { isClubStatusOverrideActive, resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
 
 const GAME_SELECT_LEGACY =
@@ -78,6 +80,62 @@ function isUndefinedTableError(error: { code?: string } | null | undefined): boo
   return Boolean(error && error.code === "42P01");
 }
 
+function normalizeGameRow<T extends LobbyGame>(game: T): T {
+  return { ...game, live_seq: game.live_seq ?? 0 };
+}
+
+type GamesQueryResult = { data: LobbyGame[] | null; error: { code?: string; message?: string } | null };
+
+async function queryGamesByIds(
+  supabase: NonNullable<ReturnType<typeof createSupabaseServiceClient>>,
+  gameIds: string[],
+): Promise<GamesQueryResult> {
+  let result = await supabase
+    .from("games")
+    .select(GAME_SELECT)
+    .in("id", gameIds)
+    .order("last_saved_at", { ascending: false })
+    .returns<LobbyGame[]>();
+
+  if (isUndefinedColumnError(result.error)) {
+    result = await supabase
+      .from("games")
+      .select(GAME_SELECT_LEGACY)
+      .in("id", gameIds)
+      .order("last_saved_at", { ascending: false })
+      .returns<LobbyGame[]>();
+  }
+
+  return {
+    data: result.data ? result.data.map(normalizeGameRow) : null,
+    error: result.error,
+  };
+}
+
+async function queryGameByRoomCode(
+  supabase: NonNullable<ReturnType<typeof createSupabaseServiceClient>>,
+  roomCode: string,
+): Promise<{ data: LobbyGame | null; error: { code?: string; message?: string } | null }> {
+  let result = await supabase
+    .from("games")
+    .select(GAME_SELECT)
+    .eq("room_code", roomCode)
+    .maybeSingle<LobbyGame>();
+
+  if (isUndefinedColumnError(result.error)) {
+    result = await supabase
+      .from("games")
+      .select(GAME_SELECT_LEGACY)
+      .eq("room_code", roomCode)
+      .maybeSingle<LobbyGame>();
+  }
+
+  return {
+    data: result.data ? normalizeGameRow(result.data) : null,
+    error: result.error,
+  };
+}
+
 export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?: { activeView?: string }) {
   const { userId } = await auth();
   const supabase = createSupabaseServiceClient();
@@ -87,20 +145,7 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
   }
 
   const roomCode = normalizeRoomCode(roomCodeParam);
-  const gameResult = await supabase
-    .from("games")
-    .select(GAME_SELECT)
-    .eq("room_code", roomCode)
-    .maybeSingle<LobbyGame>();
-  const fallbackGameResult = isUndefinedColumnError(gameResult.error)
-    ? await supabase
-        .from("games")
-        .select(GAME_SELECT_LEGACY)
-        .eq("room_code", roomCode)
-        .maybeSingle<LobbyGame>()
-    : gameResult;
-  const game = fallbackGameResult.data ? { ...fallbackGameResult.data, live_seq: fallbackGameResult.data.live_seq ?? 0 } : null;
-  const gameError = fallbackGameResult.error;
+  const { data: game, error: gameError } = await queryGameByRoomCode(supabase, roomCode);
 
   if (gameError) {
     throw gameError;
@@ -166,8 +211,12 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
   const continental = await getContinentalSnapshot(game);
   const ownClub = clubsWithStars.find((club) => club.clerk_user_id === userId);
   const clubOverview = ownClub ? await getClubOverviewSnapshot(game, ownClub, clubsWithStars.length) : null;
+  const clubSquads =
+    ownClub && (options?.activeView === "squad" || options?.activeView === "transfer")
+      ? await getClubSquadsSnapshot(game, clubsWithStars)
+      : null;
   const transferMarket =
-    ownClub && options?.activeView === "transfer"
+    ownClub && (options?.activeView === "squad" || options?.activeView === "transfer")
       ? await getTransferMarketSnapshot(game, ownClub, clubsWithStars)
       : null;
   const matchNews = await getMatchNewsSnapshot(game);
@@ -181,6 +230,7 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
     season,
     continental,
     scouting,
+    club_squads: clubSquads,
     club_overview: clubOverview,
     transfer_market: transferMarket,
     match_news: matchNews,
@@ -452,6 +502,58 @@ type TransferOfferRow = Omit<TransferOfferSnapshot, "cash_amount" | "from_club" 
   to_club: Pick<LobbyClub, "club_color" | "club_name" | "id"> | null;
 };
 
+async function getClubSquadsSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promise<ClubSquadSnapshot[] | null> {
+  const supabase = createSupabaseServiceClient();
+
+  if (!supabase) {
+    return null;
+  }
+
+  const clubIds = clubs.map((club) => club.id);
+  const { data, error } = clubIds.length
+    ? await supabase
+        .from("club_players")
+        .select(
+          `id, club_id, player_id, current_stars, current_zone, injured, lineup_slot, acquired_at,
+          player:players(${DRAFT_PLAYER_SELECT})`,
+        )
+        .in("club_id", clubIds)
+        .order("acquired_at", { ascending: true })
+        .returns<ClubPlayerSnapshot[]>()
+    : { data: [], error: null };
+
+  if (error) {
+    throw error;
+  }
+
+  const playersByClubId = new Map<string, ClubPlayerSnapshot[]>();
+  for (const row of data ?? []) {
+    const rows = playersByClubId.get(row.club_id) ?? [];
+    rows.push(row);
+    playersByClubId.set(row.club_id, rows);
+  }
+
+  return clubs.map((club) => {
+    const squad = sortClubPlayers(playersByClubId.get(club.id) ?? []);
+    const squadStars = squad.reduce((sum, player) => sum + Number(player.current_stars), 0);
+
+    return {
+      club: {
+        club_color: club.club_color,
+        club_name: club.club_name,
+        id: club.id,
+        image_url: club.image_url,
+        manager_name: club.manager_name,
+        squad_stars: club.squad_stars ?? squadStars,
+      },
+      injured_count: squad.filter((player) => player.injured).length,
+      player_count: squad.length,
+      squad,
+      squad_stars: club.squad_stars ?? squadStars,
+    };
+  });
+}
+
 async function getTransferMarketSnapshot(
   game: LobbyGame,
   ownClub: LobbyClub,
@@ -585,6 +687,19 @@ function normalizeTransferOfferStatus(status: string): TransferOfferSnapshot["st
   return "open";
 }
 
+function sortClubPlayers(squad: ClubPlayerSnapshot[]) {
+  return [...squad].sort((a, b) => {
+    const posOrder: Record<string, number> = { GK: 0, DEF: 1, MID: 2, ATT: 3 };
+    const posDiff = (posOrder[a.player.position] ?? 4) - (posOrder[b.player.position] ?? 4);
+    if (posDiff !== 0) return posDiff;
+
+    const starsDiff = Number(b.current_stars) - Number(a.current_stars);
+    if (starsDiff !== 0) return starsDiff;
+
+    return a.player.display_name.localeCompare(b.player.display_name, "de");
+  });
+}
+
 async function getSeasonSnapshot(game: LobbyGame): Promise<SeasonSnapshot | null> {
   const supabase = createSupabaseServiceClient();
 
@@ -648,6 +763,25 @@ async function getSeasonSnapshot(game: LobbyGame): Promise<SeasonSnapshot | null
 
   const normalizedFixtures = fixtures ?? [];
   const currentMatchday = normalizedFixtures.find((fixture) => fixture.status !== "completed")?.matchday ?? normalizedFixtures.at(-1)?.matchday ?? 1;
+  const humanClubIds = [
+    ...new Set(
+      normalizedFixtures.flatMap((fixture) => [
+        fixture.home_participant?.club_id,
+        fixture.away_participant?.club_id,
+      ].filter((id): id is string => Boolean(id))),
+    ),
+  ];
+  let nextMatchZoneBoostsByClubId: Record<string, Record<"ATT" | "DEF" | "MID", number>> = {};
+  if (humanClubIds.length > 0) {
+    const { data: nextMatchEffectRows } = await supabase
+      .from("club_pending_effects")
+      .select("club_id, effect_type, payload, scope")
+      .in("club_id", humanClubIds)
+      .eq("scope", "next_match")
+      .is("consumed_at", null)
+      .returns<Array<{ club_id: string; effect_type: string; payload: Record<string, unknown>; scope: string }>>();
+    nextMatchZoneBoostsByClubId = buildNextMatchZoneBoostsByClubId(nextMatchEffectRows ?? []);
+  }
   const managerStandings = await getManagerStandings(game, standings ?? []);
   const tierByCpuTeamId = await loadCpuTierByTeamId(supabase, standings ?? [], normalizedFixtures);
   const enrichedStandings = enrichParticipantsWithCpuTier(standings ?? [], tierByCpuTeamId);
@@ -657,6 +791,7 @@ async function getSeasonSnapshot(game: LobbyGame): Promise<SeasonSnapshot | null
     current_matchday: currentMatchday,
     fixtures: enrichedFixtures,
     manager_standings: managerStandings,
+    next_match_zone_boosts_by_club_id: nextMatchZoneBoostsByClubId,
     standings: enrichedStandings,
   };
 }
@@ -1073,11 +1208,8 @@ async function getClubOverviewSnapshot(
   const squadStars = (clubPlayers ?? []).reduce((total, owned) => total + Number(owned.current_stars), 0);
 
   // Resolve status_override (Pressekonferenz / Fanmarsch) for the current season
-  const overrideUntil = club.status_override_until_season ?? null;
-  const overrideActive = club.status_override && (overrideUntil == null || overrideUntil >= seasonNumber);
-  const effectiveStatus = overrideActive
-    ? normalizeClubStatus(club.status_override ?? club.status)
-    : normalizeClubStatus(club.status);
+  const overrideActive = isClubStatusOverrideActive(club, seasonNumber);
+  const effectiveStatus = resolveEffectiveClubStatus(club, seasonNumber);
 
   // Resolve stadium_level_cap (Sicherheitsluecke im Konzept) for the current season
   const capUntil = club.stadium_level_cap_until_season ?? null;
@@ -1132,16 +1264,10 @@ async function getClubOverviewSnapshot(
       placement_reward: placementReward,
       projected_income: stadiumIncome + placementReward,
       projected_net: stadiumIncome + placementReward - wages,
+      effective_status: effectiveStatus,
+      status_override_active: overrideActive,
     },
   };
-}
-
-function normalizeClubStatus(status: string | undefined): ClubStatus {
-  if (status === "established" || status === "mid_table" || status === "title_contender") {
-    return status;
-  }
-
-  return "newly_promoted";
 }
 
 export async function getSavedGamesForCurrentUser() {
@@ -1169,12 +1295,7 @@ export async function getSavedGamesForCurrentUser() {
   }
 
   const [{ data: games, error: gamesError }, { data: clubs, error: clubsError }] = await Promise.all([
-    supabase
-      .from("games")
-      .select(GAME_SELECT)
-      .in("id", gameIds)
-      .order("last_saved_at", { ascending: false })
-      .returns<LobbyGame[]>(),
+    queryGamesByIds(supabase, gameIds),
     supabase
       .from("clubs")
       .select(CLUB_SELECT)

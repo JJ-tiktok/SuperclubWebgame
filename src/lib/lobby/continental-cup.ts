@@ -2,6 +2,8 @@
  * Continental Cup (Champions League) — pure bracket logic.
  */
 
+import type { LobbySettings } from "@/lib/lobby/types";
+
 export const CONTINENTAL_BRACKET_SIZE = 32;
 /** Minimum catalog rows so a 2-player lobby can fill 30 CPU slots. */
 export const MIN_CONTINENTAL_CPU_CATALOG_SIZE = CONTINENTAL_BRACKET_SIZE;
@@ -37,7 +39,17 @@ export type ContinentalCompletedFixture = {
   winner_participant_id: string;
 };
 
-export function shouldRunContinentalCup(seasonNumber: number) {
+export function isContinentalCupEnabled(settings?: Pick<LobbySettings, "continental_cup_enabled"> | null) {
+  return settings?.continental_cup_enabled !== false;
+}
+
+export function shouldRunContinentalCup(
+  seasonNumber: number,
+  settings?: Pick<LobbySettings, "continental_cup_enabled"> | null,
+) {
+  if (!isContinentalCupEnabled(settings)) {
+    return false;
+  }
   return seasonNumber >= 2 && seasonNumber % 2 === 0;
 }
 

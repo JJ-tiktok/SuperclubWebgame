@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { canUpgradeFacility, getUpgradeCost } from "@/lib/lobby/investments";
+import { canRecruitStaff, canUpgradeFacility, getStaffRecruitBlockReason, getUpgradeCost } from "@/lib/lobby/investments";
 import { getPlacementReward, getStadiumIncome } from "@/lib/game/rules";
 
 describe("Club overview investment rules", () => {
@@ -46,6 +46,40 @@ describe("Club overview investment rules", () => {
     assert.deepEqual(
       canUpgradeFacility({ action: "scouting", actionsThisSeason: [], currentLevel: 2, money: 40_000_000 }),
       { ok: true, cost: getUpgradeCost("scouting", 2) },
+    );
+  });
+
+  it("blocks staff recruit when both investment actions are used", () => {
+    assert.deepEqual(
+      canRecruitStaff({
+        actionsThisSeason: ["training", "stadium"],
+        currentStaffCount: 0,
+        hasOpenOffer: false,
+      }),
+      { ok: false, reason: "investment_action_limit" },
+    );
+  });
+
+  it("allows staff recruit while an investment slot remains", () => {
+    assert.deepEqual(
+      canRecruitStaff({
+        actionsThisSeason: ["training"],
+        currentStaffCount: 0,
+        hasOpenOffer: false,
+      }),
+      { ok: true },
+    );
+  });
+
+  it("maps free staff offer limit errors to a clearer reason", () => {
+    assert.equal(
+      getStaffRecruitBlockReason({
+        actionsThisSeason: ["training", "stadium"],
+        currentStaffCount: 0,
+        hasOpenOffer: false,
+        hasFreeStaffOffer: true,
+      }),
+      "investment_action_limit_free_staff",
     );
   });
 

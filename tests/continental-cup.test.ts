@@ -20,6 +20,12 @@ describe("Continental Cup", () => {
     assert.equal(shouldRunContinentalCup(4), true);
   });
 
+  it("respects continental_cup_enabled in lobby settings", () => {
+    assert.equal(shouldRunContinentalCup(2, { continental_cup_enabled: false }), false);
+    assert.equal(shouldRunContinentalCup(2, { continental_cup_enabled: true }), true);
+    assert.equal(shouldRunContinentalCup(2, {}), true);
+  });
+
   it("fills CPU slots to reach 32 teams", () => {
     assert.equal(requiredContinentalCpuCount(4), 28);
     assert.equal(requiredContinentalCpuCount(32), 0);
@@ -75,5 +81,11 @@ describe("Continental Cup phase flow", () => {
     assert.equal(shouldAdvanceSeason("champions_league", "off_season"), true);
     assert.equal(getSettingsForNextPhase(baseSettings, "champions_league", "off_season").seasonNumber, 3);
     assert.equal(getSettingsForNextPhase(baseSettings, "season_end", "champions_league").seasonNumber, 2);
+  });
+
+  it("skips champions_league when continental cup is disabled", () => {
+    const disabled = { ...baseSettings, continental_cup_enabled: false };
+    assert.equal(getNextLobbyPhase("season_end", disabled), "off_season");
+    assert.equal(getSettingsForNextPhase(disabled, "season_end", "off_season").seasonNumber, 3);
   });
 });

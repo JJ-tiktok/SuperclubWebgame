@@ -30,21 +30,33 @@ export function GameRealtimeBridge({
     }
 
     const activeSession = session;
-    const supabase = createClerkBrowserClient(() => activeSession.getToken());
+    const supabaseJwtTemplate = process.env.NEXT_PUBLIC_CLERK_SUPABASE_JWT_TEMPLATE;
+    const getSupabaseToken = async () => {
+      if (supabaseJwtTemplate) {
+        return await activeSession.getToken({ template: supabaseJwtTemplate });
+      }
+
+      return activeSession.getToken();
+    };
+    const supabase = createClerkBrowserClient(getSupabaseToken);
     if (!supabase) {
       return;
     }
     const client = supabase;
 
     let active = true;
+    let recoveryInFlight = false;
+    let recoveryTimer: ReturnType<typeof setTimeout> | null = null;
+    const gameId = snapshot.game.id;
     const roomCode = snapshot.game.room_code;
-    const channel = client.channel(`game:${snapshot.game.id}`, {
+    const eventChannel = client.channel(`game:${gameId}`, {
       config: {
         presence: {
           key: currentUserId,
         },
       },
     });
+    const fallbackChannel = client.channel(`game-fallback:${gameId}`);
 
     async function recover(reason: string) {
       if (!active) {
@@ -54,42 +66,60 @@ export function GameRealtimeBridge({
       await refetchGameSnapshot({ reason, roomCode, view: currentView });
     }
 
+    function scheduleRecover(reason: string) {
+      if (recoveryTimer) {
+        clearTimeout(recoveryTimer);
+      }
+
+      recoveryTimer = setTimeout(() => {
+        recoveryTimer = null;
+        if (recoveryInFlight) {
+          return;
+        }
+
+        recoveryInFlight = true;
+        void recover(reason).finally(() => {
+          recoveryInFlight = false;
+        });
+      }, 120);
+    }
+
     async function subscribe() {
-      const token = await activeSession.getToken();
+      const token = await getSupabaseToken();
       if (!active || !token) {
         return;
       }
 
       client.realtime.setAuth(token);
 
-      channel
+      eventChannel
         .on(
           "postgres_changes",
           {
             event: "INSERT",
-            filter: `game_id=eq.${snapshot.game.id}`,
+            filter: `game_id=eq.${gameId}`,
             schema: "public",
             table: "game_events",
           },
           (payload) => {
             const event = normalizeGameEvent(payload.new);
             if (!event) {
-              void recover("invalid_event_payload");
+              scheduleRecover("invalid_event_payload");
               return;
             }
 
             const result = applyGameEvent(event);
             if (result.needsRefetch) {
-              void recover(`event_${event.type.toLowerCase()}`);
+              scheduleRecover(`event_${event.type.toLowerCase()}`);
             }
           },
         )
         .on("presence", { event: "sync" }, () => {
-          setGamePresence(normalizePresenceState(channel.presenceState()));
+          setGamePresence(normalizePresenceState(eventChannel.presenceState()));
         })
         .subscribe((status) => {
           if (status === "SUBSCRIBED") {
-            void channel.track({
+            void eventChannel.track({
               clubId: ownClub?.id ?? null,
               currentView,
               displayName: ownMember?.display_name ?? ownClub?.manager_name ?? "Manager",
@@ -100,16 +130,54 @@ export function GameRealtimeBridge({
           }
 
           if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-            void recover(`channel_${status.toLowerCase()}`);
+            scheduleRecover(`events_${status.toLowerCase()}`);
+          }
+        });
+
+      const fallbackRecover = (reason: string) => {
+        scheduleRecover(reason);
+      };
+
+      fallbackChannel
+        .on("postgres_changes", { event: "*", schema: "public", table: "games", filter: `id=eq.${gameId}` }, () => fallbackRecover("fallback_games"))
+        .on("postgres_changes", { event: "*", schema: "public", table: "clubs", filter: `game_id=eq.${gameId}` }, () => fallbackRecover("fallback_clubs"))
+        .on("postgres_changes", { event: "*", schema: "public", table: "game_members", filter: `game_id=eq.${gameId}` }, () => fallbackRecover("fallback_game_members"))
+        .on("postgres_changes", { event: "*", schema: "public", table: "draft_rounds", filter: `game_id=eq.${gameId}` }, () => fallbackRecover("fallback_draft_rounds"))
+        .on("postgres_changes", { event: "*", schema: "public", table: "scouting_draws", filter: `game_id=eq.${gameId}` }, () => fallbackRecover("fallback_scouting_draws"))
+        .on("postgres_changes", { event: "*", schema: "public", table: "auctions", filter: `game_id=eq.${gameId}` }, () => fallbackRecover("fallback_auctions"))
+        .on("postgres_changes", { event: "*", schema: "public", table: "bids" }, () => fallbackRecover("fallback_bids"))
+        .on("postgres_changes", { event: "*", schema: "public", table: "fixtures", filter: `game_id=eq.${gameId}` }, () => fallbackRecover("fallback_fixtures"))
+        .on("postgres_changes", { event: "*", schema: "public", table: "season_standings", filter: `game_id=eq.${gameId}` }, () => fallbackRecover("fallback_season_standings"))
+        .on("postgres_changes", { event: "*", schema: "public", table: "transactions", filter: `game_id=eq.${gameId}` }, () => fallbackRecover("fallback_transactions"))
+        .on("postgres_changes", { event: "*", schema: "public", table: "club_players" }, () => fallbackRecover("fallback_club_players"))
+        .on("postgres_changes", { event: "*", schema: "public", table: "club_staff" }, () => fallbackRecover("fallback_club_staff"))
+        .on("postgres_changes", { event: "*", schema: "public", table: "staff_offers" }, () => fallbackRecover("fallback_staff_offers"))
+        .on("postgres_changes", { event: "*", schema: "public", table: "transfer_offers" }, () => fallbackRecover("fallback_transfer_offers"))
+        .on("postgres_changes", { event: "*", schema: "public", table: "investments", filter: `game_id=eq.${gameId}` }, () => fallbackRecover("fallback_investments"))
+        .on("postgres_changes", { event: "*", schema: "public", table: "club_game_changers" }, () => fallbackRecover("fallback_club_game_changers"))
+        .on("postgres_changes", { event: "*", schema: "public", table: "match_news", filter: `game_id=eq.${gameId}` }, () => fallbackRecover("fallback_match_news"))
+        .subscribe((status) => {
+          if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+            scheduleRecover(`fallback_${status.toLowerCase()}`);
           }
         });
     }
 
     void subscribe();
+    const pollInterval = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        scheduleRecover("poll");
+      }
+    }, 2_000);
 
     return () => {
       active = false;
-      void client.removeChannel(channel);
+      window.clearInterval(pollInterval);
+      if (recoveryTimer) {
+        clearTimeout(recoveryTimer);
+      }
+      void client.removeChannel(eventChannel);
+      void client.removeChannel(fallbackChannel);
     };
   }, [currentUserId, currentView, isLoaded, ownClub?.id, ownClub?.is_ready, ownClub?.manager_name, ownMember?.display_name, ownMember?.phase_done, session, snapshot.game.id, snapshot.game.phase, snapshot.game.room_code]);
 

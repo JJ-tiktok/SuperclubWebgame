@@ -144,4 +144,25 @@ describe("season and matchday rules", () => {
 
     assert.equal(result.events.length, 0);
   });
+
+  it("applies next-match zone modifiers in the relevant third", () => {
+    const result = resolveFixture({
+      away: side({ participantId: "away", powers: { ATT: 5, DEF: 5, MID: 5 } }),
+      diceRolls: [
+        [1, 1],
+        [1, 1],
+        [1, 1],
+        [1, 1],
+        [1, 1],
+        [1, 1],
+      ],
+      home: side({ participantId: "home", powers: { ATT: 8, DEF: 8, MID: 8 } }),
+      matchPointsMode: "football_3_1_0",
+      zoneModifiers: [{ zone: "MID", delta: 2, for: "home", source_club_game_changer_id: "pending_effect" }],
+    });
+
+    assert.equal(result.thirds[0]?.home.zone_stars, 10);
+    assert.equal(result.thirds[0]?.home.total, 12);
+    assert.equal(result.thirds[1]?.home.zone_stars, 8);
+  });
 });

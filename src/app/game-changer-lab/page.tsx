@@ -9,6 +9,7 @@ export const dynamic = "force-dynamic";
 
 type PageProps = {
   searchParams: Promise<{
+    tab?: string;
     apply_ok?: string;
     apply_error?: string;
     room?: string;
@@ -76,7 +77,13 @@ export default async function GameChangerLabPage({ searchParams }: PageProps) {
             </PanelHeader>
           </Panel>
         ) : (
-          <GameChangerLab cards={result.cards} isDev={isDev} applyFeedback={applyFeedback} />
+          <GameChangerLab
+            cards={result.cards}
+            isDev={isDev}
+            applyFeedback={applyFeedback}
+            initialTab={sp.tab === "lab" ? "lab" : "glossary"}
+            initialRoomCode={sp.room ?? ""}
+          />
         )}
       </div>
     </main>

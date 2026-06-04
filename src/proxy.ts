@@ -1,6 +1,13 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
-const isProtectedRoute = createRouteMatcher(["/lobby(.*)", "/games(.*)", "/api(.*)"]);
+const devToolRoutes = [
+  "/game-changer-lab(.*)",
+  "/player-db-test(.*)",
+  "/draft-test(.*)",
+  "/draft-db-test(.*)",
+];
+
+const isProtectedRoute = createRouteMatcher(["/lobby(.*)", "/games(.*)", "/api(.*)", ...devToolRoutes]);
 
 export default clerkMiddleware(async (auth, request) => {
   if (isProtectedRoute(request)) {
@@ -12,5 +19,11 @@ export default clerkMiddleware(async (auth, request) => {
 });
 
 export const config = {
-  matcher: ["/lobby(.*)", "/games(.*)", "/(api|trpc)(.*)", "/__clerk/(.*)"],
+  matcher: [
+    "/lobby(.*)",
+    "/games(.*)",
+    ...devToolRoutes,
+    "/(api|trpc)(.*)",
+    "/__clerk/(.*)",
+  ],
 };

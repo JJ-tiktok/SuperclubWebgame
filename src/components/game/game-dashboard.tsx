@@ -459,12 +459,12 @@ function OffSeasonChecklist({ ownClub, snapshot }: { ownClub: LobbyClub; snapsho
     !overview?.sponsor_signing_allowed ||
     (overview?.available_sponsor_deals.length === 0 && (overview?.sponsor_history.length ?? 0) > 0);
 
-  const items: Array<{ id: string; label: string; done: boolean; view: GameView; help: string }> = [
+  const items: Array<{ id: string; label: string; done: boolean; href: string; help: string }> = [
     {
       id: "training",
       label: "Training",
       done: trainingDone,
-      view: "training",
+      href: `/games/${snapshot.game.room_code}?view=training`,
       help: trainingStatus
         ? `${trainingStatus.attempts_used}/${trainingStatus.capacity_players} Versuche genutzt`
         : "Trainingsstatus nicht verfuegbar",
@@ -473,7 +473,7 @@ function OffSeasonChecklist({ ownClub, snapshot }: { ownClub: LobbyClub; snapsho
       id: "scouting",
       label: "Scouting",
       done: scoutingDone,
-      view: "scouting",
+      href: `/games/${snapshot.game.room_code}?view=scouting`,
       help: scoutingCapacity > 0
         ? `${ownDraws.length}/${scoutingCapacity} Karten gezogen${hasUnresolvedDraw ? " (offene Auswahl)" : ""}`
         : "Kein Scouting verfuegbar",
@@ -482,7 +482,7 @@ function OffSeasonChecklist({ ownClub, snapshot }: { ownClub: LobbyClub; snapsho
       id: "investment",
       label: "Investition",
       done: investmentDone,
-      view: "grounds",
+      href: `/games/${snapshot.game.room_code}?view=grounds`,
       help: investmentDone ? "Investiert" : "Noch nicht investiert",
     },
     ...(overview?.sponsor_signing_allowed
@@ -491,7 +491,7 @@ function OffSeasonChecklist({ ownClub, snapshot }: { ownClub: LobbyClub; snapsho
             id: "sponsor",
             label: "Sponsor",
             done: sponsorDone,
-            view: "grounds" as GameView,
+            href: `/games/${snapshot.game.room_code}?view=grounds#sponsoring`,
             help: overview?.sponsor_contract
               ? "Vertrag aktiv"
               : `${overview?.available_sponsor_deals.length ?? 0} Deal(s) wählbar`,
@@ -514,7 +514,7 @@ function OffSeasonChecklist({ ownClub, snapshot }: { ownClub: LobbyClub; snapsho
                   ? "border-emerald-700/60 bg-emerald-950/30 hover:bg-emerald-950/50"
                   : "border-amber-700/60 bg-amber-950/20 hover:bg-amber-950/40",
               )}
-              href={`/games/${snapshot.game.room_code}?view=${item.view}`}
+              href={item.href}
               key={item.id}
             >
               <div>

@@ -2,8 +2,10 @@
 
 import { Handshake, Trophy } from "lucide-react";
 import { useSearchParams } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { pickSponsorRewardPlayerAction, signSponsorDealAction } from "@/app/games/actions/offseason";
+import { resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
+import { SPONSOR_PRESTIGE_LABELS } from "@/lib/lobby/sponsor-deals";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelDescription, PanelHeader, PanelTitle } from "@/components/ui/panel";
@@ -52,6 +54,8 @@ export function SponsorPanel({
   const sponsorError = searchParams.get("sponsor_error");
   const signingPhase = isSponsorSigningPhase(snapshot.game.phase);
   const [confirmDealId, setConfirmDealId] = useState<string | null>(null);
+  const seasonNumber = Number(snapshot.game.settings?.seasonNumber ?? 1);
+  const currentStatus = resolveEffectiveClubStatus(ownClub, seasonNumber);
 
   const dealsByTier = useMemo(() => {
     const grouped = new Map<string, ClubOverviewSnapshot["available_sponsor_deals"]>();
@@ -63,10 +67,28 @@ export function SponsorPanel({
     return grouped;
   }, [overview.available_sponsor_deals]);
 
+  const tierOrder = useMemo(
+    () => ["newly_promoted", "established", "mid_table", "title_contender"].filter((tier) => dealsByTier.has(tier)),
+    [dealsByTier],
+  );
+
+  const [activeTier, setActiveTier] = useState<string>(() =>
+    tierOrder.includes(currentStatus) ? currentStatus : (tierOrder[0] ?? currentStatus),
+  );
+
+  useEffect(() => {
+    if (tierOrder.length === 0) return;
+    if (!tierOrder.includes(activeTier)) {
+      setActiveTier(tierOrder.includes(currentStatus) ? currentStatus : tierOrder[0]!);
+    }
+  }, [activeTier, currentStatus, tierOrder]);
+
+  const visibleDeals = dealsByTier.get(activeTier) ?? [];
+
   const activeContract = overview.sponsor_contract;
 
   return (
-    <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+    <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="sponsoring">
       <PanelHeader>
         <div>
           <PanelTitle>Sponsoring</PanelTitle>
@@ -122,55 +144,82 @@ export function SponsorPanel({
 
       {!activeContract && overview.available_sponsor_deals.length > 0 ? (
         <div className="space-y-4">
-          <p className="text-sm font-medium text-zinc-300">Verfügbare Deals</p>
-          {[...dealsByTier.entries()].map(([tier, deals]) => (
-            <div key={tier}>
-              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">{deals[0]?.prestige_label ?? tier}</p>
-              <div className="grid gap-3 md:grid-cols-2">
-                {deals.map((deal) => {
-                  const isConfirming = confirmDealId === deal.id;
-                  return (
-                    <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-4" key={deal.id}>
-                      <p className="font-semibold text-zinc-50">{deal.display_name}</p>
-                      <p className="mt-1 text-xs text-zinc-400">{deal.task_description}</p>
-                      <p className="mt-2 text-xs text-emerald-300">Belohnung: {deal.reward_description}</p>
-                      <p className="mt-2 text-[11px] italic text-zinc-500">{deal.flavor_text}</p>
-                      <p className="mt-2 text-[11px] text-zinc-600">
-                        Laufzeit: {deal.duration_seasons} Saison{deal.duration_seasons === 1 ? "" : "en"}
-                      </p>
-                      {!isConfirming ? (
-                        <Button
-                          className="mt-3 w-full"
-                          disabled={!signingPhase}
-                          onClick={() => setConfirmDealId(deal.id)}
-                          title={signingPhase ? "Deal abschliessen" : "Nur in der Off-Season"}
-                          type="button"
-                          variant="secondary"
-                        >
-                          {signingPhase ? "Deal wählen" : "Nur Off-Season"}
-                        </Button>
-                      ) : (
-                        <form action={signSponsorDealAction} className="mt-3 space-y-2">
-                          <input name="game_id" type="hidden" value={snapshot.game.id} />
-                          <input name="room_code" type="hidden" value={snapshot.game.room_code} />
-                          <input name="deal_id" type="hidden" value={deal.id} />
-                          <p className="text-xs text-amber-200">Vertrag wirklich abschliessen? Die Stufe ist danach verbraucht.</p>
-                          <div className="flex gap-2">
-                            <Button className="flex-1" disabled={!signingPhase} type="submit">
-                              Bestätigen
-                            </Button>
-                            <Button className="flex-1" onClick={() => setConfirmDealId(null)} type="button" variant="ghost">
-                              Abbrechen
-                            </Button>
-                          </div>
-                        </form>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm font-medium text-zinc-300">Verfügbare Deals</p>
+            {tierOrder.length > 1 ? (
+              <p className="text-xs text-zinc-500">Freie Prestige-Stufen — wähle eine Stufe</p>
+            ) : null}
+          </div>
+
+          {tierOrder.length > 1 ? (
+            <div className="flex flex-wrap gap-2">
+              {tierOrder.map((tier) => (
+                <button
+                  key={tier}
+                  type="button"
+                  onClick={() => setActiveTier(tier)}
+                  className={cn(
+                    "rounded-md border px-3 py-1.5 text-xs font-medium transition",
+                    activeTier === tier
+                      ? "border-[var(--club-color)] bg-[var(--club-color)]/15 text-zinc-100"
+                      : "border-zinc-800 bg-zinc-900/60 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200",
+                    tier === currentStatus ? "ring-1 ring-[var(--club-color)]/30" : "",
+                  )}
+                >
+                  {SPONSOR_PRESTIGE_LABELS[tier as keyof typeof SPONSOR_PRESTIGE_LABELS]}
+                  {tier === currentStatus ? " · deine Stufe" : ""}
+                </button>
+              ))}
             </div>
-          ))}
+          ) : (
+            <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+              {visibleDeals[0]?.prestige_label ?? SPONSOR_PRESTIGE_LABELS[activeTier as keyof typeof SPONSOR_PRESTIGE_LABELS]}
+            </p>
+          )}
+
+          <div className="grid gap-3 md:grid-cols-2">
+            {visibleDeals.map((deal) => {
+              const isConfirming = confirmDealId === deal.id;
+              return (
+                <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-4" key={deal.id}>
+                  <p className="font-semibold text-zinc-50">{deal.display_name}</p>
+                  <p className="mt-1 text-xs text-zinc-400">{deal.task_description}</p>
+                  <p className="mt-2 text-xs text-emerald-300">Belohnung: {deal.reward_description}</p>
+                  <p className="mt-2 text-[11px] italic text-zinc-500">{deal.flavor_text}</p>
+                  <p className="mt-2 text-[11px] text-zinc-600">
+                    Laufzeit: {deal.duration_seasons} Saison{deal.duration_seasons === 1 ? "" : "en"}
+                  </p>
+                  {!isConfirming ? (
+                    <Button
+                      className="mt-3 w-full"
+                      disabled={!signingPhase}
+                      onClick={() => setConfirmDealId(deal.id)}
+                      title={signingPhase ? "Deal abschliessen" : "Nur in der Off-Season"}
+                      type="button"
+                      variant="secondary"
+                    >
+                      {signingPhase ? "Deal wählen" : "Nur Off-Season"}
+                    </Button>
+                  ) : (
+                    <form action={signSponsorDealAction} className="mt-3 space-y-2">
+                      <input name="game_id" type="hidden" value={snapshot.game.id} />
+                      <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                      <input name="deal_id" type="hidden" value={deal.id} />
+                      <p className="text-xs text-amber-200">Vertrag wirklich abschliessen? Die Stufe ist danach verbraucht.</p>
+                      <div className="flex gap-2">
+                        <Button className="flex-1" disabled={!signingPhase} type="submit">
+                          Bestätigen
+                        </Button>
+                        <Button className="flex-1" onClick={() => setConfirmDealId(null)} type="button" variant="ghost">
+                          Abbrechen
+                        </Button>
+                      </div>
+                    </form>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       ) : null}
 

@@ -14,3 +14,5 @@ export {
   trainPlayerAction,
 } from "@/app/games/actions";
 
+export { signSponsorDealAction, pickSponsorRewardPlayerAction } from "@/app/games/actions/sponsoring";
+

@@ -23,6 +23,19 @@ import {
 } from "@/app/games/actions/continental";
 import { getNextLobbyPhase, getSettingsForNextPhase, isInvestmentPhase } from "@/lib/lobby/phases";
 import {
+  hasActiveTrainingLock,
+  loadClubSponsorContracts,
+  notifySponsorFixtureComplete,
+  onSponsorNewSigning,
+  onSponsorOffseasonBudgetCheck,
+  onSponsorPlayerGrowth,
+  onSponsorPlayerSold,
+  onSponsorStadiumUpgrade,
+  onSponsorTrainingUsed,
+  processSponsorContractsAtSeasonEnd,
+} from "@/lib/lobby/sponsoring-server";
+import { isStadiumUpgradeBlockedBySponsor } from "@/lib/lobby/sponsoring";
+import {
   computeTrainingExtraPlayers,
   isOffseasonPendingEffectWindow,
   isOffseasonPendingScopeActive,
@@ -227,6 +240,13 @@ export async function upgradeInvestmentAction(formData: FormData) {
     redirect(`/games/${roomCode}?view=grounds`);
   }
 
+  if (action === "stadium") {
+    const sponsorContracts = await loadClubSponsorContracts(supabase, clubId);
+    if (isStadiumUpgradeBlockedBySponsor(sponsorContracts)) {
+      redirect(`/games/${roomCode}?view=grounds&sponsor_error=${encodeURIComponent("Denkmalschutz: Stadionausbau während Sponsoring gesperrt")}`);
+    }
+  }
+
   const { error: investmentError } = await supabase.from("investments").insert({
     action,
     club_id: clubId,
@@ -251,6 +271,10 @@ export async function upgradeInvestmentAction(formData: FormData) {
 
   if (updateClubError) {
     throw updateClubError;
+  }
+
+  if (action === "stadium") {
+    await onSponsorStadiumUpgrade(supabase, clubId, seasonNumber);
   }
 
   const { error: saveError } = await supabase
@@ -518,6 +542,10 @@ export async function trainPlayerAction(formData: FormData) {
     redirect(`/games/${roomCode}?view=training`);
   }
 
+  if (await hasActiveTrainingLock(supabase, ownedPlayer.club_id)) {
+    redirect(`/games/${roomCode}?view=training&sponsor_error=training_locked`);
+  }
+
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
   const { data: transactionRows, error: transactionsError } = await supabase
     .from("transactions")
@@ -621,6 +649,13 @@ export async function trainPlayerAction(formData: FormData) {
 
   if (insertTransactionError) {
     throw insertTransactionError;
+  }
+
+  await onSponsorTrainingUsed(supabase, ownedPlayer.club_id, seasonNumber);
+
+  const starsGained = resolution.afterStars - resolution.beforeStars;
+  if (starsGained > 0) {
+    await onSponsorPlayerGrowth(supabase, ownedPlayer.club_id, seasonNumber, starsGained);
   }
 
   const { error: saveError } = await supabase
@@ -949,6 +984,8 @@ export async function buyScoutedPlayerAction(formData: FormData) {
     throw transactionError;
   }
 
+  await onSponsorNewSigning(supabase, ownClub.id, seasonNumber, Number(draw.player.scouting_price ?? price));
+
   // Consume one-shot transfer effects after a successful buy
   const toConsume: string[] = [];
   if (freeBuyEffect) toConsume.push(freeBuyEffect.id);
@@ -1177,6 +1214,8 @@ export async function sellClubPlayerAction(formData: FormData) {
   if (transactionError) {
     throw transactionError;
   }
+
+  await onSponsorPlayerSold(supabase, ownClub.id, seasonNumber);
 
   await touchGameSave(supabase, gameId, userId);
   revalidatePath(`/games/${roomCode}`);
@@ -2337,6 +2376,7 @@ export async function advancePhaseAction(formData: FormData) {
   }
 
   if ((game.phase === "season" || game.phase === "match") && nextPhase === "season_end") {
+    await processSponsorContractsAtSeasonEnd(supabase, gameId, Number(game.settings?.seasonNumber ?? 1));
     await finalizeSeasonEnd(supabase, gameId, Number(game.settings?.seasonNumber ?? 1));
   }
 
@@ -2370,6 +2410,7 @@ export async function advancePhaseAction(formData: FormData) {
 
   // Consume any remaining current_offseason effects when leaving off_season
   if (game.phase === "off_season" && nextPhase !== "off_season") {
+    await onSponsorOffseasonBudgetCheck(supabase, gameId, Number(game.settings?.seasonNumber ?? 1));
     await expireCurrentOffseasonEffects(supabase, gameId);
   }
 
@@ -2835,6 +2876,18 @@ async function resolveFixtureServer(params: {
     throw fixtureError;
   }
 
+  await notifySponsorFixtureComplete(supabase, {
+    seasonNumber: fixture.season_number,
+    homeClubId: participants.home.club_id ?? null,
+    awayClubId: participants.away.club_id ?? null,
+    homeKind: participants.home.kind,
+    awayKind: participants.away.kind,
+    homeMatchPoints: resolution.home_match_points,
+    awayMatchPoints: resolution.away_match_points,
+    homeThirdPoints: resolution.home_third_points,
+    awayThirdPoints: resolution.away_third_points,
+  });
+
   await consumePendingEffects(supabase, preMatchConsumed);
   await healExpiredInjuries(supabase, fixture.game_id, fixture.matchday);
   await rebuildSeasonStandings(supabase, fixture.game_id, fixture.season_number);
@@ -3025,6 +3078,10 @@ async function computeClubLockedPower(
   ]);
 
   const staffEffects = opts.staffDisabled ? [] : (staffData ?? []).flatMap((s) => s.staff_card?.effects ?? []);
+  const seasonEffects = await getActivePendingEffects(supabase, clubId, "this_season");
+  const sponsorDefBonus = seasonEffects
+    .filter((eff) => eff.effect_type === "sponsor_defense_bonus")
+    .reduce((sum, eff) => sum + Number((eff.payload as { delta?: number })?.delta ?? 0), 0);
   const captain = await loadClubCaptain(supabase, clubId);
   const powers = calculateLineupPower(
     (playerData ?? []).map((p) => ({
@@ -3044,7 +3101,11 @@ async function computeClubLockedPower(
     staffEffects,
     captain,
   );
-  return { DEF: powers.DEF.total, MID: powers.MID.total, ATT: powers.ATT.total };
+  return {
+    DEF: powers.DEF.total + sponsorDefBonus,
+    MID: powers.MID.total,
+    ATT: powers.ATT.total,
+  };
 }
 
 async function assignRandomGameChanger(
@@ -3601,6 +3662,17 @@ export async function markReadyForNextThirdAction(formData: FormData) {
       .eq("id", fixtureId);
 
     if (updateError) throw updateError;
+    await notifySponsorFixtureComplete(supabase, {
+      seasonNumber: fixture.season_number,
+      homeClubId: participants.home.club_id ?? null,
+      awayClubId: participants.away.club_id ?? null,
+      homeKind: participants.home.kind,
+      awayKind: participants.away.kind,
+      homeMatchPoints: matchPoints.home,
+      awayMatchPoints: matchPoints.away,
+      homeThirdPoints: scores.home,
+      awayThirdPoints: scores.away,
+    });
     await healExpiredInjuries(supabase, gameId, fixture.matchday);
     await rebuildSeasonStandings(supabase, gameId, fixture.season_number);
     await touchGameSave(supabase, gameId, userId);
@@ -4424,7 +4496,20 @@ async function bookSeasonFinance(supabase: SupabaseServiceClient, gameId: string
       ? Math.min(Number(club.stadium_level ?? 1), Number(club.stadium_level_cap ?? 1))
       : Number(club.stadium_level ?? 1);
 
-    const stadiumIncome = getStadiumIncome(stadiumLevelEffective, effectiveStatus);
+    const baseStadiumIncome = getStadiumIncome(stadiumLevelEffective, effectiveStatus);
+    const { data: sponsorIncomeEffects } = await supabase
+      .from("club_pending_effects")
+      .select("payload")
+      .eq("club_id", row.club_id)
+      .eq("season_number", seasonNumber)
+      .eq("effect_type", "sponsor_stadium_income_multiplier")
+      .is("consumed_at", null)
+      .returns<Array<{ payload: { factor?: number } | null }>>();
+    const stadiumIncomeFactor = (sponsorIncomeEffects ?? []).reduce(
+      (max, row) => Math.max(max, Number(row.payload?.factor ?? 1)),
+      1,
+    );
+    const stadiumIncome = Math.round(baseStadiumIncome * stadiumIncomeFactor);
     const placementReward = getPlacementReward(row.rank, humanClubCount);
     const wages = Math.round(row.squad_stars * 1_000_000 * wageMultiplier);
     const net = stadiumIncome + placementReward + staffIncomeBonus - wages;
@@ -5188,6 +5273,13 @@ async function resolveDeadlineAuction(supabase: SupabaseServiceClient, auctionId
   if (transactionError) {
     throw transactionError;
   }
+
+  await onSponsorNewSigning(
+    supabase,
+    auction.winning_club_id,
+    Number(auction.season_number ?? 1),
+    winningAmount,
+  );
 
   const nextAuction = await openNextDeadlineAuction(supabase, gameId, Number(auction.season_number ?? 1));
   await touchGameSave(supabase, gameId, userId);

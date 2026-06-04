@@ -121,6 +121,7 @@ import { GameRealtimeBridge } from "@/components/game/game-realtime-bridge";
 import { hydrateGameStore, useGameStore } from "@/components/game/game-store";
 import { CaptainPanel } from "@/components/game/captain-panel";
 import { AfterMatchCards, MatchCardsPanel } from "@/components/game/match-cards-panel";
+import { SponsorPanel } from "@/components/game/sponsor-panel";
 import { DrawnGameChangersList, PendingEffectsList } from "@/components/game/pending-effects-list";
 import { PlayerCard } from "@/components/player-card/PlayerCard";
 import { Badge } from "@/components/ui/badge";
@@ -453,6 +454,11 @@ function OffSeasonChecklist({ ownClub, snapshot }: { ownClub: LobbyClub; snapsho
   // Investment erledigt: Eintrag in investments fuer aktuelle Saison existiert
   const investmentDone = (overview?.investments ?? []).some((inv) => inv.season_number === seasonNumber);
 
+  const sponsorDone =
+    Boolean(overview?.sponsor_contract) ||
+    !overview?.sponsor_signing_allowed ||
+    (overview?.available_sponsor_deals.length === 0 && (overview?.sponsor_history.length ?? 0) > 0);
+
   const items: Array<{ id: string; label: string; done: boolean; view: GameView; help: string }> = [
     {
       id: "training",
@@ -479,6 +485,19 @@ function OffSeasonChecklist({ ownClub, snapshot }: { ownClub: LobbyClub; snapsho
       view: "grounds",
       help: investmentDone ? "Investiert" : "Noch nicht investiert",
     },
+    ...(overview?.sponsor_signing_allowed
+      ? [
+          {
+            id: "sponsor",
+            label: "Sponsor",
+            done: sponsorDone,
+            view: "grounds" as GameView,
+            help: overview?.sponsor_contract
+              ? "Vertrag aktiv"
+              : `${overview?.available_sponsor_deals.length ?? 0} Deal(s) wählbar`,
+          },
+        ]
+      : []),
   ];
 
   return (
@@ -2033,6 +2052,7 @@ function ClubOverviewView({
     <div className="space-y-4">
       {focus === "grounds" ? <ClubFinancePanel ownClub={ownClub} overview={overview} snapshot={snapshot} /> : null}
       {focus === "grounds" ? <FacilityUpgradePanel ownClub={ownClub} overview={overview} snapshot={snapshot} /> : null}
+      {focus === "grounds" ? <SponsorPanel ownClub={ownClub} overview={overview} snapshot={snapshot} /> : null}
       {focus === "grounds" && overview.open_staff_offer ? (
         <StaffMarketView offer={overview.open_staff_offer} ownClub={ownClub} snapshot={snapshot} />
       ) : null}
@@ -2309,9 +2329,17 @@ function FacilityUpgradePanel({
             money: overview.finance.money,
             extraActionBonus: extraInvestmentSlots,
           });
-          const upgradeDisabled = !investmentPhaseActive || !check.ok;
+          const stadiumBlocked = facility.action === "stadium" && overview.stadium_upgrade_blocked_by_sponsor;
+          const upgradeDisabled = !investmentPhaseActive || !check.ok || stadiumBlocked;
           const cost = getUpgradeCost(facility.action, facility.level);
           const Icon = facility.icon;
+          const disabledTitle = stadiumBlocked
+            ? "Denkmalschutz-Sponsoring: Stadionausbau gesperrt"
+            : !investmentPhaseActive
+              ? "Nur in der Investmentphase"
+              : check.ok
+                ? "Upgrade kaufen"
+                : getUpgradeReasonLabel(check.reason);
 
           return (
             <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-4" key={facility.action}>
@@ -2337,10 +2365,16 @@ function FacilityUpgradePanel({
                 <Button
                   className="w-full"
                   disabled={upgradeDisabled}
-                  title={!investmentPhaseActive ? "Nur in der Investmentphase" : check.ok ? "Upgrade kaufen" : getUpgradeReasonLabel(check.reason)}
+                  title={disabledTitle}
                   type="submit"
                 >
-                  {!investmentPhaseActive ? "Investmentphase abwarten" : check.ok ? "Upgrade kaufen" : getUpgradeReasonLabel(check.reason)}
+                  {stadiumBlocked
+                    ? "Stadionausbau gesperrt"
+                    : !investmentPhaseActive
+                      ? "Investmentphase abwarten"
+                      : check.ok
+                        ? "Upgrade kaufen"
+                        : getUpgradeReasonLabel(check.reason)}
                 </Button>
               </form>
             </div>

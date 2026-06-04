@@ -48,6 +48,12 @@ import {
 import { computeTrainingExtraPlayers, isOffseasonPendingScopeActive } from "@/lib/lobby/offseason-pending-effects";
 import { getTrainingStatus, parseTrainingEvent } from "@/lib/lobby/training";
 import { isClubStatusOverrideActive, resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
+import {
+  buildClubSponsorOverview,
+  EMPTY_SPONSOR_OVERVIEW,
+  normalizeSponsorProgress,
+  type SponsorContractRow,
+} from "@/lib/lobby/sponsoring";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
 
 const GAME_SELECT_LEGACY =
@@ -1053,6 +1059,7 @@ async function getClubOverviewSnapshot(
     { data: trainingTransactions, error: trainingTransactionsError },
     { data: saleTransactions, error: saleTransactionsError },
     { data: openOfferRows, error: openOfferError },
+    { data: sponsorContractRows, error: sponsorContractsError },
   ] = await Promise.all([
     supabase
       .from("club_players")
@@ -1114,6 +1121,12 @@ async function getClubOverviewSnapshot(
       .eq("status", "open")
       .limit(1)
       .returns<Array<{ id: string; season_number: number; status: string; offered_card_ids: string[]; chosen_card_id: string | null }>>(),
+    supabase
+      .from("club_sponsor_contracts")
+      .select("*")
+      .eq("club_id", club.id)
+      .order("created_at", { ascending: true })
+      .returns<SponsorContractRow[]>(),
   ]);
 
   if (clubPlayersError) {
@@ -1225,6 +1238,20 @@ async function getClubOverviewSnapshot(
   const allGameChangers = gameChangerRowsFinal ?? [];
   const pendingChoices = allGameChangers.filter((row) => row.status === "pending");
 
+  const sponsorContracts = isUndefinedTableError(sponsorContractsError)
+    ? []
+    : sponsorContractsError
+      ? (() => {
+          throw sponsorContractsError;
+        })()
+      : (sponsorContractRows ?? []).map((row) => ({
+          ...row,
+          progress: normalizeSponsorProgress(row.progress),
+        }));
+  const sponsorOverview = sponsorContracts.length || !isUndefinedTableError(sponsorContractsError)
+    ? buildClubSponsorOverview(sponsorContracts, game.phase)
+    : EMPTY_SPONSOR_OVERVIEW;
+
   return {
     season_number: seasonNumber,
     sales_count: saleTransactions?.length ?? 0,
@@ -1267,6 +1294,7 @@ async function getClubOverviewSnapshot(
       effective_status: effectiveStatus,
       status_override_active: overrideActive,
     },
+    ...sponsorOverview,
   };
 }
 

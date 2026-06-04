@@ -155,6 +155,7 @@ export function GameRealtimeBridge({
         .on("postgres_changes", { event: "*", schema: "public", table: "transfer_offers" }, () => fallbackRecover("fallback_transfer_offers"))
         .on("postgres_changes", { event: "*", schema: "public", table: "investments", filter: `game_id=eq.${gameId}` }, () => fallbackRecover("fallback_investments"))
         .on("postgres_changes", { event: "*", schema: "public", table: "club_game_changers" }, () => fallbackRecover("fallback_club_game_changers"))
+        .on("postgres_changes", { event: "*", schema: "public", table: "club_sponsor_contracts" }, () => fallbackRecover("fallback_club_sponsor_contracts"))
         .on("postgres_changes", { event: "*", schema: "public", table: "match_news", filter: `game_id=eq.${gameId}` }, () => fallbackRecover("fallback_match_news"))
         .subscribe((status) => {
           if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {

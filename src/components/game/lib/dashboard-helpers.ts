@@ -73,13 +73,13 @@ export function formatSavedLine(value: string | null | undefined): string {
 
 export function getClubStatusLabel(status: LobbyClub["status"]): string {
   const labels: Record<string, string> = {
-    established: "Established",
-    mid_table: "Mid Table",
-    newly_promoted: "Newly Promoted",
-    title_contender: "Title Contender",
+    established: "Etabliert",
+    mid_table: "Mittlerer Tabellenplatz",
+    newly_promoted: "Neu aufgestiegen",
+    title_contender: "Titelanwärter",
   };
 
-  return labels[status ?? "newly_promoted"] ?? "Newly Promoted";
+  return labels[status ?? "newly_promoted"] ?? "Neu aufgestiegen";
 }
 
 export function getEffectiveClubStatusLabel(club: LobbyClub | undefined, seasonNumber: number) {

@@ -438,6 +438,41 @@ export type ClubOverviewSnapshot = {
     status: TrainingStatusSnapshot;
   };
   finance: ClubFinanceSnapshot;
+  sponsor_contract: SponsorContractOverviewSnapshot | null;
+  sponsor_history: SponsorContractOverviewSnapshot[];
+  available_sponsor_deals: SponsorDealOverviewSnapshot[];
+  sponsor_signing_allowed: boolean;
+  stadium_upgrade_blocked_by_sponsor: boolean;
+};
+
+export type SponsorContractOverviewSnapshot = {
+  id: string;
+  deal_id: string;
+  prestige_tier: string;
+  prestige_label: string;
+  status: string;
+  signed_season: number;
+  ends_season: number;
+  seasons_elapsed: number;
+  progress_label: string;
+  display_name: string;
+  task_description: string;
+  reward_description: string;
+  flavor_text: string;
+  duration_seasons: number;
+  needs_player_pick: boolean;
+  reward_pick_count: number;
+};
+
+export type SponsorDealOverviewSnapshot = {
+  id: string;
+  prestige_tier: string;
+  prestige_label: string;
+  display_name: string;
+  task_description: string;
+  reward_description: string;
+  flavor_text: string;
+  duration_seasons: number;
 };
 
 export type CpuStrengthTier = "stark" | "mittel" | "schwach";

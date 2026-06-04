@@ -89,7 +89,7 @@ import {
 } from "@/app/games/actions/match";
 import { CONTINENTAL_ROUNDS, getContinentalRoundLabel } from "@/lib/lobby/continental-cup";
 import { healInjuredPlayerAction } from "@/app/games/actions/game-changers";
-import { resolveDisplayZoneBoosts } from "@/lib/game/game-changer-effects";
+import { resolveDisplayZoneBoosts, type ZoneModifier } from "@/lib/game/game-changer-effects";
 import {
   formatMoney,
   formatSavedAt,
@@ -3370,7 +3370,7 @@ function FixtureCard({
   );
   const ownSquad = snapshot.club_overview?.squad ?? [];
   const partialThirds = ((fixture.partial_result as { thirds?: unknown[] } | null)?.thirds ?? []) as FixtureThird[];
-  const partialModifiers = (fixture.partial_result as { pending_modifiers?: Array<{ zone: "ATT" | "MID" | "DEF"; delta: number; for: "home" | "away" }> } | null)?.pending_modifiers;
+  const partialModifiers = (fixture.partial_result as { pending_modifiers?: ZoneModifier[] } | null)?.pending_modifiers;
   const seasonZoneBoostsByClub = snapshot.season?.next_match_zone_boosts_by_club_id ?? {};
   const homeDisplayZoneBoosts = resolveDisplayZoneBoosts({
     clubId: home.club_id,
@@ -4360,7 +4360,7 @@ function MatchResultDetail({
   const displayAwayThirdPoints = isCompleted ? (fixture.away_third_points ?? liveAwayThirdPoints) : liveAwayThirdPoints;
   const homeWins = displayHomeThirdPoints > displayAwayThirdPoints;
   const awayWins = displayAwayThirdPoints > displayHomeThirdPoints;
-  const partialModifiers = (fixture.partial_result as { pending_modifiers?: Array<{ zone: "ATT" | "MID" | "DEF"; delta: number; for: "home" | "away" }> } | null)?.pending_modifiers;
+  const partialModifiers = (fixture.partial_result as { pending_modifiers?: ZoneModifier[] } | null)?.pending_modifiers;
   const seasonZoneBoostsByClub = snapshot.season?.next_match_zone_boosts_by_club_id ?? {};
   const homeZoneBoosts = resolveDisplayZoneBoosts({
     clubId: home.club_id,

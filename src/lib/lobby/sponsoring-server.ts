@@ -281,7 +281,7 @@ export async function processSponsorContractsAtSeasonEnd(
     }
 
     const seasonsElapsed = contract.seasons_elapsed + 1;
-    const isFinalSeason = seasonsElapsed >= contract.deal.duration_seasons;
+    const isFinalSeason = seasonsElapsed >= snapshot.deal.duration_seasons;
 
     if (isFinalSeason) {
       if (isObjectiveMetAtSeasonEnd(updatedSnapshot)) {

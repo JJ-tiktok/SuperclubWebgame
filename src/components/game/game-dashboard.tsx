@@ -1901,8 +1901,10 @@ function TransferOfferCard({
   offer: TransferOfferSnapshot;
   snapshot: LobbySnapshot;
 }) {
-  const targetName = offer.target_club_player?.player.display_name ?? "Spieler";
-  const offeredName = offer.offered_club_player?.player.display_name ?? null;
+  const archetypesEnabled = snapshot.game.settings.archetypes_enabled !== false;
+  const targetPlayer = offer.target_club_player;
+  const offeredPlayer = offer.offered_club_player;
+  const targetName = targetPlayer?.player.display_name ?? "Spieler";
   const counterparty = direction === "incoming" ? offer.from_club.club_name : offer.to_club.club_name;
 
   return (
@@ -1914,12 +1916,55 @@ function TransferOfferCard({
         </div>
         <Badge tone="amber">offen</Badge>
       </div>
-      <div className="mt-3 grid gap-2 text-xs text-zinc-400 sm:grid-cols-2">
-        <SmallInfo label="Angefragt" value={targetName} />
-        <SmallInfo label="Geld" value={formatMoney(offer.cash_amount)} />
-        <SmallInfo label="Spielerangebot" value={offeredName ?? "Kein Spieler"} />
-        <SmallInfo label="Von" value={offer.from_club.club_name} />
-      </div>
+      {offeredPlayer ? (
+        <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] lg:items-center">
+          <div className="rounded-md border border-zinc-800 bg-zinc-950/50 p-3">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+              {direction === "incoming" ? "Dein Spieler" : "Angefragt"}
+            </p>
+            <p className="mt-1 text-sm font-semibold text-zinc-50">{targetName}</p>
+            {targetPlayer ? (
+              <p className="mt-1 text-xs text-zinc-400">
+                {getPlayerPositionLabel(targetPlayer.player)} · {formatStars(Number(targetPlayer.current_stars))}
+              </p>
+            ) : null}
+          </div>
+          <div className="flex flex-col items-center justify-center gap-1 px-1 text-zinc-500">
+            <ArrowLeftRight size={16} aria-hidden />
+            {offer.cash_amount > 0 ? (
+              <p className="text-center text-xs font-semibold text-lime-300">+ {formatMoney(offer.cash_amount)}</p>
+            ) : null}
+          </div>
+          <div className="grid gap-3 rounded-md border border-zinc-800 bg-zinc-950/50 p-3 sm:grid-cols-[132px_minmax(0,1fr)]">
+            <PlayerCard
+              disabled={offeredPlayer.injured}
+              player={mapOwnedPlayerToCardData(offeredPlayer)}
+              showArchetypes={archetypesEnabled}
+              variant="draft"
+            />
+            <div className="flex min-w-0 flex-col justify-center gap-1">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+                {direction === "incoming" ? "Im Tausch angeboten" : "Dein Spieler im Tausch"}
+              </p>
+              <p className="text-sm font-semibold text-zinc-50">{offeredPlayer.player.display_name}</p>
+              <p className="text-xs text-zinc-400">{getPlayerPositionLabel(offeredPlayer.player)}</p>
+              <p className="text-xs text-zinc-400">{formatStars(Number(offeredPlayer.current_stars))} Sterne</p>
+              {offeredPlayer.injured ? (
+                <Badge className="mt-1 w-fit" tone="red">
+                  verletzt
+                </Badge>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-3 grid gap-2 text-xs text-zinc-400 sm:grid-cols-2">
+          <SmallInfo label="Angefragt" value={targetName} />
+          <SmallInfo label="Geld" value={formatMoney(offer.cash_amount)} />
+          <SmallInfo label="Spielerangebot" value="Kein Spieler" />
+          <SmallInfo label="Von" value={offer.from_club.club_name} />
+        </div>
+      )}
       <div className="mt-3 flex flex-wrap gap-2">
         {direction === "incoming" ? (
           <>

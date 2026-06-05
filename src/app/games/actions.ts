@@ -13,7 +13,7 @@ import {
   getNextDeadlineBidClubId,
 } from "@/lib/lobby/deadline";
 import { DRAFT_PLAYER_SELECT } from "@/lib/lobby/draft";
-import { normalizePlayerArchetype } from "@/lib/lobby/archetypes";
+import { normalizeApplicablePlayerArchetype } from "@/lib/lobby/archetypes";
 import { createDraftRound, getSquadCounts, allDraftSquadsComplete } from "@/lib/lobby/draft-server";
 import { getActiveCpuTeams, pickCpuTeamsForSeason } from "@/lib/lobby/cpu-teams";
 import { canRecruitStaff, canUpgradeFacility, type UpgradeAction } from "@/lib/lobby/investments";
@@ -3027,10 +3027,18 @@ async function buildFixtureSide(supabase: SupabaseServiceClient, participant: Fi
     zone_players: (data ?? [])
       .filter((player) => ["ATT", "DEF", "GK", "MID"].includes(player.current_zone))
       .map((player) => ({
-        attacker_archetype: normalizePlayerArchetype(player.player?.attacker_archetype),
+        attacker_archetype: normalizeApplicablePlayerArchetype(
+          player.player?.attacker_archetype,
+          player.player?.position,
+          player.player?.eligible_positions,
+        ),
         current_stars: Number(player.current_stars ?? 0),
         current_zone: player.current_zone as TacticalZone | "GK",
-        defender_archetype: normalizePlayerArchetype(player.player?.defender_archetype),
+        defender_archetype: normalizeApplicablePlayerArchetype(
+          player.player?.defender_archetype,
+          player.player?.position,
+          player.player?.eligible_positions,
+        ),
         display_name: player.player?.display_name ?? null,
         id: player.id,
         lineup_slot: player.lineup_slot,

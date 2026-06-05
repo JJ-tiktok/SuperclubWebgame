@@ -9,6 +9,16 @@ alter table public.players
   add column if not exists attacker_archetype public.player_archetype,
   add column if not exists defender_archetype public.player_archetype;
 
+update public.players
+set attacker_archetype = null,
+    defender_archetype = null
+where eligible_positions @> array[
+  'ATT'::public.player_position,
+  'DEF'::public.player_position,
+  'GK'::public.player_position,
+  'MID'::public.player_position
+];
+
 with attacker_candidates as (
   select
     id,
@@ -21,6 +31,12 @@ with attacker_candidates as (
       position = 'ATT'::public.player_position
       or 'ATT'::public.player_position = any(eligible_positions)
     )
+    and not (eligible_positions @> array[
+      'ATT'::public.player_position,
+      'DEF'::public.player_position,
+      'GK'::public.player_position,
+      'MID'::public.player_position
+    ])
 )
 update public.players p
 set attacker_archetype = case (c.type_hash % 3)
@@ -44,6 +60,12 @@ with defender_candidates as (
       position = 'DEF'::public.player_position
       or 'DEF'::public.player_position = any(eligible_positions)
     )
+    and not (eligible_positions @> array[
+      'ATT'::public.player_position,
+      'DEF'::public.player_position,
+      'GK'::public.player_position,
+      'MID'::public.player_position
+    ])
 )
 update public.players p
 set defender_archetype = case (c.type_hash % 3)

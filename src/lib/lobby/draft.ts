@@ -1,5 +1,5 @@
 import type { DraftPlayerRow } from "./types";
-import { ARCHETYPE_META, normalizePlayerArchetype } from "@/lib/lobby/archetypes";
+import { ARCHETYPE_META, normalizeApplicablePlayerArchetype } from "@/lib/lobby/archetypes";
 import type {
   CardTier,
   ChemistrySymbol,
@@ -17,19 +17,20 @@ const chemistrySymbols = new Set<ChemistrySymbol>(["star", "dot", "link"]);
 
 export function mapDbPlayerToPlayerCardData(player: DraftPlayerRow): PlayerCardData {
   const position = normalizePosition(player.position);
+  const playerPositions = normalizeEligiblePositions(player.eligible_positions, position);
   const currentStars = Number(player.base_stars ?? 1);
   const potentialStars = Math.max(currentStars, currentStars + Number(player.potential_stars ?? 0));
   const maxStars = Math.max(Number(player.skill_max ?? 5), potentialStars);
   const marketTransfer = moneyToMillions(player.minimum_bid ?? 0);
   const marketScouting = moneyToMillions(player.scouting_price ?? 0);
-  const attackerArchetype = normalizePlayerArchetype(player.attacker_archetype);
-  const defenderArchetype = normalizePlayerArchetype(player.defender_archetype);
+  const attackerArchetype = normalizeApplicablePlayerArchetype(player.attacker_archetype, position, playerPositions);
+  const defenderArchetype = normalizeApplicablePlayerArchetype(player.defender_archetype, position, playerPositions);
 
   return {
     id: player.id,
     name: player.display_name,
     position,
-    positions: normalizeEligiblePositions(player.eligible_positions, position),
+    positions: playerPositions,
     role: player.role ?? player.region ?? undefined,
     nationality: player.nationality ?? undefined,
     age: player.age ?? undefined,

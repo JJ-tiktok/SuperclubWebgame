@@ -15,7 +15,7 @@ import {
   type ContinentalRound,
 } from "@/lib/lobby/continental-cup";
 import { calculateLineupPower, type CaptainBoost } from "@/lib/lobby/lineup-power";
-import { normalizePlayerArchetype } from "@/lib/lobby/archetypes";
+import { normalizeApplicablePlayerArchetype } from "@/lib/lobby/archetypes";
 import { getMatchPointsMode, resolveFixture, type FixtureSideInput } from "@/lib/lobby/season";
 import type { LobbyGame } from "@/lib/lobby/types";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
@@ -383,13 +383,22 @@ async function buildContinentalFixtureSide(
           attacker_archetype?: string | null;
           defender_archetype?: string | null;
           display_name?: string | null;
+          eligible_positions?: string[] | null;
           position?: string | null;
         } | null;
         return {
-          attacker_archetype: normalizePlayerArchetype(player?.attacker_archetype),
+          attacker_archetype: normalizeApplicablePlayerArchetype(
+            player?.attacker_archetype,
+            player?.position,
+            player?.eligible_positions,
+          ),
           current_stars: Number(p.current_stars ?? 0),
           current_zone: p.current_zone as "ATT" | "DEF" | "GK" | "MID",
-          defender_archetype: normalizePlayerArchetype(player?.defender_archetype),
+          defender_archetype: normalizeApplicablePlayerArchetype(
+            player?.defender_archetype,
+            player?.position,
+            player?.eligible_positions,
+          ),
           display_name: player?.display_name ?? null,
           id: p.id as string,
           lineup_slot: p.lineup_slot as number | null,

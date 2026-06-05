@@ -31,9 +31,27 @@ export const ARCHETYPE_META: Record<
 };
 
 const archetypeSet = new Set<string>(PLAYER_ARCHETYPES);
+const ALLROUNDER_POSITIONS = ["ATT", "DEF", "GK", "MID"] as const;
 
 export function normalizePlayerArchetype(value: unknown): PlayerArchetype | null {
   return archetypeSet.has(String(value)) ? (value as PlayerArchetype) : null;
+}
+
+export function isAllrounderPositions(
+  position: string | null | undefined,
+  eligiblePositions: Array<string | null | undefined> | null | undefined,
+) {
+  const positions = new Set((eligiblePositions?.length ? eligiblePositions : [position]).filter(Boolean).map(String));
+
+  return ALLROUNDER_POSITIONS.every((item) => positions.has(item));
+}
+
+export function normalizeApplicablePlayerArchetype(
+  value: unknown,
+  position: string | null | undefined,
+  eligiblePositions: Array<string | null | undefined> | null | undefined,
+) {
+  return isAllrounderPositions(position, eligiblePositions) ? null : normalizePlayerArchetype(value);
 }
 
 export function compareArchetypes(

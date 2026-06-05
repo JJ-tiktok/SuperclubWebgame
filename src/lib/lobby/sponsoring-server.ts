@@ -470,28 +470,41 @@ export async function applySponsorReward(
 async function boostPlayerStars(supabase: ServiceClient, clubPlayerId: string, stars: number) {
   const { data } = await supabase
     .from("club_players")
-    .select("current_stars, player_id, player:players(potential_stars)")
+    .select("current_stars, player_id, player:players(base_stars, potential_stars, skill_max)")
     .eq("id", clubPlayerId)
     .single<{
       current_stars: number | string;
-      player: { potential_stars?: number | string | null } | null;
+      player: {
+        base_stars?: number | string | null;
+        potential_stars?: number | string | null;
+        skill_max?: number | string | null;
+      } | null;
       player_id: string;
     }>();
   const nextStars = Number(data?.current_stars ?? 0) + stars;
   await supabase.from("club_players").update({ current_stars: nextStars }).eq("id", clubPlayerId);
   if (data?.player_id) {
-    await syncPlayerRowMarketValues(supabase, data.player_id, nextStars, Number(data.player?.potential_stars ?? 0));
+    await syncPlayerRowMarketValues(supabase, data.player_id, {
+      baseStars: Number(data.player?.base_stars ?? nextStars),
+      potentialStars: Number(data.player?.potential_stars ?? 0),
+      skillMax: Number(data.player?.skill_max ?? 0),
+      stars: nextStars,
+    });
   }
 }
 
 async function boostPlayerPotential(supabase: ServiceClient, clubPlayerId: string, stars: number) {
   const { data } = await supabase
     .from("club_players")
-    .select("current_stars, player_id, player:players(skill_max, potential_stars)")
+    .select("current_stars, player_id, player:players(base_stars, skill_max, potential_stars)")
     .eq("id", clubPlayerId)
     .single<{
       current_stars: number | string;
-      player: { potential_stars?: number | string | null; skill_max: number | string | null } | null;
+      player: {
+        base_stars?: number | string | null;
+        potential_stars?: number | string | null;
+        skill_max: number | string | null;
+      } | null;
       player_id: string;
     }>();
   if (!data) return;
@@ -499,22 +512,36 @@ async function boostPlayerPotential(supabase: ServiceClient, clubPlayerId: strin
   await supabase.from("players").update({ skill_max: newMax }).eq("id", data.player_id);
   const nextStars = Math.min(Number(data.current_stars ?? 0) + stars, newMax);
   await supabase.from("club_players").update({ current_stars: nextStars }).eq("id", clubPlayerId);
-  await syncPlayerRowMarketValues(supabase, data.player_id, nextStars, Number(data.player?.potential_stars ?? 0));
+  await syncPlayerRowMarketValues(supabase, data.player_id, {
+    baseStars: Number(data.player?.base_stars ?? nextStars),
+    potentialStars: Number(data.player?.potential_stars ?? 0),
+    skillMax: newMax,
+    stars: nextStars,
+  });
 }
 
 async function maxPlayerToSkillMax(supabase: ServiceClient, clubPlayerId: string) {
   const { data } = await supabase
     .from("club_players")
-    .select("player_id, player:players(skill_max, potential_stars)")
+    .select("player_id, player:players(base_stars, skill_max, potential_stars)")
     .eq("id", clubPlayerId)
     .single<{
-      player: { potential_stars?: number | string | null; skill_max: number | string | null } | null;
+      player: {
+        base_stars?: number | string | null;
+        potential_stars?: number | string | null;
+        skill_max: number | string | null;
+      } | null;
       player_id: string;
     }>();
   const max = Number(data?.player?.skill_max ?? 0);
   await supabase.from("club_players").update({ current_stars: max }).eq("id", clubPlayerId);
   if (data?.player_id) {
-    await syncPlayerRowMarketValues(supabase, data.player_id, max, Number(data.player?.potential_stars ?? 0));
+    await syncPlayerRowMarketValues(supabase, data.player_id, {
+      baseStars: Number(data.player?.base_stars ?? max),
+      potentialStars: Number(data.player?.potential_stars ?? 0),
+      skillMax: max,
+      stars: max,
+    });
   }
 }
 

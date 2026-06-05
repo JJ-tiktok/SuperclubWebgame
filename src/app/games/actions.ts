@@ -718,12 +718,12 @@ export async function trainPlayerAction(formData: FormData) {
   }
 
   if (resolution.afterStars !== resolution.beforeStars) {
-    await syncPlayerRowMarketValues(
-      supabase,
-      ownedPlayer.player_id,
-      resolution.afterStars,
-      Number(ownedPlayer.player.potential_stars ?? 0),
-    );
+    await syncPlayerRowMarketValues(supabase, ownedPlayer.player_id, {
+      baseStars: Number(ownedPlayer.player.base_stars ?? resolution.afterStars),
+      potentialStars: Number(ownedPlayer.player.potential_stars ?? 0),
+      skillMax: Number(ownedPlayer.player.skill_max ?? 0),
+      stars: resolution.afterStars,
+    });
   }
 
   const { error: insertTransactionError } = await supabase.from("transactions").insert({
@@ -979,7 +979,9 @@ export async function buyScoutedPlayerAction(formData: FormData) {
 
   const ownDraws = draws.filter((item) => item.club_id === ownClub.id);
   const baseScoutingPrice = computePlayerMarketValues({
+    baseStars: Number(draw.player.base_stars ?? 1),
     potentialStars: Number(draw.player.potential_stars ?? 0),
+    skillMax: Number(draw.player.skill_max ?? 0),
     stars: Number(draw.player.base_stars ?? 1),
   }).scoutingPrice;
   const scoutingPendingEffects = buyPendingEffects.filter((eff) =>
@@ -1038,12 +1040,12 @@ export async function buyScoutedPlayerAction(formData: FormData) {
     throw insertClubPlayerError;
   }
 
-  await syncPlayerRowMarketValues(
-    supabase,
-    draw.player_id,
-    newSigningStars,
-    Number(draw.player.potential_stars ?? 0),
-  );
+  await syncPlayerRowMarketValues(supabase, draw.player_id, {
+    baseStars: Number(draw.player.base_stars ?? newSigningStars),
+    potentialStars: Number(draw.player.potential_stars ?? 0),
+    skillMax: Number(draw.player.skill_max ?? 0),
+    stars: newSigningStars,
+  });
 
   const { error: clubError } = await supabase
     .from("clubs")
@@ -1795,7 +1797,9 @@ export async function initializeDeadlineDayAction(formData: FormData) {
     current_bid_club_id: index === 0 ? firstClubId : null,
     game_id: gameId,
     minimum_bid: computePlayerMarketValues({
+      baseStars: Number(player.base_stars ?? 1),
       potentialStars: Number(player.potential_stars ?? 0),
+      skillMax: Number(player.skill_max ?? 0),
       stars: Number(player.base_stars ?? 1),
     }).minimumBid,
     passed_club_ids: [],

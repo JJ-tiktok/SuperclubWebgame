@@ -49,7 +49,7 @@ export function buildYouthPlayerSeed(random = Math.random) {
   const archetype = pickRandom(ARCHETYPES, random);
   const contentKey = `nlz-${Date.now()}-${Math.floor(random() * 1_000_000)}`;
 
-  const market = computePlayerMarketValues({ potentialStars: 5, stars: 1 });
+  const market = computePlayerMarketValues({ baseStars: 1, potentialStars: 5, skillMax: 6, stars: 1 });
 
   return {
     age: 17,

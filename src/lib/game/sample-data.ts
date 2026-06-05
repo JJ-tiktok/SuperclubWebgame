@@ -11,7 +11,7 @@ export const samplePlayers: PlayerCard[] = Array.from({ length: 80 }, (_, index)
   const position = positions[index % positions.length];
   const baseStars = (index % 6) + 1;
   const potentialStars = index % 4 === 0 ? 2 : index % 3 === 0 ? 1 : 0;
-  const market = computePlayerMarketValues({ potentialStars, stars: baseStars });
+  const market = computePlayerMarketValues({ baseStars, potentialStars, stars: baseStars });
 
   return {
     id: `player-${String(index + 1).padStart(2, "0")}`,

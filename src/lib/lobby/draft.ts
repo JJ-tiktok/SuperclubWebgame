@@ -60,7 +60,9 @@ export function mapDbPlayerToPlayerCardData(player: DraftPlayerRow): PlayerCardD
   const potentialStars = Math.max(currentStars, currentStars + Number(player.potential_stars ?? 0));
   const maxStars = Math.max(Number(player.skill_max ?? 5), potentialStars);
   const market = computePlayerMarketValues({
+    baseStars: currentStars,
     potentialStars: Number(player.potential_stars ?? 0),
+    skillMax: Number(player.skill_max ?? 0),
     stars: currentStars,
   });
   const marketTransfer = moneyToMillions(market.minimumBid);

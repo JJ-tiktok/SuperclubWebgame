@@ -9,7 +9,6 @@ import {
   Banknote,
   Building2,
   CalendarDays,
-  Circle,
   ClipboardList,
   Crown,
   Dumbbell,
@@ -28,11 +27,9 @@ import {
   Settings,
   Shield,
   ShoppingCart,
-  Square,
   Sparkles,
   Target,
   Trash2,
-  Triangle,
   Trophy,
   UserCheck,
   UserMinus,
@@ -125,6 +122,7 @@ import {
   type EndgameFacilityAction,
 } from "@/lib/lobby/endgame-facilities";
 import { ArchetypeMatchupGuide } from "@/components/game/shared/archetype-matchup-guide";
+import { ArchetypeScoutCard, buildArchetypeScoutFromSquad, SquadArchetypeOverview } from "@/components/game/shared/squad-archetype-overview";
 import { FixtureSideCard } from "@/components/game/shared/fixture-side-card";
 import { MatchResultDetail, parseFixtureResult, type FixtureThird } from "@/components/game/shared/match-result-detail";
 import { Metric, SmallInfo } from "@/components/game/shared/metric";
@@ -147,7 +145,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelDescription, PanelHeader, PanelTitle } from "@/components/ui/panel";
 import { DEADLINE_BID_STEP, DEADLINE_TURN_SECONDS, getMinimumNextBid } from "@/lib/lobby/deadline";
-import { ARCHETYPE_META, type PlayerArchetype } from "@/lib/lobby/archetypes";
+import { ARCHETYPE_META } from "@/lib/lobby/archetypes";
 import { mapDbPlayerToPlayerCardData } from "@/lib/lobby/draft";
 import { canUpgradeFacility, getStaffRecruitBlockReason, getStaffRecruitHint, getStaffRecruitReasonLabel, getUpgradeCost, getUpgradeReasonLabel, type UpgradeAction } from "@/lib/lobby/investments";
 import { isOffseasonPendingScopeActive } from "@/lib/lobby/offseason-pending-effects";
@@ -2868,6 +2866,7 @@ function SquadHubPanel({
   const selectedClubId = clubSquads.some((item) => item.club.id === requestedClubId) ? requestedClubId : ownClub.id;
   const selectedSquad = clubSquads.find((item) => item.club.id === selectedClubId) ?? clubSquads[0] ?? fallbackOwnSquad;
   const ownSelected = selectedSquad.club.id === ownClub.id;
+  const archetypesEnabled = snapshot.game.settings.archetypes_enabled !== false;
 
   return (
     <div className="space-y-4">
@@ -2904,20 +2903,24 @@ function SquadHubPanel({
         </div>
       </Panel>
 
+      {archetypesEnabled ? <ArchetypeMatchupGuide /> : null}
+
       {ownSelected ? (
-        <SquadPanel ownClub={ownClub} overview={overview} snapshot={snapshot} title={ownClub.club_name} />
+        <SquadPanel archetypesEnabled={archetypesEnabled} ownClub={ownClub} overview={overview} snapshot={snapshot} title={ownClub.club_name} />
       ) : (
-        <OtherClubSquadPanel overview={overview} selectedSquad={selectedSquad} snapshot={snapshot} />
+        <OtherClubSquadPanel archetypesEnabled={archetypesEnabled} overview={overview} selectedSquad={selectedSquad} snapshot={snapshot} />
       )}
     </div>
   );
 }
 
 function OtherClubSquadPanel({
+  archetypesEnabled,
   overview,
   selectedSquad,
   snapshot,
 }: {
+  archetypesEnabled: boolean;
   overview: NonNullable<LobbySnapshot["club_overview"]>;
   selectedSquad: NonNullable<LobbySnapshot["club_squads"]>[number];
   snapshot: LobbySnapshot;
@@ -2959,6 +2962,14 @@ function OtherClubSquadPanel({
         <Metric detail="Durchschnitt pro Spieler" icon={Sparkles} label="Sterne/Spieler" value={selectedSquad.player_count > 0 ? formatStars(selectedSquad.squad_stars / selectedSquad.player_count) : "-"} />
       </div>
       {selectedSquad.squad.length > 0 ? <SquadPositionBreakdown squad={selectedSquad.squad} /> : null}
+      {archetypesEnabled ? (
+        <SquadArchetypeOverview
+          className="mt-3"
+          clubName={selectedSquad.club.club_name}
+          showMatchupGuide={false}
+          squad={selectedSquad.squad}
+        />
+      ) : null}
       <div className={cn("rounded-md border p-3 text-xs", managerTransfersEnabled ? "border-emerald-800 bg-emerald-950/20 text-emerald-300" : "border-zinc-800 bg-zinc-900/60 text-zinc-400")}>
         {transferHint}
       </div>
@@ -3088,11 +3099,13 @@ function TransferOfferModal({
 }
 
 function SquadPanel({
+  archetypesEnabled,
   overview,
   ownClub,
   snapshot,
   title,
 }: {
+  archetypesEnabled: boolean;
   overview: NonNullable<LobbySnapshot["club_overview"]>;
   ownClub?: LobbyClub;
   snapshot?: LobbySnapshot;
@@ -3148,6 +3161,9 @@ function SquadPanel({
         />
       </div>
       {overview.squad.length > 0 ? <SquadPositionBreakdown squad={overview.squad} /> : null}
+      {archetypesEnabled ? (
+        <SquadArchetypeOverview className="mt-3" clubName={title} showMatchupGuide={false} squad={overview.squad} />
+      ) : null}
       {miraHealCharges > 0 && (
         <div className="rounded-md border border-amber-800 bg-amber-950/30 p-3 text-xs text-amber-300">
           <p className="font-semibold">Mira Cleure aktiv — {miraHealCharges} Heilung(en) verfuegbar</p>
@@ -3172,7 +3188,7 @@ function SquadPanel({
 
             return (
               <div className="rounded-lg border border-zinc-800 bg-zinc-900/45 p-2" key={owned.id}>
-                <PlayerCard disabled={owned.injured} player={card} showArchetypes={snapshot?.game.settings.archetypes_enabled !== false} variant="draft" />
+                <PlayerCard disabled={owned.injured} player={card} showArchetypes={archetypesEnabled} variant="draft" />
                 <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-zinc-400">
                   <SmallInfo label="Status" value={owned.current_zone === "bench" ? "Nicht aufgestellt" : "Aufgestellt"} />
                   <SmallInfo label="Zone" value={owned.current_zone} />
@@ -3867,27 +3883,6 @@ function FixtureCard({
   );
 }
 
-type ArchetypeScoutCandidate = {
-  archetype: PlayerArchetype;
-  id: string;
-  name: string;
-  stars: number;
-};
-
-type ArchetypeScoutLine = {
-  best: ArchetypeScoutCandidate | null;
-  counts: Record<PlayerArchetype, number>;
-  total: number;
-  worst: ArchetypeScoutCandidate | null;
-  zone: "ATT" | "DEF";
-};
-
-type ArchetypeScout = {
-  attack: ArchetypeScoutLine;
-  defense: ArchetypeScoutLine;
-  clubName: string;
-};
-
 function ArchetypeScoutPanel({
   away,
   home,
@@ -3921,152 +3916,16 @@ function ArchetypeScoutPanel({
   );
 }
 
-function ArchetypeScoutCard({ scout }: { scout: ArchetypeScout }) {
-  return (
-    <div className="rounded border border-zinc-800 bg-black/20 p-3">
-      <p className="truncate text-sm font-semibold text-zinc-100">{scout.clubName}</p>
-      <div className="mt-3 grid gap-2">
-        <ArchetypeScoutLineView line={scout.attack} />
-        <ArchetypeScoutLineView line={scout.defense} />
-      </div>
-    </div>
-  );
-}
-
-function ArchetypeScoutLineView({ line }: { line: ArchetypeScoutLine }) {
-  const label = line.zone === "ATT" ? "Angriff" : "Abwehr";
-
-  return (
-    <div className="rounded border border-zinc-800 bg-zinc-950/70 p-2">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="text-xs font-semibold uppercase text-zinc-500">
-          {label} {line.total > 0 ? `(${line.total})` : ""}
-        </span>
-        <div className="flex flex-wrap gap-1">
-          {(Object.keys(ARCHETYPE_META) as PlayerArchetype[]).map((archetype) => (
-            <span
-              className="inline-flex h-6 min-w-8 items-center justify-center gap-1 rounded border border-zinc-700 bg-zinc-900 px-1.5 text-[11px] font-semibold text-zinc-300"
-              key={`${line.zone}-${archetype}`}
-              title={getArchetypeLabel(archetype, line.zone)}
-            >
-              <ArchetypeScoutIcon archetype={archetype} />
-              {line.counts[archetype]}
-            </span>
-          ))}
-        </div>
-      </div>
-      <div className="mt-2 grid gap-1 text-[11px] text-zinc-400">
-        <ArchetypeCandidateRow candidate={line.best} label="Top" zone={line.zone} />
-        <ArchetypeCandidateRow candidate={line.worst} label="Low" zone={line.zone} />
-      </div>
-    </div>
-  );
-}
-
-function ArchetypeCandidateRow({
-  candidate,
-  label,
-  zone,
-}: {
-  candidate: ArchetypeScoutCandidate | null;
-  label: string;
-  zone: "ATT" | "DEF";
-}) {
-  if (!candidate) {
-    return (
-      <div className="flex items-center justify-between gap-2 text-zinc-600">
-        <span>{label}</span>
-        <span>-</span>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex items-center justify-between gap-2">
-      <span className="flex min-w-0 items-center gap-1.5">
-        <span className="w-7 shrink-0 text-zinc-600">{label}</span>
-        <ArchetypeScoutIcon archetype={candidate.archetype} />
-        <span className="truncate" title={`${candidate.name} - ${getArchetypeLabel(candidate.archetype, zone)}`}>
-          {candidate.name}
-        </span>
-      </span>
-      <span className="shrink-0 font-semibold text-zinc-200">{formatStars(candidate.stars)}</span>
-    </div>
-  );
-}
-
 function buildParticipantArchetypeScout(
   snapshot: LobbySnapshot,
   clubId: string | null | undefined,
   fallbackName: string,
-): ArchetypeScout | null {
+) {
   if (!clubId) return null;
   const clubSquad = snapshot.club_squads?.find((entry) => entry.club.id === clubId);
   if (!clubSquad) return null;
 
-  return {
-    attack: buildArchetypeScoutLine(clubSquad.squad, "ATT"),
-    clubName: clubSquad.club.club_name || fallbackName,
-    defense: buildArchetypeScoutLine(clubSquad.squad, "DEF"),
-  };
-}
-
-function buildArchetypeScoutLine(squad: ClubPlayerSnapshot[], zone: "ATT" | "DEF"): ArchetypeScoutLine {
-  const candidates = squad
-    .filter((owned) => !owned.injured && getPlayerPositions(owned.player).includes(zone))
-    .flatMap((owned): ArchetypeScoutCandidate[] => {
-      const archetype = zone === "ATT" ? owned.player.attacker_archetype : owned.player.defender_archetype;
-      return archetype
-        ? [{
-            archetype,
-            id: owned.id,
-            name: owned.player.display_name,
-            stars: Math.trunc(Number(owned.current_stars)),
-          }]
-        : [];
-    })
-    .sort((a, b) => {
-      const stars = b.stars - a.stars;
-      if (stars !== 0) return stars;
-      return a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
-    });
-
-  const counts = (Object.keys(ARCHETYPE_META) as PlayerArchetype[]).reduce(
-    (acc, archetype) => ({ ...acc, [archetype]: candidates.filter((candidate) => candidate.archetype === archetype).length }),
-    { alpha: 0, beta: 0, gamma: 0 } satisfies Record<PlayerArchetype, number>,
-  );
-
-  return {
-    best: candidates[0] ?? null,
-    counts,
-    total: candidates.length,
-    worst: candidates.length > 1 ? candidates.at(-1) ?? null : null,
-    zone,
-  };
-}
-
-function getPlayerPositions(player: DraftPlayerRow) {
-  return (player.eligible_positions?.length ? player.eligible_positions : [player.position]).filter(Boolean);
-}
-
-function getArchetypeLabel(archetype: PlayerArchetype, zone: "ATT" | "DEF") {
-  const meta = ARCHETYPE_META[archetype];
-  return zone === "ATT" ? meta.attackLabel : meta.defenseLabel;
-}
-
-function ArchetypeScoutIcon({ archetype }: { archetype: PlayerArchetype }) {
-  const className = "h-3 w-3 shrink-0";
-  const symbol = ARCHETYPE_META[archetype].symbol;
-
-  if (symbol === "triangle") {
-    return <Triangle className={className} fill="currentColor" strokeWidth={2.4} />;
-  }
-
-  if (symbol === "circle") {
-    return <Circle className={className} fill="currentColor" strokeWidth={2.4} />;
-  }
-
-  return <Square className={className} fill="currentColor" strokeWidth={2.4} />;
+  return buildArchetypeScoutFromSquad(clubSquad.squad, clubSquad.club.club_name || fallbackName);
 }
 
 function TableView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snapshot: LobbySnapshot }) {

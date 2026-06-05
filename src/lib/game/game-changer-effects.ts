@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { refreshOffseasonScoutingSnapshot } from "@/lib/lobby/scouting";
-import { syncPlayerRowMarketValues } from "@/lib/lobby/player-market";
+import { resolvePlayerPotentialCeiling, syncPlayerRowMarketValues } from "@/lib/lobby/player-market";
 import { cancelOpenSwapTransferOffersForClubPlayer } from "@/lib/lobby/transfers";
 import { applyClubStatusDelta, normalizeClubStatus, resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
 import { resolvePendingEffectSeasonNumber } from "@/lib/lobby/offseason-pending-effects";
@@ -360,9 +360,12 @@ export async function applyImmediateEffect(
       const newStars = Math.max(0, Number(cp.current_stars) - Math.max(1, Math.trunc(effect.stars)));
       await supabase.from("club_players").update({ current_stars: newStars }).eq("id", cp.id);
       await syncPlayerRowMarketValues(supabase, cp.player_id, {
-        baseStars: Number(cp.player?.base_stars ?? newStars),
-        potentialStars: Number(cp.player?.potential_stars ?? 0),
-        skillMax: Number(cp.player?.skill_max ?? 0),
+        potentialCeiling: resolvePlayerPotentialCeiling({
+          baseStars: cp.player?.base_stars,
+          currentStars: newStars,
+          potentialStars: cp.player?.potential_stars,
+          skillMax: cp.player?.skill_max,
+        }),
         stars: newStars,
       });
       return { applied: true, detail: `${cp.player?.display_name ?? "Spieler"}: -${effect.stars} Stern` };

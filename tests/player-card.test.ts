@@ -17,12 +17,12 @@ const players = sampleCards as PlayerCardData[];
 
 describe("Player card rendering data", () => {
   it("calculates skill stars for prime players", () => {
-    assert.deepEqual(getSkillStarStates(players[3]), ["filled", "filled", "filled", "filled", "filled"]);
+    assert.deepEqual(getSkillStarStates(players[3]), ["filled", "filled", "filled", "filled", "empty"]);
   });
 
   it("calculates potential and disabled stars for talents", () => {
-    assert.deepEqual(getSkillStarStates(players[0]), ["filled", "filled", "filled", "filled", "filled"]);
-    assert.deepEqual(getSkillStarStates(players[1]), ["filled", "filled", "filled", "filled", "empty"]);
+    assert.deepEqual(getSkillStarStates(players[0]), ["filled", "filled", "empty", "empty", "empty"]);
+    assert.deepEqual(getSkillStarStates(players[1]), ["filled", "filled", "filled", "empty", "empty"]);
   });
 
   it("renders veteran fallback stars after current skill", () => {

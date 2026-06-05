@@ -7,6 +7,7 @@ import {
   generateRoomCode,
   normalizeClubName,
   normalizeRoomCode,
+  parseLobbySettings,
   validateClubName,
   validateRoomCode,
 } from "@/lib/lobby/rules";
@@ -76,6 +77,19 @@ describe("Lobby rules", () => {
     assert.equal(canStartLobby(game, [{ ...clubs[0], is_ready: false }, clubs[1]], "user-host").ok, false);
     assert.equal(canStartLobby({ ...game, phase: "draft" }, clubs, "user-host").ok, false);
   });
+
+  it("parses optional feature flags with enabled defaults", () => {
+    assert.equal(parseLobbySettings().sponsoring_enabled, true);
+    assert.equal(parseLobbySettings().archetypes_enabled, true);
+
+    const settings = parseLobbySettings({
+      archetypes_enabled: "0",
+      sponsoring_enabled: "false",
+    });
+
+    assert.equal(settings.sponsoring_enabled, false);
+    assert.equal(settings.archetypes_enabled, false);
+  });
 });
 
 describe("Lobby schema blueprint", () => {
@@ -115,5 +129,10 @@ describe("Lobby schema blueprint", () => {
     assert.match(schema, /create table public\.game_saves/);
     assert.match(schema, /create or replace function public\.save_game_checkpoint/);
     assert.match(schema, /grant select, insert on public\.game_saves to authenticated/);
+  });
+
+  it("stores runtime feature flags in game settings", () => {
+    assert.match(schema, /'sponsoring_enabled', true/);
+    assert.match(schema, /'archetypes_enabled', true/);
   });
 });

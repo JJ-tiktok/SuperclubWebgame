@@ -59,6 +59,14 @@ export function isSponsorSigningPhase(phase: string) {
   return phase === "off_season";
 }
 
+export function isSponsoringEnabled(settings?: unknown) {
+  const value =
+    settings && typeof settings === "object"
+      ? (settings as { sponsoring_enabled?: unknown }).sponsoring_enabled
+      : undefined;
+  return value !== false;
+}
+
 export function normalizeSponsorProgress(raw: unknown): SponsorProgress {
   if (!raw || typeof raw !== "object") return {};
   return raw as SponsorProgress;
@@ -89,11 +97,14 @@ export function getActiveSponsorContract(contracts: SponsorContractRow[]): Spons
 
 export function getAvailableSponsorDeals(
   contracts: SponsorContractRow[],
+  clubStatus: ClubStatus,
 ): SponsorDealDefinition[] {
   const consumedTiers = getConsumedPrestigeTiers(contracts);
   const active = getActiveSponsorContract(contracts);
   if (active) return [];
-  return SPONSOR_DEALS.filter((deal) => !consumedTiers.has(deal.prestige_tier));
+  return SPONSOR_DEALS.filter(
+    (deal) => deal.prestige_tier === clubStatus && !consumedTiers.has(deal.prestige_tier),
+  );
 }
 
 export function isStadiumUpgradeBlockedBySponsor(contracts: SponsorContractRow[]): boolean {
@@ -107,6 +118,7 @@ export type CanSignSponsorDealInput = {
   phase: string;
   contracts: SponsorContractRow[];
   dealId: string;
+  clubStatus: ClubStatus;
 };
 
 export type CanSignSponsorDealResult =
@@ -127,6 +139,12 @@ export function canSignSponsorDeal(input: CanSignSponsorDealInput): CanSignSpons
   const consumedTiers = getConsumedPrestigeTiers(input.contracts);
   if (consumedTiers.has(deal.prestige_tier)) {
     return { ok: false, reason: `Prestige-Stufe ${SPONSOR_PRESTIGE_LABELS[deal.prestige_tier]} bereits verbraucht` };
+  }
+  if (deal.prestige_tier !== input.clubStatus) {
+    return {
+      ok: false,
+      reason: `Deal nur für deine aktuelle Prestige-Stufe (${SPONSOR_PRESTIGE_LABELS[input.clubStatus]}) verfügbar`,
+    };
   }
   return { ok: true, deal };
 }
@@ -425,6 +443,7 @@ function toDealOverview(deal: SponsorDealDefinition): SponsorDealOverviewSnapsho
 export function buildClubSponsorOverview(
   contracts: SponsorContractRow[],
   phase: string,
+  clubStatus: ClubStatus,
 ): Pick<
   ClubOverviewSnapshot,
   | "sponsor_contract"
@@ -432,12 +451,14 @@ export function buildClubSponsorOverview(
   | "available_sponsor_deals"
   | "sponsor_signing_allowed"
   | "stadium_upgrade_blocked_by_sponsor"
+  | "sponsor_prestige_tier"
+  | "sponsor_prestige_label"
 > {
   const active = getActiveSponsorContract(contracts);
   const history = contracts
     .filter((contract) => contract.status === "completed" || contract.status === "failed")
     .map(toContractOverview);
-  const available = getAvailableSponsorDeals(contracts).map(toDealOverview);
+  const available = getAvailableSponsorDeals(contracts, clubStatus).map(toDealOverview);
   const signingAllowed = isSponsorSigningPhase(phase) && !active && available.length > 0;
 
   return {
@@ -446,6 +467,8 @@ export function buildClubSponsorOverview(
     available_sponsor_deals: available,
     sponsor_signing_allowed: signingAllowed,
     stadium_upgrade_blocked_by_sponsor: isStadiumUpgradeBlockedBySponsor(contracts),
+    sponsor_prestige_tier: clubStatus,
+    sponsor_prestige_label: SPONSOR_PRESTIGE_LABELS[clubStatus],
   };
 }
 
@@ -456,12 +479,16 @@ const EMPTY_SPONSOR_OVERVIEW: Pick<
   | "available_sponsor_deals"
   | "sponsor_signing_allowed"
   | "stadium_upgrade_blocked_by_sponsor"
+  | "sponsor_prestige_tier"
+  | "sponsor_prestige_label"
 > = {
   sponsor_contract: null,
   sponsor_history: [],
   available_sponsor_deals: [],
   sponsor_signing_allowed: false,
   stadium_upgrade_blocked_by_sponsor: false,
+  sponsor_prestige_tier: "newly_promoted",
+  sponsor_prestige_label: SPONSOR_PRESTIGE_LABELS.newly_promoted,
 };
 
 export { EMPTY_SPONSOR_OVERVIEW };

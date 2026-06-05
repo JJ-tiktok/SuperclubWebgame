@@ -3,6 +3,7 @@ import {
   type PartialResult,
   type ZoneModifier,
 } from "@/lib/game/game-changer-effects";
+import { areArchetypesEnabled, compareArchetypes, type ArchetypeDuelWinner, type PlayerArchetype } from "@/lib/lobby/archetypes";
 import type { LobbySettings } from "@/lib/lobby/types";
 
 export type SeasonMode = "double_round_robin" | "five_match";
@@ -27,6 +28,17 @@ export type FixturePair = {
 
 export type ZonePowerInput = Record<TacticalZone, number>;
 
+export type FixtureZonePlayerInput = {
+  attacker_archetype?: PlayerArchetype | null;
+  current_stars: number;
+  current_zone: TacticalZone | "GK";
+  defender_archetype?: PlayerArchetype | null;
+  display_name?: string | null;
+  id: string;
+  lineup_slot?: number | null;
+  position?: string | null;
+};
+
 export type FixtureSideInput = {
   canReceiveEvents: boolean;
   clubId?: string | null;
@@ -38,6 +50,7 @@ export type FixtureSideInput = {
   };
   participantId: string;
   powers: ZonePowerInput;
+  zone_players?: FixtureZonePlayerInput[];
 };
 
 export type DicePair = [number, number];
@@ -72,6 +85,7 @@ export type MatchEventResult =
     };
 
 export type ThirdResult = {
+  archetype_effects?: ArchetypeEffect[];
   away: ThirdSideResult;
   home: ThirdSideResult;
   index: number;
@@ -81,10 +95,24 @@ export type ThirdResult = {
 
 export type ThirdSideResult = {
   dice: DicePair;
+  dice_faces: number;
   participant_id: string;
   total: number;
   zone: TacticalZone;
   zone_stars: number;
+};
+
+export type ArchetypeEffect = {
+  attacker_archetype?: PlayerArchetype | null;
+  attacker_delta: number;
+  attacker_player_id?: string | null;
+  attacker_player_name?: string | null;
+  defender_archetype?: PlayerArchetype | null;
+  defender_delta: number;
+  defender_player_id?: string | null;
+  defender_player_name?: string | null;
+  pair: "best" | "worst";
+  winner: ArchetypeDuelWinner;
 };
 
 export function getSeasonMode(settings: Pick<LobbySettings, "season_mode"> | null | undefined): SeasonMode {
@@ -130,13 +158,14 @@ export function getMatchPoints(winnerSide: "away" | "draw" | "home", mode: Match
 }
 
 export function resolveFixture(params: {
+  archetypesEnabled?: boolean;
   away: FixtureSideInput;
-  diceRolls: DicePair[];
+  diceRolls?: DicePair[];
   home: FixtureSideInput;
   matchPointsMode: MatchPointsMode;
   zoneModifiers?: ZoneModifier[];
 }): FixtureResolution {
-  const diceRolls = padDiceRolls(params.diceRolls);
+  const diceRolls = params.diceRolls ?? [];
   const thirds: ThirdResult[] = [];
   const events: MatchEventResult[] = [];
   let rollIndex = 0;
@@ -161,6 +190,7 @@ export function resolveFixture(params: {
       awayDice: diceRolls[rollIndex++],
       homeDice: diceRolls[rollIndex++],
       priorThirds: thirds,
+      archetypesEnabled: params.archetypesEnabled,
       zoneModifiers: modifiers,
     });
     thirds.push(third);
@@ -221,16 +251,17 @@ export function getThirdZones(
 }
 
 export function resolveOneThird(params: {
+  archetypesEnabled?: boolean;
   index: 1 | 2 | 3;
   home: FixtureSideInput;
   away: FixtureSideInput;
-  homeDice: DicePair;
-  awayDice: DicePair;
+  homeDice?: DicePair;
+  awayDice?: DicePair;
   /** Required for index 2 and 3 — pass the result of index 1 */
   priorThirds?: ThirdResult[];
   zoneModifiers?: ZoneModifier[];
 }): { third: ThirdResult; events: MatchEventResult[] } {
-  const { index, home, away, homeDice, awayDice, priorThirds = [], zoneModifiers = [] } = params;
+  const { index, home, away, priorThirds = [], zoneModifiers = [] } = params;
 
   let homeZone: TacticalZone;
   let awayZone: TacticalZone;
@@ -258,11 +289,26 @@ export function resolveOneThird(params: {
       .filter((m) => m.for === side && m.zone === zone)
       .reduce((sum, m) => sum + m.delta, 0);
 
-  const homePower = Math.max(0, home.powers[homeZone] + getModifierDelta("home", homeZone));
-  const awayPower = Math.max(0, away.powers[awayZone] + getModifierDelta("away", awayZone));
+  const homeIsAttacking = homeZone === "ATT" && awayZone === "DEF";
+  const awayIsAttacking = awayZone === "ATT" && homeZone === "DEF";
+  const archetypeResult = areArchetypesEnabled({ archetypes_enabled: params.archetypesEnabled })
+    ? homeIsAttacking
+        ? getArchetypeZoneResultForSides(home, away, "home")
+        : awayIsAttacking
+          ? getArchetypeZoneResultForSides(away, home, "away")
+          : { awayDelta: 0, effects: [], homeDelta: 0 }
+    : { awayDelta: 0, effects: [], homeDelta: 0 };
+
+  const homePower = Math.max(0, home.powers[homeZone] + getModifierDelta("home", homeZone) + archetypeResult.homeDelta);
+  const awayPower = Math.max(0, away.powers[awayZone] + getModifierDelta("away", awayZone) + archetypeResult.awayDelta);
+  const homeDiceFaces = getDiceFacesForSide(home, homeZone, homeIsAttacking);
+  const awayDiceFaces = getDiceFacesForSide(away, awayZone, awayIsAttacking);
+  const homeDice = params.homeDice ?? rollDicePair(homeDiceFaces);
+  const awayDice = params.awayDice ?? rollDicePair(awayDiceFaces);
 
   const homeResult: ThirdSideResult = {
     dice: homeDice,
+    dice_faces: homeDiceFaces,
     participant_id: home.participantId,
     total: homePower + homeDice[0] + homeDice[1],
     zone: homeZone,
@@ -270,6 +316,7 @@ export function resolveOneThird(params: {
   };
   const awayResult: ThirdSideResult = {
     dice: awayDice,
+    dice_faces: awayDiceFaces,
     participant_id: away.participantId,
     total: awayPower + awayDice[0] + awayDice[1],
     zone: awayZone,
@@ -277,6 +324,7 @@ export function resolveOneThird(params: {
   };
 
   const third: ThirdResult = {
+    archetype_effects: archetypeResult.effects,
     away: awayResult,
     home: homeResult,
     index,
@@ -319,38 +367,111 @@ function buildSingleRoundRobin(participants: SeasonParticipant[]): FixturePair[]
   return fixtures;
 }
 
-function compareThird(params: {
-  away: FixtureSideInput;
-  awayDice: DicePair;
-  awayZone: TacticalZone;
-  home: FixtureSideInput;
-  homeDice: DicePair;
-  homeZone: TacticalZone;
-  index: number;
-  label: ThirdResult["label"];
-}): ThirdResult {
-  const home = {
-    dice: params.homeDice,
-    participant_id: params.home.participantId,
-    total: params.home.powers[params.homeZone] + params.homeDice[0] + params.homeDice[1],
-    zone: params.homeZone,
-    zone_stars: params.home.powers[params.homeZone],
-  };
-  const away = {
-    dice: params.awayDice,
-    participant_id: params.away.participantId,
-    total: params.away.powers[params.awayZone] + params.awayDice[0] + params.awayDice[1],
-    zone: params.awayZone,
-    zone_stars: params.away.powers[params.awayZone],
-  };
+export function getDiceFacesForSide(side: FixtureSideInput, zone: TacticalZone, isAttacking: boolean) {
+  if (!isAttacking || zone !== "ATT") {
+    return 6;
+  }
+
+  const attackingPlayers = getSortedZonePlayers(side, "ATT");
+
+  if (attackingPlayers.some((player) => player.current_stars >= 6)) {
+    return 10;
+  }
+
+  if (attackingPlayers.some((player) => player.current_stars >= 4)) {
+    return 8;
+  }
+
+  return 6;
+}
+
+function getArchetypeZoneResultForSides(
+  attacker: FixtureSideInput,
+  defender: FixtureSideInput,
+  attackerSide: "away" | "home",
+): { awayDelta: number; effects: ArchetypeEffect[]; homeDelta: number } {
+  const result = getArchetypeZoneResult(attacker, defender);
+
+  if (attackerSide === "home") {
+    return {
+      awayDelta: result.defenderDelta,
+      effects: result.effects,
+      homeDelta: result.attackerDelta,
+    };
+  }
 
   return {
-    away,
-    home,
-    index: params.index,
-    label: params.label,
-    winner_participant_id: home.total === away.total ? null : home.total > away.total ? params.home.participantId : params.away.participantId,
+    awayDelta: result.attackerDelta,
+    effects: result.effects,
+    homeDelta: result.defenderDelta,
   };
+}
+
+function getArchetypeZoneResult(attacker: FixtureSideInput, defender: FixtureSideInput) {
+  const attackingPlayers = getSortedZonePlayers(attacker, "ATT").filter((player) => player.attacker_archetype);
+  const defendingPlayers = getSortedZonePlayers(defender, "DEF").filter((player) => player.defender_archetype);
+  const effects: ArchetypeEffect[] = [];
+
+  if (attackingPlayers.length === 0 || defendingPlayers.length === 0) {
+    return { attackerDelta: 0, defenderDelta: 0, effects };
+  }
+
+  const pairs: Array<{ attacker?: FixtureZonePlayerInput; defender?: FixtureZonePlayerInput; pair: "best" | "worst" }> = [
+    { attacker: attackingPlayers[0], defender: defendingPlayers[0], pair: "best" },
+  ];
+
+  if (attackingPlayers.length > 1 && defendingPlayers.length > 1) {
+    const weakestAttacker = attackingPlayers.at(-1);
+    const weakestDefender = defendingPlayers.at(-1);
+    if (
+      weakestAttacker &&
+      weakestDefender &&
+      weakestAttacker.id !== attackingPlayers[0]?.id &&
+      weakestDefender.id !== defendingPlayers[0]?.id
+    ) {
+      pairs.push({ attacker: weakestAttacker, defender: weakestDefender, pair: "worst" });
+    }
+  }
+
+  let attackerDelta = 0;
+  let defenderDelta = 0;
+
+  for (const pair of pairs) {
+    if (!pair.attacker || !pair.defender) continue;
+
+    const winner = compareArchetypes(pair.attacker.attacker_archetype, pair.defender.defender_archetype);
+    const pairAttackerDelta = winner === "attacker" ? 1 : winner === "defender" ? -1 : 0;
+    const pairDefenderDelta = winner === "defender" ? 1 : winner === "attacker" ? -1 : 0;
+    attackerDelta += pairAttackerDelta;
+    defenderDelta += pairDefenderDelta;
+
+    effects.push({
+      attacker_archetype: pair.attacker.attacker_archetype ?? null,
+      attacker_delta: pairAttackerDelta,
+      attacker_player_id: pair.attacker.id,
+      attacker_player_name: pair.attacker.display_name ?? null,
+      defender_archetype: pair.defender.defender_archetype ?? null,
+      defender_delta: pairDefenderDelta,
+      defender_player_id: pair.defender.id,
+      defender_player_name: pair.defender.display_name ?? null,
+      pair: pair.pair,
+      winner,
+    });
+  }
+
+  return { attackerDelta, defenderDelta, effects };
+}
+
+function getSortedZonePlayers(side: FixtureSideInput, zone: TacticalZone) {
+  return (side.zone_players ?? [])
+    .filter((player) => player.current_zone === zone)
+    .sort((a, b) => {
+      const stars = b.current_stars - a.current_stars;
+      if (stars !== 0) return stars;
+      const slot = Number(a.lineup_slot ?? 999) - Number(b.lineup_slot ?? 999);
+      if (slot !== 0) return slot;
+      return (a.display_name ?? a.id).localeCompare(b.display_name ?? b.id);
+    });
 }
 
 function getDoubleDiceEvents(third: ThirdResult, home: FixtureSideInput, away: FixtureSideInput) {
@@ -385,16 +506,10 @@ function getDoubleDiceEvent(side: ThirdSideResult, thirdIndex: number, participa
   ];
 }
 
-function padDiceRolls(diceRolls: DicePair[]) {
-  const padded = [...diceRolls];
-
-  while (padded.length < 6) {
-    padded.push([rollDie(), rollDie()]);
-  }
-
-  return padded.slice(0, 6);
+function rollDicePair(faces: number): DicePair {
+  return [rollDie(faces), rollDie(faces)];
 }
 
-function rollDie() {
-  return Math.floor(Math.random() * 6) + 1;
+function rollDie(faces: number) {
+  return Math.floor(Math.random() * faces) + 1;
 }

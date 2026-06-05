@@ -9,12 +9,17 @@ import {
   Banknote,
   Building2,
   CalendarDays,
+  Circle,
   ClipboardList,
   Crown,
   Dumbbell,
   Eye,
   Gavel,
+  GraduationCap,
+  Hammer,
+  HeartPulse,
   Home,
+  LineChart,
   ListOrdered,
   MapIcon,
   PanelLeftClose,
@@ -23,9 +28,11 @@ import {
   Settings,
   Shield,
   ShoppingCart,
+  Square,
   Sparkles,
   Target,
   Trash2,
+  Triangle,
   Trophy,
   UserCheck,
   UserMinus,
@@ -43,9 +50,12 @@ import {
   setPhaseDoneAction,
   setReadyFromDashboardAction,
   startGameFromDashboardAction,
+  updateGameSettingsAction,
 } from "@/app/games/actions/lobby";
 import { makeDraftPickAction } from "@/app/games/actions/draft";
 import {
+  healPlayerMedicalAction,
+  respecPlayerArchetypeAction,
   trainPlayerAction,
   upgradeInvestmentAction,
 } from "@/app/games/actions/offseason";
@@ -74,12 +84,6 @@ import {
   declineTransferOfferAction,
 } from "@/app/games/actions/transfers";
 import {
-  advanceContinentalRoundAction,
-  initializeContinentalCupAction,
-  lockContinentalLineupAction,
-  resolveContinentalFixtureAction,
-} from "@/app/games/actions/continental";
-import {
   initializeSeasonScheduleAction,
   lockFixtureLineupAction,
   markReadyForNextThirdAction,
@@ -87,7 +91,6 @@ import {
   startMatchAction,
   triggerDrawRerollAction,
 } from "@/app/games/actions/match";
-import { CONTINENTAL_ROUNDS, getContinentalRoundLabel } from "@/lib/lobby/continental-cup";
 import { healInjuredPlayerAction } from "@/app/games/actions/game-changers";
 import { resolveDisplayZoneBoosts, type ZoneModifier } from "@/lib/game/game-changer-effects";
 import {
@@ -102,12 +105,27 @@ import {
   getDeadlineBidTitle,
   getInvestmentLabel,
   getScoutingCheckLabel,
-  getThirdLabel,
   getTrainingDisabledLabel,
   getTurnFallback,
   normalizeView,
   type GameView,
 } from "@/components/game/lib/dashboard-helpers";
+import { ContinentalView } from "@/components/game/continental/continental-view";
+import { OpponentIntelPanel } from "@/components/game/opponent-intel-panel";
+import {
+  canUpgradeEndgameFacility,
+  ENDGAME_FACILITY_LABELS,
+  getEndgameFacilityLevel,
+  getEndgameUpgradeCost,
+  getEndgameUpgradeReasonLabel,
+  getEndgameUnlockRequirement,
+  getInvestmentActionLimit,
+  isEndgameUnlockMet,
+  resolveClubInvestmentStatus,
+  type EndgameFacilityAction,
+} from "@/lib/lobby/endgame-facilities";
+import { FixtureSideCard } from "@/components/game/shared/fixture-side-card";
+import { MatchResultDetail, parseFixtureResult, type FixtureThird } from "@/components/game/shared/match-result-detail";
 import { Metric, SmallInfo } from "@/components/game/shared/metric";
 import { SquadPositionBreakdown } from "@/components/game/shared/squad-breakdown";
 import { ActiveEffectsChip } from "@/components/game/active-effects-chip";
@@ -128,11 +146,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelDescription, PanelHeader, PanelTitle } from "@/components/ui/panel";
 import { DEADLINE_BID_STEP, DEADLINE_TURN_SECONDS, getMinimumNextBid } from "@/lib/lobby/deadline";
+import { ARCHETYPE_META, type PlayerArchetype } from "@/lib/lobby/archetypes";
 import { mapDbPlayerToPlayerCardData } from "@/lib/lobby/draft";
 import { canUpgradeFacility, getStaffRecruitBlockReason, getStaffRecruitHint, getStaffRecruitReasonLabel, getUpgradeCost, getUpgradeReasonLabel, type UpgradeAction } from "@/lib/lobby/investments";
 import { isOffseasonPendingScopeActive } from "@/lib/lobby/offseason-pending-effects";
 import { calculateLineupPower } from "@/lib/lobby/lineup-power";
 import { getPhaseLabel, isInvestmentPhase } from "@/lib/lobby/phases";
+import { buildSeasonEndSummaryModel } from "@/lib/lobby/season-end-summary";
 import { isClubStatusOverrideActive, resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
 import { getManagerScoreBand, getPlacementReward, getScoutingCapacity, getStadiumIncome, getTrainingCapacity, MAX_SQUAD_SIZE } from "@/lib/game/rules";
 import { CPU_TIER_LABEL } from "@/lib/lobby/cpu-teams";
@@ -152,7 +172,6 @@ import { getClubTheme } from "@/lib/lobby/theme";
 import { canTrainOwnedPlayer } from "@/lib/lobby/training";
 import { MANAGER_TRANSFER_DEPARTURE_LIMIT } from "@/lib/lobby/transfers";
 import type {
-  ContinentalFixtureSnapshot,
   ClubPlayerSnapshot,
   CpuStrengthTier,
   DraftPlayerRow,
@@ -566,6 +585,15 @@ function GameHeader({
             <Badge>{snapshot.game.phase.toUpperCase()}</Badge>
             <Badge>{phaseDoneCount}/{phaseDoneTotal} fertig</Badge>
             <Badge>Save v{snapshot.game.save_version ?? 1}</Badge>
+            <Badge tone={snapshot.game.settings.continental_cup_enabled === false ? "neutral" : "blue"}>
+              Continental Cup {snapshot.game.settings.continental_cup_enabled === false ? "aus" : "an"}
+            </Badge>
+            <Badge tone={snapshot.game.settings.sponsoring_enabled === false ? "neutral" : "blue"}>
+              Sponsoring {snapshot.game.settings.sponsoring_enabled === false ? "aus" : "an"}
+            </Badge>
+            <Badge tone={snapshot.game.settings.archetypes_enabled === false ? "neutral" : "blue"}>
+              Archetypes {snapshot.game.settings.archetypes_enabled === false ? "aus" : "an"}
+            </Badge>
             <ActiveEffectsChip
               effects={snapshot.club_overview?.pending_effects ?? []}
               roomCode={snapshot.game.room_code}
@@ -666,6 +694,10 @@ function DashboardView({
 
   return (
     <div className="space-y-4">
+      {snapshot.game.phase === "season_end" ? (
+        <SeasonEndSummary isHost={isHost} ownClub={ownClub} snapshot={snapshot} />
+      ) : null}
+
       <Panel className="border-[var(--club-border)] bg-zinc-950/85">
         <PanelHeader>
           <div>
@@ -716,6 +748,185 @@ function DashboardView({
 
       <ManagersPanel snapshot={snapshot} />
     </div>
+  );
+}
+
+function SeasonEndSummary({
+  isHost,
+  ownClub,
+  snapshot,
+}: {
+  isHost: boolean;
+  ownClub: LobbyClub | undefined;
+  snapshot: LobbySnapshot;
+}) {
+  const seasonNumber = Number(snapshot.game.settings?.seasonNumber ?? 1);
+  const summary = buildSeasonEndSummaryModel({
+    finance: snapshot.club_overview?.finance,
+    matchNews: snapshot.match_news,
+    ownClub,
+    season: snapshot.season,
+    settings: snapshot.game.settings,
+  });
+  const nextStepTitle = summary.goesToContinentalCup ? "Naechster Schritt: Continental Cup" : "Naechster Schritt: Neue Off-Season";
+  const nextStepText = summary.goesToContinentalCup
+    ? "Nach der Bestaetigung wechselt der Host in den Continental Cup. Danach startet die naechste Off-Season."
+    : `Nach der Bestaetigung startet Saison ${seasonNumber + 1} mit der Finanzphase der neuen Off-Season.`;
+
+  if (!summary.hasSeasonData) {
+    return (
+      <Panel className="border-amber-800/70 bg-amber-950/20">
+        <PanelHeader>
+          <div>
+            <PanelTitle>Saisonabschluss</PanelTitle>
+            <PanelDescription>Saisonwertung wird geladen oder wurde noch nicht berechnet.</PanelDescription>
+          </div>
+          <Trophy size={18} className="text-amber-300" aria-hidden />
+        </PanelHeader>
+        <p className="text-sm text-amber-100/85">
+          {summary.setupError ?? "Sobald die Saisonwertung verfuegbar ist, erscheinen hier Platzierungen, Ereignisse und der naechste Schritt."}
+        </p>
+      </Panel>
+    );
+  }
+
+  return (
+    <Panel className="border-[var(--club-border)] bg-zinc-950/90">
+      <PanelHeader>
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <PanelTitle>Saison abgeschlossen</PanelTitle>
+            <Badge tone={summary.goesToContinentalCup ? "blue" : "green"}>
+              {summary.goesToContinentalCup ? "Continental Cup folgt" : "Off-Season folgt"}
+            </Badge>
+          </div>
+          <PanelDescription>Saison {seasonNumber} ist ausgewertet. Markiere dich als Fertig, danach kann der Host fortsetzen.</PanelDescription>
+        </div>
+        <Trophy size={18} className="text-[var(--club-color)]" aria-hidden />
+      </PanelHeader>
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <Metric icon={CalendarDays} label="Saison" value={`#${seasonNumber}`} detail="abgeschlossen" />
+        <Metric
+          icon={Crown}
+          label="Manager-Sieger"
+          value={summary.topManagers[0]?.club_name ?? "-"}
+          detail={summary.topManagers[0] ? `${summary.topManagers[0].season_score} Score` : "noch offen"}
+        />
+        <Metric
+          icon={Trophy}
+          label="Liga-Sieger"
+          value={summary.leagueWinner?.participant.display_name ?? "-"}
+          detail="kosmetische Saison-Tabelle"
+        />
+        <Metric
+          icon={ListOrdered}
+          label="Spiele"
+          value={`${summary.completedFixtureCount}/${summary.totalFixtureCount}`}
+          detail="abgeschlossen"
+        />
+      </div>
+
+      <div className="mt-4 grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+        <div className="rounded-md border border-zinc-800 bg-zinc-900/60 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-medium uppercase text-zinc-500">Managerwertung</p>
+              <p className="mt-1 text-sm text-zinc-400">Top 3 aus Kadersternen + Saisonpunkten.</p>
+            </div>
+            <Badge>Top 3</Badge>
+          </div>
+          <div className="mt-3 space-y-2">
+            {summary.topManagers.map((standing) => (
+              <div
+                className={cn(
+                  "flex flex-wrap items-center justify-between gap-3 rounded-md border p-3",
+                  standing.club_id === ownClub?.id
+                    ? "border-[var(--club-border)] bg-[var(--club-soft)]"
+                    : "border-zinc-800 bg-zinc-950/50",
+                )}
+                key={standing.club_id}
+              >
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-zinc-700 bg-zinc-950 text-sm font-semibold text-zinc-50">
+                    #{standing.rank}
+                  </span>
+                  <div className="min-w-0">
+                    <p className="truncate font-semibold text-zinc-50">{standing.club_name}</p>
+                    <p className="mt-0.5 text-xs text-zinc-500">
+                      {standing.squad_stars} Kader + {standing.season_match_points} Saisonpunkte
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge tone="blue">{standing.season_score} Score</Badge>
+                  <Badge>{getClubStatusLabel(standing.status)}</Badge>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded-md border border-zinc-800 bg-zinc-900/60 p-4">
+          <p className="text-xs font-medium uppercase text-zinc-500">Dein Abschluss</p>
+          {summary.ownStanding ? (
+            <>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <SmallInfo label="Platz" value={`#${summary.ownStanding.rank}`} />
+                <SmallInfo label="Score" value={String(summary.ownStanding.season_score)} />
+                <SmallInfo label="Status" value={getClubStatusLabel(summary.ownStanding.status)} />
+                <SmallInfo label="Attraktivitaet" value={`${summary.ownStanding.attractiveness_stars} Sterne`} />
+                <SmallInfo label="Kadersterne" value={String(summary.ownStanding.squad_stars)} />
+                <SmallInfo label="Saisonpunkte" value={String(summary.ownStanding.season_match_points)} />
+              </div>
+              <div className="mt-3 rounded-md border border-zinc-800 bg-zinc-950/60 p-3">
+                <p className="text-xs font-medium uppercase text-zinc-500">Finance-Ausblick</p>
+                <p className="mt-1 text-lg font-semibold text-zinc-50">{formatMoney(summary.finance?.projected_net ?? 0)}</p>
+                <p className="mt-1 text-xs text-zinc-500">Stadion + Praemie minus Gehaelter, gebucht beim Start der Finance-Phase.</p>
+              </div>
+            </>
+          ) : (
+            <p className="mt-3 text-sm text-zinc-400">Dein Verein ist in der Managerwertung noch nicht verfuegbar.</p>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-4 xl:grid-cols-[1fr_360px]">
+        <div className="rounded-md border border-zinc-800 bg-zinc-900/60 p-4">
+          <p className="text-xs font-medium uppercase text-zinc-500">Ereignisse</p>
+          {summary.highlightNews.length > 0 ? (
+            <div className="mt-3 space-y-2">
+              {summary.highlightNews.map((news) => (
+                <div className="rounded-md border border-zinc-800 bg-zinc-950/50 p-3" key={news.id}>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="font-medium text-zinc-100">{news.headline}</p>
+                    <Badge tone={news.category === "injury" ? "red" : "blue"}>{news.category}</Badge>
+                  </div>
+                  {news.detail ? <p className="mt-1 text-sm text-zinc-400">{news.detail}</p> : null}
+                  <p className="mt-2 text-xs text-zinc-600">{formatSavedAt(news.created_at)}</p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-3 text-sm text-zinc-400">Keine Ereignisse fuer diese Saison geloggt.</p>
+          )}
+        </div>
+
+        <div className="rounded-md border border-[var(--club-border)] bg-[var(--club-soft)] p-4">
+          <p className="text-xs font-medium uppercase text-zinc-500">Naechster Schritt</p>
+          <p className="mt-1 text-lg font-semibold text-zinc-50">{nextStepTitle}</p>
+          <p className="mt-2 text-sm text-zinc-400">{nextStepText}</p>
+          <div className="mt-4 rounded-md border border-zinc-800 bg-zinc-950/55 p-3 text-sm text-zinc-300">
+            <p>
+              {isHost
+                ? "Alle Manager markieren oben Fertig. Sobald alle bereit sind, kannst du mit Fortsetzen wechseln."
+                : "Markiere dich oben als Fertig. Sobald alle bereit sind, setzt der Host die Runde fort."}
+            </p>
+            <p className="mt-2 text-xs text-zinc-500">Zielphase: {getPhaseLabel(summary.nextPhase)}</p>
+          </div>
+        </div>
+      </div>
+    </Panel>
   );
 }
 
@@ -879,7 +1090,7 @@ function DraftView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
 
               return (
                 <div className={cn("rounded-lg border border-zinc-800 bg-zinc-900/45 p-2", picked ? "opacity-55" : "")} key={player.id}>
-                  <PlayerCard disabled={picked} player={card} variant="draft" />
+                  <PlayerCard disabled={picked} player={card} showArchetypes={snapshot.game.settings.archetypes_enabled !== false} variant="draft" />
                   <form action={makeDraftPickAction} className="mt-2">
                     <input name="game_id" type="hidden" value={snapshot.game.id} />
                     <input name="room_code" type="hidden" value={snapshot.game.room_code} />
@@ -1100,7 +1311,7 @@ function TrainingView({
 
                 return (
                   <div className={cn("rounded-lg border border-zinc-800 bg-zinc-900/45 p-2", trainedClubPlayerIds.has(owned.id) ? "ring-1 ring-lime-300/40" : "")} key={owned.id}>
-                    <PlayerCard disabled={owned.injured} player={card} variant="draft" />
+                    <PlayerCard disabled={owned.injured} player={card} showArchetypes={snapshot.game.settings.archetypes_enabled !== false} variant="draft" />
                     <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-zinc-400">
                       <SmallInfo label="Aktuell" value={`${currentStars} Sterne`} />
                       <SmallInfo label="Maximum" value={`${skillMax} Sterne`} />
@@ -1442,7 +1653,7 @@ function ScoutingDrawsPanel({
                       <div className="mb-2">
                         <Badge tone={draw.status === "bought" ? "green" : draw.status === "passed" ? "red" : "blue"}>{draw.status}</Badge>
                       </div>
-                      <PlayerCard disabled={draw.status !== "drawn"} player={card} variant="draft" />
+                      <PlayerCard disabled={draw.status !== "drawn"} player={card} showArchetypes={snapshot.game.settings.archetypes_enabled !== false} variant="draft" />
                       {isOwn && draw.status === "drawn" ? (
                         <div className="mt-2 grid grid-cols-2 gap-2">
                           <form action={buyScoutedPlayerAction}>
@@ -1568,7 +1779,7 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
 
               return (
                 <div className="grid gap-3 rounded-lg border border-zinc-800 bg-zinc-900/55 p-3 sm:grid-cols-[132px_minmax(0,1fr)]" key={owned.id}>
-                  <PlayerCard disabled={owned.injured} player={card} variant="draft" />
+                  <PlayerCard disabled={owned.injured} player={card} showArchetypes={snapshot.game.settings.archetypes_enabled !== false} variant="draft" />
                   <div className="flex min-w-0 flex-col justify-between gap-3">
                     <div>
                       <div className="flex items-start justify-between gap-3">
@@ -1815,7 +2026,7 @@ function DeadlineView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub:
             </PanelHeader>
             <div className="grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
               <div className="max-w-[220px]">
-                <PlayerCard player={mapDbPlayerToPlayerCardData(activeAuction.player)} variant="draft" />
+                <PlayerCard player={mapDbPlayerToPlayerCardData(activeAuction.player)} showArchetypes={snapshot.game.settings.archetypes_enabled !== false} variant="draft" />
               </div>
               <div className="space-y-3">
                 <div className="grid gap-2 sm:grid-cols-2">
@@ -1929,7 +2140,7 @@ function DeadlineAuctionList({ deadline, snapshot }: { deadline: NonNullable<Lob
       </PanelHeader>
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {deadline.auctions.map((auction) => {
-          const hidden = auction.status === "scheduled";
+          const hidden = auction.status === "scheduled" && auction.player.visibility === "hidden";
           return (
             <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3" key={auction.id}>
               <div className="flex items-start justify-between gap-3">
@@ -1949,11 +2160,16 @@ function DeadlineAuctionList({ deadline, snapshot }: { deadline: NonNullable<Lob
                 <Badge tone={getAuctionBadgeTone(auction.status)}>{getAuctionStatusLabel(auction.status)}</Badge>
               </div>
               {!hidden ? (
-                <p className="mt-3 text-xs text-zinc-400">
-                  {auction.winning_club_id
-                    ? `${clubNames.get(auction.winning_club_id) ?? "Club"} — ${formatMoney(auction.current_amount)}`
-                    : "Noch kein Zuschlag"}
-                </p>
+                <>
+                  <div className="mt-3 max-w-[180px]">
+                    <PlayerCard player={mapDbPlayerToPlayerCardData(auction.player)} showArchetypes={snapshot.game.settings.archetypes_enabled !== false} variant="draft" />
+                  </div>
+                  <p className="mt-3 text-xs text-zinc-400">
+                    {auction.winning_club_id
+                      ? `${clubNames.get(auction.winning_club_id) ?? "Club"} — ${formatMoney(auction.current_amount)}`
+                      : "Noch kein Zuschlag"}
+                  </p>
+                </>
               ) : null}
             </div>
           );
@@ -1985,6 +2201,23 @@ function LineupView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; sna
   const staffEffects = (overview.staff ?? []).flatMap(
     (s) => s.card.effects as Array<{ type: string; zone?: string; stars?: number }>,
   );
+  const currentFixture = snapshot.season?.fixtures.find(
+    (fixture) =>
+      fixture.matchday === snapshot.season?.current_matchday &&
+      fixture.status !== "completed" &&
+      (fixture.home_participant.club_id === ownClub.id || fixture.away_participant.club_id === ownClub.id),
+  );
+  const opponentClubId =
+    currentFixture?.home_participant.club_id === ownClub.id
+      ? currentFixture.away_participant.club_id
+      : currentFixture?.away_participant.club_id;
+  const opponentName = !currentFixture
+    ? ""
+    : currentFixture.home_participant.club_id === ownClub.id
+      ? currentFixture.away_participant.display_name
+      : currentFixture.home_participant.display_name;
+  const liveOpponentLineup =
+    snapshot.season?.opponent_locked_lineups?.find((entry) => entry.fixture_id === currentFixture?.id)?.lineup ?? null;
 
   return (
     <div className="space-y-4">
@@ -2011,7 +2244,18 @@ function LineupView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; sna
         boostRank={ownClub.captain_boost_rank}
       />
 
+      {currentFixture ? (
+        <OpponentIntelPanel
+          analyticsLevel={ownClub.analytics_hub_level ?? 0}
+          fixtures={snapshot.season?.fixtures ?? []}
+          liveLineup={liveOpponentLineup}
+          opponentClubId={opponentClubId}
+          opponentName={opponentName}
+        />
+      ) : null}
+
       <GameLineupBoard
+        archetypesEnabled={snapshot.game.settings.archetypes_enabled !== false}
         cards={lineupCards}
         gameId={snapshot.game.id}
         roomCode={snapshot.game.room_code}
@@ -2052,7 +2296,21 @@ function ClubOverviewView({
     <div className="space-y-4">
       {focus === "grounds" ? <ClubFinancePanel ownClub={ownClub} overview={overview} snapshot={snapshot} /> : null}
       {focus === "grounds" ? <FacilityUpgradePanel ownClub={ownClub} overview={overview} snapshot={snapshot} /> : null}
-      {focus === "grounds" ? <SponsorPanel ownClub={ownClub} overview={overview} snapshot={snapshot} /> : null}
+      {focus === "grounds" ? (
+        snapshot.game.settings.sponsoring_enabled === false ? (
+          <Panel className="border-zinc-800 bg-zinc-950/85">
+            <PanelHeader>
+              <div>
+                <PanelTitle>Sponsoring</PanelTitle>
+                <PanelDescription>Sponsoring ist in den Lobby-Einstellungen fuer diesen Spielstand ausgeschaltet.</PanelDescription>
+              </div>
+              <Banknote size={18} className="text-zinc-500" aria-hidden />
+            </PanelHeader>
+          </Panel>
+        ) : (
+          <SponsorPanel ownClub={ownClub} overview={overview} snapshot={snapshot} />
+        )
+      ) : null}
       {focus === "grounds" && overview.open_staff_offer ? (
         <StaffMarketView offer={overview.open_staff_offer} ownClub={ownClub} snapshot={snapshot} />
       ) : null}
@@ -2184,6 +2442,12 @@ function FacilityUpgradePanel({
       .filter((e) => e.type === "investment_action_bonus")
       .reduce((a, e) => a + (e.extra ?? 0), 0);
   }, 0);
+  const actionLimit = getInvestmentActionLimit(extraInvestmentSlots, ownClub.construction_yard_built ?? false);
+  const investmentClubStatus = resolveClubInvestmentStatus(
+    ownClub,
+    seasonNumber,
+    managerStanding?.season_score,
+  );
 
   const LEVELS = [1, 2, 3, 4] as const;
   const ALL_STATUSES = ["newly_promoted", "established", "mid_table", "title_contender"] as const;
@@ -2315,7 +2579,8 @@ function FacilityUpgradePanel({
         <div>
           <PanelTitle>Vereinsgelaende</PanelTitle>
           <PanelDescription>
-            {overview.investments.length}/{2 + extraInvestmentSlots} Investment-Aktionen in Saison {overview.season_number} verwendet.
+            {overview.investments.length}/{actionLimit} Investment-Aktionen in Saison {overview.season_number} verwendet.
+            {ownClub.construction_yard_built ? " · Bauhof: +2 Slots" : ""}
           </PanelDescription>
         </div>
         <Building2 size={18} className="text-[var(--club-color)]" aria-hidden />
@@ -2328,6 +2593,7 @@ function FacilityUpgradePanel({
             currentLevel: facility.level,
             money: overview.finance.money,
             extraActionBonus: extraInvestmentSlots,
+            actionLimit,
           });
           const stadiumBlocked = facility.action === "stadium" && overview.stadium_upgrade_blocked_by_sponsor;
           const upgradeDisabled = !investmentPhaseActive || !check.ok || stadiumBlocked;
@@ -2381,6 +2647,100 @@ function FacilityUpgradePanel({
           );
         })}
 
+        {(
+          [
+            { action: "medical" as EndgameFacilityAction, icon: HeartPulse, effects: ["1 manuelle Heilung/Saison", "2 manuelle Heilungen/Saison", "Alle Verletzungen sofort geheilt"] },
+            { action: "analytics" as EndgameFacilityAction, icon: LineChart, effects: ["Letzte Gegner-Aufstellung", "Live-Spionage bei Lock", "Deadline-Day Insider"] },
+            { action: "youth_academy" as EndgameFacilityAction, icon: GraduationCap, effects: ["1 NLZ-Talent/Off-Season", "Archetyp-Umschmiede 1x/Saison", "2 Talente + Trainingsgarantie"] },
+            { action: "construction_yard" as EndgameFacilityAction, icon: Hammer, effects: ["+2 Investment-Aktionen dauerhaft"] },
+          ] as const
+        ).map((facility) => {
+          const level = getEndgameFacilityLevel(ownClub, facility.action);
+          const maxLevel = facility.action === "construction_yard" ? 1 : 3;
+          const targetLevel = facility.action === "construction_yard" ? 1 : Math.min(maxLevel, level + 1);
+          const requirement = getEndgameUnlockRequirement(facility.action, targetLevel);
+          const unlockMet = isEndgameUnlockMet(investmentClubStatus, requirement);
+          const check = canUpgradeEndgameFacility({
+            action: facility.action,
+            actionsThisSeason,
+            clubStatus: investmentClubStatus,
+            currentLevel: level,
+            money: overview.finance.money,
+            actionLimit,
+          });
+          const upgradeDisabled = !investmentPhaseActive || !check.ok;
+          const cost = getEndgameUpgradeCost(facility.action, level);
+          const Icon = facility.icon;
+          const lockLabel =
+            requirement === "title_contender" ? "Benötigt: Titelanwärter" : "Benötigt: Mittlerer Tabellenplatz";
+
+          return (
+            <div className="rounded-md border border-violet-900/50 bg-violet-950/20 p-4 lg:col-span-1" key={facility.action}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-zinc-50">{ENDGAME_FACILITY_LABELS[facility.action]}</p>
+                  <p className="mt-0.5 text-xs font-bold text-violet-300">
+                    {facility.action === "construction_yard"
+                      ? level >= 1
+                        ? "Gebaut"
+                        : "Nicht gebaut"
+                      : `Stufe ${level}/${maxLevel}`}
+                  </p>
+                </div>
+                <Icon size={18} className="text-violet-300" aria-hidden />
+              </div>
+              {!unlockMet && level < maxLevel ? (
+                <p className="mt-2 rounded border border-amber-900/60 bg-amber-950/30 px-2 py-1 text-[11px] text-amber-200">{lockLabel}</p>
+              ) : null}
+              <div className="mt-3 rounded-md border border-zinc-800 bg-zinc-950/50 p-3 text-xs text-zinc-300">
+                {facility.action === "construction_yard" ? (
+                  <p>Einmaliger Kauf — dauerhaft +2 Bauprojekte pro Off-Season.</p>
+                ) : (
+                  <ul className="space-y-1">
+                    {facility.effects.map((effect, index) => (
+                      <li className={cn(index + 1 === level ? "font-semibold text-violet-200" : index + 1 < level ? "text-zinc-600 line-through" : "")} key={effect}>
+                        Stufe {index + 1}: {effect}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div className="mt-3 flex items-center justify-between text-xs text-zinc-500">
+                <span>{facility.action === "construction_yard" && level >= 1 ? "Status" : "Naechstes Upgrade"}</span>
+                <span className="font-semibold text-zinc-300">
+                  {level >= maxLevel ? "Max erreicht" : formatMoney(cost)}
+                </span>
+              </div>
+              <form action={upgradeInvestmentAction} className="mt-2">
+                <input name="game_id" type="hidden" value={snapshot.game.id} />
+                <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                <input name="club_id" type="hidden" value={ownClub.id} />
+                <input name="action" type="hidden" value={facility.action} />
+                <Button
+                  className="w-full"
+                  disabled={upgradeDisabled}
+                  title={
+                    !investmentPhaseActive
+                      ? "Nur in der Investmentphase"
+                      : check.ok
+                        ? "Upgrade kaufen"
+                        : getEndgameUpgradeReasonLabel(check.reason)
+                  }
+                  type="submit"
+                >
+                  {!investmentPhaseActive
+                    ? "Investmentphase abwarten"
+                    : check.ok
+                      ? facility.action === "construction_yard" && level >= 1
+                        ? "Bereits gebaut"
+                        : "Upgrade kaufen"
+                      : getEndgameUpgradeReasonLabel(check.reason)}
+                </Button>
+              </form>
+            </div>
+          );
+        })}
+
         {/* Mitarbeiter-Karte */}
         {(() => {
           const hasFreeStaffOffer = overview.pending_effects.some(
@@ -2398,6 +2758,7 @@ function FacilityUpgradePanel({
             currentStaffCount: overview.staff.length,
             hasOpenOffer: Boolean(overview.open_staff_offer),
             extraActionBonus: extraInvestmentSlots,
+            actionLimit,
             hasFreeStaffOffer,
           };
           const staffBlockReason = getStaffRecruitBlockReason(staffRecruitInput);
@@ -2407,6 +2768,7 @@ function FacilityUpgradePanel({
             hasFreeStaffSigning,
             actionsThisSeason,
             extraActionBonus: extraInvestmentSlots,
+            actionLimit,
           });
           const staffDisabled = !investmentPhaseActive || !staffCheckOk;
           return (
@@ -2609,7 +2971,7 @@ function OtherClubSquadPanel({
 
             return (
               <div className="rounded-lg border border-zinc-800 bg-zinc-900/45 p-2" key={owned.id}>
-                <PlayerCard disabled={owned.injured} player={card} variant="draft" />
+                <PlayerCard disabled={owned.injured} player={card} showArchetypes={snapshot?.game.settings.archetypes_enabled !== false} variant="draft" />
                 <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-zinc-400">
                   <SmallInfo label="Status" value={owned.injured ? "Verletzt" : owned.current_zone === "bench" ? "Nicht aufgestellt" : "Aufgestellt"} />
                   <SmallInfo label="Zone" value={owned.current_zone} />
@@ -2748,6 +3110,10 @@ function SquadPanel({
       .filter((e) => e.type === "injury_heal_manual")
       .reduce((a, e) => a + (e.perMatchday ?? 0), 0);
   }, 0);
+  const medicalHealsRemaining = overview.medical_heals_remaining ?? 0;
+  const hasMedicalHeals =
+    Number.isFinite(medicalHealsRemaining) && medicalHealsRemaining > 0;
+  const nlzRespecAvailable = overview.nlz_archetype_respec_available ?? false;
 
   return (
     <Panel className="border-[var(--club-border)] bg-zinc-950/85">
@@ -2785,6 +3151,13 @@ function SquadPanel({
           <p className="mt-0.5 text-amber-400">Klicke auf &quot;Heilen&quot; bei einem verletzten Spieler.</p>
         </div>
       )}
+      {hasMedicalHeals ? (
+        <div className="rounded-md border border-rose-900/60 bg-rose-950/20 p-3 text-xs text-rose-200">
+          <p className="font-semibold">
+            Medizin-Zentrum — {Number.isFinite(medicalHealsRemaining) ? medicalHealsRemaining : "∞"} Heilung(en) diese Saison
+          </p>
+        </div>
+      ) : null}
       {overview.squad.length === 0 ? (
         <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-4 text-sm text-zinc-400">
           Noch keine Spieler im Kader. Nach dem Draft erscheinen sie hier.
@@ -2796,7 +3169,7 @@ function SquadPanel({
 
             return (
               <div className="rounded-lg border border-zinc-800 bg-zinc-900/45 p-2" key={owned.id}>
-                <PlayerCard disabled={owned.injured} player={card} variant="draft" />
+                <PlayerCard disabled={owned.injured} player={card} showArchetypes={snapshot?.game.settings.archetypes_enabled !== false} variant="draft" />
                 <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-zinc-400">
                   <SmallInfo label="Status" value={owned.current_zone === "bench" ? "Nicht aufgestellt" : "Aufgestellt"} />
                   <SmallInfo label="Zone" value={owned.current_zone} />
@@ -2809,6 +3182,44 @@ function SquadPanel({
                     <input name="club_player_id" type="hidden" value={owned.id} />
                     <Button className="h-7 w-full text-xs" type="submit" variant="secondary">
                       Heilen (Mira)
+                    </Button>
+                  </form>
+                ) : null}
+                {owned.injured && hasMedicalHeals && ownClub && snapshot ? (
+                  <form action={healPlayerMedicalAction} className="mt-2">
+                    <input name="game_id" type="hidden" value={snapshot.game.id} />
+                    <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                    <input name="club_id" type="hidden" value={ownClub.id} />
+                    <input name="club_player_id" type="hidden" value={owned.id} />
+                    <Button className="h-7 w-full text-xs" type="submit" variant="secondary">
+                      Heilen (Medizin)
+                    </Button>
+                  </form>
+                ) : null}
+                {nlzRespecAvailable &&
+                ownClub &&
+                snapshot &&
+                owned.player.metadata &&
+                typeof owned.player.metadata === "object" &&
+                (owned.player.metadata as Record<string, unknown>).nlz_origin === true ? (
+                  <form action={respecPlayerArchetypeAction} className="mt-2 space-y-1">
+                    <input name="game_id" type="hidden" value={snapshot.game.id} />
+                    <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                    <input name="club_id" type="hidden" value={ownClub.id} />
+                    <input name="club_player_id" type="hidden" value={owned.id} />
+                    <select
+                      className="h-7 w-full rounded border border-zinc-700 bg-zinc-900 px-2 text-xs text-zinc-200"
+                      name="archetype"
+                      defaultValue={owned.player.attacker_archetype ?? owned.player.defender_archetype ?? "beta"}
+                    >
+                      {Object.entries(ARCHETYPE_META).map(([key, meta]) => (
+                        <option key={key} value={key}>
+                          {meta.attackLabel} / {meta.defenseLabel}
+                        </option>
+                      ))}
+                    </select>
+                    <Button className="h-7 w-full text-xs" type="submit" variant="secondary">
+                      Archetyp umschmieden (NLZ)
                     </Button>
                   </form>
                 ) : null}
@@ -2985,180 +3396,6 @@ function CardList({ empty, items }: { empty: string; items: Array<{ detail: stri
           <p className="mt-2 text-xs text-zinc-500">{item.detail}</p>
         </div>
       ))}
-    </div>
-  );
-}
-
-function ContinentalView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub: LobbyClub | undefined; snapshot: LobbySnapshot }) {
-  const continental = snapshot.continental;
-
-  if (!continental) {
-    return (
-      <Panel className="border-[var(--club-border)] bg-zinc-950/85">
-        <PanelHeader>
-          <div>
-            <PanelTitle>Continental Cup</PanelTitle>
-            <PanelDescription>Der Continental Cup startet nach geraden Saisons zwischen Saisonabschluss und Off-Season.</PanelDescription>
-          </div>
-          <Trophy size={18} className="text-[var(--club-color)]" aria-hidden />
-        </PanelHeader>
-      </Panel>
-    );
-  }
-
-  if (continental.setup_error) {
-    return (
-      <Panel className="border-amber-700 bg-amber-950/30">
-        <PanelHeader>
-          <div>
-            <PanelTitle>Continental Cup Setup</PanelTitle>
-            <PanelDescription>{continental.setup_error}</PanelDescription>
-          </div>
-          <Trophy size={18} className="text-amber-200" aria-hidden />
-        </PanelHeader>
-        {isHost ? (
-          <form action={initializeContinentalCupAction}>
-            <input name="game_id" type="hidden" value={snapshot.game.id} />
-            <input name="room_code" type="hidden" value={snapshot.game.room_code} />
-            <Button type="submit" variant="primary">
-              Turnier initialisieren
-            </Button>
-          </form>
-        ) : null}
-      </Panel>
-    );
-  }
-
-  const currentRoundFixtures = continental.fixtures.filter((fixture) => fixture.round === continental.current_round);
-  const currentRoundComplete =
-    currentRoundFixtures.length > 0 && currentRoundFixtures.every((fixture) => fixture.status === "completed");
-  const ownParticipant = ownClub
-    ? continental.participants.find((participant) => participant.club_id === ownClub.id)
-    : null;
-
-  return (
-    <div className="space-y-4">
-      <Panel className="border-[var(--club-border)] bg-zinc-950/85">
-        <PanelHeader>
-          <div>
-            <PanelTitle>Continental Cup</PanelTitle>
-            <PanelDescription>
-              K.o.-Turnier Saison {continental.season_number} — Praemie {formatMoney(continental.prize_amount)}
-            </PanelDescription>
-          </div>
-          <Badge tone={continental.status === "completed" ? "green" : "blue"}>
-            {continental.status === "completed" ? "Abgeschlossen" : getContinentalRoundLabel(continental.current_round as (typeof CONTINENTAL_ROUNDS)[number])}
-          </Badge>
-        </PanelHeader>
-        {ownParticipant ? (
-          <p className="text-sm text-zinc-300">
-            Dein Team: <span className="font-semibold text-zinc-50">{ownParticipant.display_name}</span>
-            {ownParticipant.eliminated_round != null ? (
-              <span className="text-rose-300"> — ausgeschieden in Runde {ownParticipant.eliminated_round}</span>
-            ) : null}
-          </p>
-        ) : null}
-        {isHost && continental.status !== "completed" && currentRoundComplete ? (
-          <form action={advanceContinentalRoundAction} className="mt-3">
-            <input name="game_id" type="hidden" value={snapshot.game.id} />
-            <input name="room_code" type="hidden" value={snapshot.game.room_code} />
-            <Button type="submit" variant="primary">
-              Naechste Runde starten
-            </Button>
-          </form>
-        ) : null}
-        {continental.status === "completed" ? (
-          <p className="mt-3 text-sm text-emerald-300">
-            Turnier beendet.
-            {isHost ? " Nutze oben „Fortsetzen“, um in die Off-Season zu wechseln." : " Der Host kann oben „Fortsetzen“ waehlen."}
-          </p>
-        ) : null}
-      </Panel>
-
-      <div className="grid gap-4 xl:grid-cols-[repeat(auto-fit,minmax(280px,1fr))]">
-        {[...new Set(continental.fixtures.map((fixture) => fixture.round))].sort((a, b) => b - a).map((round) => {
-          const roundFixtures = continental.fixtures.filter((fixture) => fixture.round === round);
-          if (roundFixtures.length === 0) {
-            return null;
-          }
-          return (
-            <Panel className="border-zinc-800 bg-zinc-950/70" key={round}>
-              <PanelHeader>
-                <PanelTitle>{getContinentalRoundLabel(round)}</PanelTitle>
-              </PanelHeader>
-              <div className="space-y-3">
-                {roundFixtures.map((fixture) => (
-                  <ContinentalFixtureCard fixture={fixture} isHost={isHost} key={fixture.id} ownClub={ownClub} snapshot={snapshot} />
-                ))}
-              </div>
-            </Panel>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function ContinentalFixtureCard({
-  fixture,
-  isHost,
-  ownClub,
-  snapshot,
-}: {
-  fixture: ContinentalFixtureSnapshot;
-  isHost: boolean;
-  ownClub: LobbyClub | undefined;
-  snapshot: LobbySnapshot;
-}) {
-  const home = fixture.home_participant;
-  const away = fixture.away_participant;
-  const ownSide = ownClub?.id === home.club_id ? "home" : ownClub?.id === away.club_id ? "away" : null;
-  const ownLocked = ownSide === "home" ? fixture.home_lineup_locked : ownSide === "away" ? fixture.away_lineup_locked : false;
-  const hasCpu = home.kind === "cpu" || away.kind === "cpu";
-  const bothHumanLocked = home.kind === "human" && away.kind === "human" && fixture.home_lineup_locked && fixture.away_lineup_locked;
-  const canLock = Boolean(ownSide && fixture.status !== "completed" && !ownLocked);
-  const canResolveOwn =
-    Boolean(ownSide && fixture.status !== "completed" && ownLocked && (hasCpu || bothHumanLocked));
-  const canHostResolve = Boolean(isHost && !ownSide && fixture.status !== "completed" && bothHumanLocked);
-
-  return (
-    <div
-      className={cn(
-        "rounded-md border p-3",
-        ownSide ? "border-[var(--club-border)] bg-zinc-900/80" : "border-zinc-800 bg-zinc-900/40",
-      )}
-    >
-      <div className="flex items-center justify-between gap-2 text-sm">
-        <span className={cn("font-medium", home.club_id === ownClub?.id && "text-[var(--club-color)]")}>{home.display_name}</span>
-        <span className="text-zinc-500">
-          {fixture.status === "completed" ? `${fixture.home_score ?? 0} : ${fixture.away_score ?? 0}` : "vs"}
-        </span>
-        <span className={cn("font-medium text-right", away.club_id === ownClub?.id && "text-[var(--club-color)]")}>{away.display_name}</span>
-      </div>
-      {fixture.status !== "completed" ? (
-        <div className="mt-2 flex flex-wrap gap-2">
-          {canLock ? (
-            <form action={lockContinentalLineupAction}>
-              <input name="game_id" type="hidden" value={snapshot.game.id} />
-              <input name="room_code" type="hidden" value={snapshot.game.room_code} />
-              <input name="fixture_id" type="hidden" value={fixture.id} />
-              <Button size="sm" type="submit" variant="outline">
-                Aufstellung locken
-              </Button>
-            </form>
-          ) : null}
-          {canResolveOwn || canHostResolve ? (
-            <form action={resolveContinentalFixtureAction}>
-              <input name="game_id" type="hidden" value={snapshot.game.id} />
-              <input name="room_code" type="hidden" value={snapshot.game.room_code} />
-              <input name="fixture_id" type="hidden" value={fixture.id} />
-              <Button size="sm" type="submit" variant="primary">
-                Spiel auswerten
-              </Button>
-            </form>
-          ) : null}
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -3393,6 +3630,11 @@ function FixtureCard({
     const e = (s.card.effects as Array<{ type: string; threshold?: number }>).find((eff) => eff.type === "draw_reroll");
     return e ? Math.min(min, e.threshold ?? 8) : min;
   }, Infinity) ?? Infinity;
+  const opponentClubId = ownSide === "home" ? away.club_id : ownSide === "away" ? home.club_id : null;
+  const opponentName =
+    ownSide === "home" ? away.display_name : ownSide === "away" ? home.display_name : "";
+  const liveOpponentLineup =
+    snapshot.season?.opponent_locked_lineups?.find((entry) => entry.fixture_id === fixture.id)?.lineup ?? null;
 
   function handleLockClick() {
     if (hasLineupWarning) {
@@ -3403,6 +3645,7 @@ function FixtureCard({
   }
 
   return (
+    <div className="space-y-3">
     <Panel className="border-[var(--club-border)] bg-zinc-950/85">
       <div className="grid gap-4 p-4 lg:grid-cols-[1fr_220px]">
         <div>
@@ -3436,6 +3679,10 @@ function FixtureCard({
               zoneBoosts={awayDisplayZoneBoosts}
             />
           </div>
+
+          {isPvP && snapshot.game.settings.archetypes_enabled !== false ? (
+            <ArchetypeScoutPanel away={away} home={home} snapshot={snapshot} />
+          ) : null}
 
           {(home.kind === "human" || away.kind === "human") && (result ?? partialThirds.length > 0) ? (
             <MatchResultDetail
@@ -3604,85 +3851,219 @@ function FixtureCard({
         </div>
       </div>
     </Panel>
+    {ownSide && ownClub ? (
+      <OpponentIntelPanel
+        analyticsLevel={ownClub.analytics_hub_level ?? 0}
+        fixtures={snapshot.season?.fixtures ?? []}
+        liveLineup={liveOpponentLineup}
+        opponentClubId={opponentClubId}
+        opponentName={opponentName}
+      />
+    ) : null}
+    </div>
   );
 }
 
-function FixtureSideCard({
-  lineup,
-  locked,
-  participant,
-  powerSummary,
-  score,
-  thirdPoints,
-  zoneBoosts,
+type ArchetypeScoutCandidate = {
+  archetype: PlayerArchetype;
+  id: string;
+  name: string;
+  stars: number;
+};
+
+type ArchetypeScoutLine = {
+  best: ArchetypeScoutCandidate | null;
+  counts: Record<PlayerArchetype, number>;
+  total: number;
+  worst: ArchetypeScoutCandidate | null;
+  zone: "ATT" | "DEF";
+};
+
+type ArchetypeScout = {
+  attack: ArchetypeScoutLine;
+  defense: ArchetypeScoutLine;
+  clubName: string;
+};
+
+function ArchetypeScoutPanel({
+  away,
+  home,
+  snapshot,
 }: {
-  lineup: NonNullable<LobbySnapshot["season"]>["fixtures"][number]["home_cpu_lineup"];
-  locked: boolean;
-  participant: NonNullable<LobbySnapshot["season"]>["fixtures"][number]["home_participant"];
-  powerSummary?: LineupPowerSummary | null;
-  score?: number | null;
-  thirdPoints?: number | null;
-  zoneBoosts?: Partial<Record<"ATT" | "MID" | "DEF", number>>;
+  away: SeasonFixtureSnapshot["away_participant"];
+  home: SeasonFixtureSnapshot["home_participant"];
+  snapshot: LobbySnapshot;
 }) {
-  const logoSrc = getClubLogoSrc(participant);
+  const homeScout = buildParticipantArchetypeScout(snapshot, home.club_id, home.display_name);
+  const awayScout = buildParticipantArchetypeScout(snapshot, away.club_id, away.display_name);
+
+  if (!homeScout && !awayScout) {
+    return null;
+  }
 
   return (
-    <div className="rounded-md border border-zinc-800 bg-zinc-950/70 p-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-3">
-          {logoSrc ? (
-            <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-md border border-zinc-800 bg-zinc-900">
-              <Image alt="" className="object-contain p-1" fill sizes="40px" src={logoSrc} />
-            </div>
-          ) : null}
-          <div className="min-w-0">
-            <p className="truncate font-semibold text-zinc-50">{participant.display_name}</p>
-            <p className="mt-1 text-xs text-zinc-500">
-              {participant.kind === "cpu"
-                ? participant.cpu_strength_tier
-                  ? `CPU · ${CPU_TIER_LABEL[participant.cpu_strength_tier]}`
-                  : "CPU-Team"
-                : "Manager-Team"}
-            </p>
-          </div>
+    <div className="mt-3 rounded-md border border-zinc-800 bg-zinc-900/45 p-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Archetype-Scout</p>
+          <p className="text-sm font-semibold text-zinc-100">Moegliche Profile aus dem Kader</p>
         </div>
-        <div className="flex shrink-0 flex-col items-end gap-1">
-          {participant.kind === "cpu" && participant.cpu_strength_tier ? (
-            <CpuStrengthBadge tier={participant.cpu_strength_tier} />
-          ) : null}
-          <Badge tone={participant.kind === "cpu" || locked ? "green" : "neutral"}>{participant.kind === "cpu" ? "CPU" : locked ? "locked" : "offen"}</Badge>
-        </div>
+        <p className="text-xs text-zinc-500">Keine Starter-Vorschau</p>
       </div>
-      {lineup || powerSummary ? (
-        <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
-          {(["DEF", "MID", "ATT"] as const).map((zone) => {
-            const total = lineup
-              ? Number(zone === "DEF" ? lineup.def_stars : zone === "MID" ? lineup.mid_stars : lineup.att_stars)
-              : (powerSummary?.[zone].total ?? 0);
-            const staffBonus = powerSummary?.[zone].staffBonus ?? 0;
-            const gcBoost = zoneBoosts?.[zone] ?? 0;
-            const value = gcBoost !== 0
-              ? `${formatStars(total + gcBoost)} (+${gcBoost} GC)`
-              : staffBonus > 0
-                ? `${formatStars(total)} (+${staffBonus}★)`
-                : formatStars(total);
-            return (
-              <div key={zone}>
-                <SmallInfo
-                  label={zone}
-                  value={value}
-                />
-              </div>
-            );
-          })}
-        </div>
-      ) : null}
-      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-        <SmallInfo label="Drittelpunkte" value={thirdPoints == null ? "-" : formatStars(thirdPoints)} />
-        <SmallInfo label="Tabellenpunkte" value={score == null ? "-" : String(score)} />
+      <div className="grid gap-3 md:grid-cols-2">
+        {homeScout ? <ArchetypeScoutCard scout={homeScout} /> : null}
+        {awayScout ? <ArchetypeScoutCard scout={awayScout} /> : null}
       </div>
     </div>
   );
+}
+
+function ArchetypeScoutCard({ scout }: { scout: ArchetypeScout }) {
+  return (
+    <div className="rounded border border-zinc-800 bg-black/20 p-3">
+      <p className="truncate text-sm font-semibold text-zinc-100">{scout.clubName}</p>
+      <div className="mt-3 grid gap-2">
+        <ArchetypeScoutLineView line={scout.attack} />
+        <ArchetypeScoutLineView line={scout.defense} />
+      </div>
+    </div>
+  );
+}
+
+function ArchetypeScoutLineView({ line }: { line: ArchetypeScoutLine }) {
+  const label = line.zone === "ATT" ? "Angriff" : "Abwehr";
+
+  return (
+    <div className="rounded border border-zinc-800 bg-zinc-950/70 p-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs font-semibold uppercase text-zinc-500">
+          {label} {line.total > 0 ? `(${line.total})` : ""}
+        </span>
+        <div className="flex flex-wrap gap-1">
+          {(Object.keys(ARCHETYPE_META) as PlayerArchetype[]).map((archetype) => (
+            <span
+              className="inline-flex h-6 min-w-8 items-center justify-center gap-1 rounded border border-zinc-700 bg-zinc-900 px-1.5 text-[11px] font-semibold text-zinc-300"
+              key={`${line.zone}-${archetype}`}
+              title={getArchetypeLabel(archetype, line.zone)}
+            >
+              <ArchetypeScoutIcon archetype={archetype} />
+              {line.counts[archetype]}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="mt-2 grid gap-1 text-[11px] text-zinc-400">
+        <ArchetypeCandidateRow candidate={line.best} label="Top" zone={line.zone} />
+        <ArchetypeCandidateRow candidate={line.worst} label="Low" zone={line.zone} />
+      </div>
+    </div>
+  );
+}
+
+function ArchetypeCandidateRow({
+  candidate,
+  label,
+  zone,
+}: {
+  candidate: ArchetypeScoutCandidate | null;
+  label: string;
+  zone: "ATT" | "DEF";
+}) {
+  if (!candidate) {
+    return (
+      <div className="flex items-center justify-between gap-2 text-zinc-600">
+        <span>{label}</span>
+        <span>-</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span className="w-7 shrink-0 text-zinc-600">{label}</span>
+        <ArchetypeScoutIcon archetype={candidate.archetype} />
+        <span className="truncate" title={`${candidate.name} - ${getArchetypeLabel(candidate.archetype, zone)}`}>
+          {candidate.name}
+        </span>
+      </span>
+      <span className="shrink-0 font-semibold text-zinc-200">{formatStars(candidate.stars)}</span>
+    </div>
+  );
+}
+
+function buildParticipantArchetypeScout(
+  snapshot: LobbySnapshot,
+  clubId: string | null | undefined,
+  fallbackName: string,
+): ArchetypeScout | null {
+  if (!clubId) return null;
+  const clubSquad = snapshot.club_squads?.find((entry) => entry.club.id === clubId);
+  if (!clubSquad) return null;
+
+  return {
+    attack: buildArchetypeScoutLine(clubSquad.squad, "ATT"),
+    clubName: clubSquad.club.club_name || fallbackName,
+    defense: buildArchetypeScoutLine(clubSquad.squad, "DEF"),
+  };
+}
+
+function buildArchetypeScoutLine(squad: ClubPlayerSnapshot[], zone: "ATT" | "DEF"): ArchetypeScoutLine {
+  const candidates = squad
+    .filter((owned) => !owned.injured && getPlayerPositions(owned.player).includes(zone))
+    .flatMap((owned): ArchetypeScoutCandidate[] => {
+      const archetype = zone === "ATT" ? owned.player.attacker_archetype : owned.player.defender_archetype;
+      return archetype
+        ? [{
+            archetype,
+            id: owned.id,
+            name: owned.player.display_name,
+            stars: Math.trunc(Number(owned.current_stars)),
+          }]
+        : [];
+    })
+    .sort((a, b) => {
+      const stars = b.stars - a.stars;
+      if (stars !== 0) return stars;
+      return a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+    });
+
+  const counts = (Object.keys(ARCHETYPE_META) as PlayerArchetype[]).reduce(
+    (acc, archetype) => ({ ...acc, [archetype]: candidates.filter((candidate) => candidate.archetype === archetype).length }),
+    { alpha: 0, beta: 0, gamma: 0 } satisfies Record<PlayerArchetype, number>,
+  );
+
+  return {
+    best: candidates[0] ?? null,
+    counts,
+    total: candidates.length,
+    worst: candidates.length > 1 ? candidates.at(-1) ?? null : null,
+    zone,
+  };
+}
+
+function getPlayerPositions(player: DraftPlayerRow) {
+  return (player.eligible_positions?.length ? player.eligible_positions : [player.position]).filter(Boolean);
+}
+
+function getArchetypeLabel(archetype: PlayerArchetype, zone: "ATT" | "DEF") {
+  const meta = ARCHETYPE_META[archetype];
+  return zone === "ATT" ? meta.attackLabel : meta.defenseLabel;
+}
+
+function ArchetypeScoutIcon({ archetype }: { archetype: PlayerArchetype }) {
+  const className = "h-3 w-3 shrink-0";
+  const symbol = ARCHETYPE_META[archetype].symbol;
+
+  if (symbol === "triangle") {
+    return <Triangle className={className} fill="currentColor" strokeWidth={2.4} />;
+  }
+
+  if (symbol === "circle") {
+    return <Circle className={className} fill="currentColor" strokeWidth={2.4} />;
+  }
+
+  return <Square className={className} fill="currentColor" strokeWidth={2.4} />;
 }
 
 function TableView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snapshot: LobbySnapshot }) {
@@ -4052,6 +4433,9 @@ function SettingsView({
   snapshot: LobbySnapshot;
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const continentalCupEnabled = snapshot.game.settings.continental_cup_enabled !== false;
+  const sponsoringEnabled = snapshot.game.settings.sponsoring_enabled !== false;
+  const archetypesEnabled = snapshot.game.settings.archetypes_enabled !== false;
 
   return (
     <div className="space-y-4">
@@ -4077,6 +4461,51 @@ function SettingsView({
             <p className="mt-2 text-lg font-semibold text-zinc-50">v{snapshot.game.save_version ?? 1}</p>
           </div>
         </div>
+      </Panel>
+
+      <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+        <PanelHeader>
+          <div>
+            <PanelTitle>Spielregeln</PanelTitle>
+            <PanelDescription>Diese Optionen gelten direkt fuer den laufenden Spielstand.</PanelDescription>
+          </div>
+          <Settings size={18} className="text-[var(--club-color)]" aria-hidden />
+        </PanelHeader>
+        <form action={updateGameSettingsAction} className="grid gap-3 md:grid-cols-3 xl:grid-cols-[1fr_1fr_1fr_auto] xl:items-end">
+          <input name="game_id" type="hidden" value={snapshot.game.id} />
+          <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+          <input name="continental_cup_enabled" type="hidden" value="0" />
+          <input name="sponsoring_enabled" type="hidden" value="0" />
+          <input name="archetypes_enabled" type="hidden" value="0" />
+          <FeatureToggle
+            defaultChecked={continentalCupEnabled}
+            disabled={!isHost}
+            label="Continental Cup"
+            name="continental_cup_enabled"
+            text="Turnier nach geraden Saisons zwischen Saisonabschluss und Off-Season."
+          />
+          <FeatureToggle
+            defaultChecked={sponsoringEnabled}
+            disabled={!isHost}
+            label="Sponsoring"
+            name="sponsoring_enabled"
+            text="Sponsorenvertraege, Sponsoren-Ziele und Sponsoren-Effekte."
+          />
+          <FeatureToggle
+            defaultChecked={archetypesEnabled}
+            disabled={!isHost}
+            label="Archetypes"
+            name="archetypes_enabled"
+            text="Archetype-Duelle im Angriffsdrittel und passende Anzeigen."
+          />
+          {isHost ? (
+            <Button className="h-11" type="submit">
+              Speichern
+            </Button>
+          ) : (
+            <Badge tone="neutral">Nur Host</Badge>
+          )}
+        </form>
       </Panel>
 
       {isHost ? (
@@ -4113,6 +4542,37 @@ function SettingsView({
         </Panel>
       ) : null}
     </div>
+  );
+}
+
+function FeatureToggle({
+  defaultChecked,
+  disabled,
+  label,
+  name,
+  text,
+}: {
+  defaultChecked: boolean;
+  disabled?: boolean;
+  label: string;
+  name: string;
+  text: string;
+}) {
+  return (
+    <label className={cn("flex min-h-20 cursor-pointer items-start gap-3 rounded-md border border-zinc-800 bg-zinc-900/70 p-3", disabled ? "cursor-default opacity-70" : "")}>
+      <input
+        className="mt-1 h-4 w-4 rounded border-zinc-600 bg-zinc-900 text-lime-400 focus:ring-lime-300"
+        defaultChecked={defaultChecked}
+        disabled={disabled}
+        name={name}
+        type="checkbox"
+        value="1"
+      />
+      <span>
+        <span className="block text-sm font-semibold text-zinc-100">{label}</span>
+        <span className="mt-1 block text-xs text-zinc-500">{defaultChecked ? "Aktiv" : "Ausgeschaltet"} - {text}</span>
+      </span>
+    </label>
   );
 }
 
@@ -4235,13 +4695,18 @@ function getPositionRank(player: DraftPlayerRow) {
 function mapOwnedPlayerToCardData(owned: NonNullable<LobbySnapshot["club_overview"]>["squad"][number]): PlayerCardData {
   const card = mapDbPlayerToPlayerCardData(owned.player);
   const currentStars = Number(owned.current_stars);
+  const isNlzTalent =
+    owned.player.metadata &&
+    typeof owned.player.metadata === "object" &&
+    (owned.player.metadata as Record<string, unknown>).nlz_origin === true;
 
   return {
     ...card,
+    cardStyle: isNlzTalent ? { ...card.cardStyle, theme: "purple" } : card.cardStyle,
     skill: {
       ...card.skill,
       current: currentStars,
-      potential: currentStars,
+      potential: Number(owned.player.potential_stars ?? currentStars),
       max: Number(owned.player.skill_max ?? card.skill.max),
     },
   };
@@ -4311,318 +4776,6 @@ function describeStaffEffects(effects: unknown[]): string {
     .join(" · ");
 }
 
-type FixtureThird = {
-  away: { dice: [number, number]; total: number; zone_stars: number };
-  home: { dice: [number, number]; total: number; zone_stars: number };
-  index: number;
-  label: "away_attack" | "home_attack" | "midfield";
-};
-
-type FixtureEvent = {
-  club_id?: string | null;
-  dice: [number, number];
-  event_type: "game_changer" | "injury";
-  participant_id: string;
-  player_id?: string;
-  third_index: number;
-  zone: string;
-};
-
-function MatchResultDetail({
-  away,
-  events,
-  fixture,
-  home,
-  snapshot,
-  thirds,
-}: {
-  away: SeasonFixtureSnapshot["away_participant"];
-  events: FixtureEvent[];
-  fixture: SeasonFixtureSnapshot;
-  home: SeasonFixtureSnapshot["home_participant"];
-  snapshot: LobbySnapshot;
-  thirds: FixtureThird[];
-}) {
-  // Compute live score from the thirds data so the header updates after each third,
-  // even during an in-progress PvP match (fixture.home_third_points is only set on completion).
-  const liveHomeThirdPoints = thirds.reduce((sum, t) => {
-    if (t.home.total > t.away.total) return sum + 1;
-    if (t.home.total === t.away.total) return sum + 0.5;
-    return sum;
-  }, 0);
-  const liveAwayThirdPoints = thirds.reduce((sum, t) => {
-    if (t.away.total > t.home.total) return sum + 1;
-    if (t.away.total === t.home.total) return sum + 0.5;
-    return sum;
-  }, 0);
-  const isCompleted = fixture.status === "completed";
-  const displayHomeThirdPoints = isCompleted ? (fixture.home_third_points ?? liveHomeThirdPoints) : liveHomeThirdPoints;
-  const displayAwayThirdPoints = isCompleted ? (fixture.away_third_points ?? liveAwayThirdPoints) : liveAwayThirdPoints;
-  const homeWins = displayHomeThirdPoints > displayAwayThirdPoints;
-  const awayWins = displayAwayThirdPoints > displayHomeThirdPoints;
-  const partialModifiers = (fixture.partial_result as { pending_modifiers?: ZoneModifier[] } | null)?.pending_modifiers;
-  const seasonZoneBoostsByClub = snapshot.season?.next_match_zone_boosts_by_club_id ?? {};
-  const homeZoneBoosts = resolveDisplayZoneBoosts({
-    clubId: home.club_id,
-    partialModifiers,
-    seasonBoostsByClubId: seasonZoneBoostsByClub,
-    side: "home",
-  });
-  const awayZoneBoosts = resolveDisplayZoneBoosts({
-    clubId: away.club_id,
-    partialModifiers,
-    seasonBoostsByClubId: seasonZoneBoostsByClub,
-    side: "away",
-  });
-
-  function formatLockedZonePower(
-    base: number | null | undefined,
-    zone: "ATT" | "DEF" | "MID",
-    boosts: Record<"ATT" | "DEF" | "MID", number>,
-  ) {
-    if (base == null) return null;
-    const boost = boosts[zone] ?? 0;
-    return boost !== 0 ? `${base + boost} (+${boost})` : String(base);
-  }
-
-  function ThirdIcon({ label }: { label: FixtureThird["label"] }) {
-    if (label === "midfield") return <ArrowLeftRight className="h-4 w-4 text-zinc-500" />;
-    if (label === "home_attack") return <ArrowUpRight className="h-4 w-4 text-emerald-400 rotate-45" />;
-    return <ArrowDownRight className="h-4 w-4 text-sky-400 -rotate-45" />;
-  }
-
-  function ThirdRow({
-    diceSum,
-    isWinner,
-    label,
-    side,
-    stars,
-    total,
-  }: {
-    diceSum: string;
-    isWinner: boolean;
-    label: string;
-    side: "Heim" | "Ausw";
-    stars: number;
-    total: number;
-  }) {
-    return (
-      <div className={cn(
-        "flex items-center justify-between rounded px-3 py-2 text-xs",
-        isWinner
-          ? "border border-emerald-700/40 bg-emerald-950/30"
-          : "bg-zinc-800/40",
-      )}>
-        <div className="flex items-center gap-2">
-          <span className={cn("w-8 font-mono font-semibold", isWinner ? "text-emerald-300" : "text-zinc-500")}>{side}</span>
-          <span className={cn("font-semibold", isWinner ? "text-zinc-100" : "text-zinc-400")}>{stars}</span>
-          <span className="text-zinc-600">+ {label}</span>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="text-zinc-600">+</span>
-          <span className={cn(
-            "flex h-7 w-7 items-center justify-center rounded font-bold",
-            isWinner ? "border border-emerald-600/50 bg-emerald-900/50 text-emerald-300" : "border border-zinc-700 bg-zinc-800 text-zinc-300",
-          )}>{diceSum}</span>
-          <span className="text-zinc-600">=</span>
-          <span className={cn("min-w-[2rem] text-right font-bold tabular-nums text-base", isWinner ? "text-emerald-300" : "text-zinc-300")}>{total}</span>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="mt-5 space-y-4">
-      {/* Big score header — only for manager matches */}
-      <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4">
-        <div className="flex items-center justify-between gap-3">
-          {/* Home side */}
-          <div className={cn("min-w-0 flex-1 rounded-lg p-3", homeWins ? "border border-emerald-700/40 bg-emerald-950/30" : "border border-zinc-800 bg-zinc-900/50")}>
-            <p className={cn("truncate text-sm font-semibold", homeWins ? "text-emerald-200" : "text-zinc-300")}>{home.display_name}</p>
-            <p className="mt-0.5 text-xs text-zinc-600">{home.kind === "cpu" ? "CPU" : "Manager"}</p>
-            <div className="mt-2 flex gap-2 text-xs">
-              {[
-                { z: "DEF" as const, v: fixture.home_locked_def },
-                { z: "MID" as const, v: fixture.home_locked_mid },
-                { z: "ATT" as const, v: fixture.home_locked_att },
-              ].map(({ z, v }) => v != null ? (
-                <div className="flex flex-col items-center rounded bg-zinc-800/60 px-2 py-1" key={z}>
-                  <span className="text-zinc-500">{z}</span>
-                  <span className={cn("font-bold", homeWins ? "text-emerald-300" : "text-zinc-200")}>{formatLockedZonePower(v, z, homeZoneBoosts)}</span>
-                </div>
-              ) : null)}
-            </div>
-            <div className="mt-2 flex gap-2">
-              <div className={cn("rounded px-2 py-1 text-xs", homeWins ? "bg-emerald-900/40 text-emerald-300" : "bg-zinc-800 text-zinc-400")}>
-                <span className="text-zinc-600">Drittel </span>{displayHomeThirdPoints}
-              </div>
-              <div className={cn("rounded px-2 py-1 text-xs font-semibold", homeWins ? "bg-emerald-900/40 text-emerald-300" : "bg-zinc-800 text-zinc-400")}>
-                <span className="text-zinc-600">Punkte </span>{isCompleted ? (fixture.home_score ?? 0) : "–"}
-              </div>
-            </div>
-          </div>
-
-          {/* Score */}
-          <div className="flex shrink-0 flex-col items-center">
-            <div className="flex items-center gap-1 text-3xl font-black tabular-nums">
-              <span className={cn(homeWins ? "text-emerald-400" : "text-zinc-500")}>{displayHomeThirdPoints}</span>
-              <span className="text-zinc-700">:</span>
-              <span className={cn(awayWins ? "text-emerald-400" : "text-zinc-500")}>{displayAwayThirdPoints}</span>
-            </div>
-            <span className="mt-0.5 text-[10px] uppercase tracking-wide text-zinc-600">
-              {isCompleted ? "Final" : `${thirds.length}/3 Drittel`}
-            </span>
-          </div>
-
-          {/* Away side */}
-          <div className={cn("min-w-0 flex-1 rounded-lg p-3 text-right", awayWins ? "border border-emerald-700/40 bg-emerald-950/30" : "border border-zinc-800 bg-zinc-900/50")}>
-            <p className={cn("truncate text-sm font-semibold", awayWins ? "text-emerald-200" : "text-zinc-300")}>{away.display_name}</p>
-            <p className="mt-0.5 text-xs text-zinc-600">{away.kind === "cpu" ? "CPU" : "Manager"}</p>
-            <div className="mt-2 flex justify-end gap-2 text-xs">
-              {[
-                { z: "DEF" as const, v: fixture.away_locked_def },
-                { z: "MID" as const, v: fixture.away_locked_mid },
-                { z: "ATT" as const, v: fixture.away_locked_att },
-              ].map(({ z, v }) => v != null ? (
-                <div className="flex flex-col items-center rounded bg-zinc-800/60 px-2 py-1" key={z}>
-                  <span className="text-zinc-500">{z}</span>
-                  <span className={cn("font-bold", awayWins ? "text-emerald-300" : "text-zinc-200")}>{formatLockedZonePower(v, z, awayZoneBoosts)}</span>
-                </div>
-              ) : null)}
-            </div>
-            <div className="mt-2 flex justify-end gap-2">
-              <div className={cn("rounded px-2 py-1 text-xs", awayWins ? "bg-emerald-900/40 text-emerald-300" : "bg-zinc-800 text-zinc-400")}>
-                <span className="text-zinc-600">Drittel </span>{displayAwayThirdPoints}
-              </div>
-              <div className={cn("rounded px-2 py-1 text-xs font-semibold", awayWins ? "bg-emerald-900/40 text-emerald-300" : "bg-zinc-800 text-zinc-400")}>
-                <span className="text-zinc-600">Punkte </span>{isCompleted ? (fixture.away_score ?? 0) : "–"}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Drittel breakdown */}
-      <div className="grid gap-3 md:grid-cols-3">
-        {thirds.map((third) => {
-          const homeWinsThird = third.home.total > third.away.total;
-          const awayWinsThird = third.away.total > third.home.total;
-          const topBorderClass = homeWinsThird || awayWinsThird ? "border-t-emerald-600" : "border-t-zinc-700";
-          return (
-            <div className={cn("rounded-lg border border-zinc-800 bg-zinc-900/50 p-3 border-t-2", topBorderClass)} key={third.index}>
-              <div className="mb-3 flex items-center justify-between">
-                <p className="text-xs font-semibold text-zinc-200">Drittel {third.index}: {getThirdLabel(third.label)}</p>
-                <ThirdIcon label={third.label} />
-              </div>
-              <div className="space-y-1.5">
-                <ThirdRow
-                  diceSum={third.home.dice.join("+")}
-                  isWinner={homeWinsThird}
-                  label={`Links ${third.home.dice[0] + third.home.dice[1]}`}
-                  side="Heim"
-                  stars={third.home.zone_stars}
-                  total={third.home.total}
-                />
-                <ThirdRow
-                  diceSum={third.away.dice.join("+")}
-                  isWinner={awayWinsThird}
-                  label={`Links ${third.away.dice[0] + third.away.dice[1]}`}
-                  side="Ausw"
-                  stars={third.away.zone_stars}
-                  total={third.away.total}
-                />
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Events */}
-      {events.length > 0 ? (
-        <div className="space-y-2">
-          <p className="text-xs font-medium uppercase tracking-wide text-zinc-600">Ereignisse</p>
-          {events.map((event, index) => {
-            const eventClubName = home.club_id === event.club_id
-              ? home.display_name
-              : away.club_id === event.club_id
-                ? away.display_name
-                : "Unbekannt";
-            const ownSquad = snapshot.club_overview?.squad ?? [];
-            const injuredPlayer = event.event_type === "injury"
-              ? ownSquad.find((p) => p.id === event.player_id)?.player.display_name ?? null
-              : null;
-            const zoneLabel = event.zone === "ATT" ? "Angriff" : event.zone === "MID" ? "Mittelfeld" : event.zone === "DEF" ? "Abwehr" : event.zone;
-            return (
-              <div
-                className={cn("flex items-start gap-3 rounded-md border p-2.5 text-xs",
-                  event.event_type === "injury" ? "border-rose-800/60 bg-rose-950/30" : "border-violet-800/60 bg-violet-950/30")}
-                key={`${event.event_type}-${index}`}
-              >
-                <span className="mt-0.5 text-base leading-none">{event.event_type === "injury" ? "🚑" : "🎯"}</span>
-                <div>
-                  <p className={cn("font-semibold", event.event_type === "injury" ? "text-rose-200" : "text-violet-200")}>
-                    {event.event_type === "injury" ? "Verletzung" : "Game Changer"}
-                    {" "}<span className="font-normal text-zinc-400">— {eventClubName}</span>
-                  </p>
-                  <p className="mt-0.5 text-zinc-400">
-                    {event.event_type === "injury" ? (
-                      <>{injuredPlayer ? <span className="font-medium text-rose-300">{injuredPlayer}</span> : "Spieler verletzt"}{" "}in Zone {zoneLabel} · Wurf {event.dice.join("+")}</>
-                    ) : (
-                      <>Zone {zoneLabel} · Wurf {event.dice.join("+")}</>
-                    )}
-                  </p>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function parseFixtureResult(value: Record<string, unknown> | null | undefined) {
-  if (!value || !Array.isArray(value.thirds)) {
-    return null;
-  }
-
-  return value as {
-    events: Array<
-      | {
-          club_id?: string | null;
-          dice: [number, number];
-          event_type: "game_changer";
-          participant_id: string;
-          third_index: number;
-          zone: string;
-        }
-      | {
-          club_id?: string | null;
-          dice: [number, number];
-          event_type: "injury";
-          participant_id: string;
-          player_id: string;
-          third_index: number;
-          zone: string;
-        }
-    >;
-    thirds: Array<{
-      away: {
-        dice: [number, number];
-        total: number;
-        zone_stars: number;
-      };
-      home: {
-        dice: [number, number];
-        total: number;
-        zone_stars: number;
-      };
-      index: number;
-      label: "away_attack" | "home_attack" | "midfield";
-    }>;
-  };
-}
-
 function getOwnLineupPowerSummary(snapshot: LobbySnapshot, ownClub?: LobbyClub): LineupPowerSummary | null {
   const squad = snapshot.club_overview?.squad;
 
@@ -4675,22 +4828,4 @@ function CpuStrengthBadge({ tier }: { tier: CpuStrengthTier }) {
     </span>
   );
 }
-
-function getClubLogoSrc(participant: NonNullable<LobbySnapshot["season"]>["fixtures"][number]["home_participant"]) {
-  if (participant.kind !== "human") {
-    return null;
-  }
-
-  const logoByName: Record<string, string> = {
-    "Apex River United": "/AprexRiverUnited.png",
-    "Blackwood Athletic": "/BlackwoodAthletic.png",
-    "Crimson Cape FC": "/crimsonCape.png",
-    "FC Dynamo Draft": "/DynamoDraft.png",
-    "Golden Meadow United": "/GoldenMeadowUnited.png",
-    "Vanguard FC": "/VanguardFC.png",
-  };
-
-  return logoByName[participant.display_name] ?? null;
-}
-
 

@@ -36,6 +36,8 @@ export function applyGameEventToSnapshot(snapshot: LobbySnapshot, event: GameEve
       return applyScoutingCardPassed(next, event);
     case "PHASE_CHANGED":
       return applyPhaseChanged(next, event);
+    case "SAVE_UPDATED":
+      return applySaveUpdated(next, event);
     case "SCOUTING_CARD_BOUGHT":
     case "SCOUTING_CARD_DRAWN":
     case "SCOUTING_STATUS_CHANGED":
@@ -43,11 +45,31 @@ export function applyGameEventToSnapshot(snapshot: LobbySnapshot, event: GameEve
     case "DEADLINE_INITIALIZED":
     case "TRANSFER_OFFER_CREATED":
     case "TRANSFER_OFFER_RESOLVED":
-    case "SAVE_UPDATED":
       return { applied: true, needsRefetch: true, snapshot: next };
     default:
       return { applied: false, needsRefetch: true, snapshot };
   }
+}
+
+function applySaveUpdated(snapshot: LobbySnapshot, event: GameEventSnapshot): GameEventApplyResult {
+  const settings = getRecord(event.payload.settings);
+
+  if (!settings) {
+    return { applied: true, needsRefetch: true, snapshot };
+  }
+
+  const continentalCupEnabled = getBoolean(settings.continental_cup_enabled);
+  const sponsoringEnabled = getBoolean(settings.sponsoring_enabled);
+  const archetypesEnabled = getBoolean(settings.archetypes_enabled);
+
+  snapshot.game.settings = {
+    ...snapshot.game.settings,
+    ...(continentalCupEnabled === null ? {} : { continental_cup_enabled: continentalCupEnabled }),
+    ...(sponsoringEnabled === null ? {} : { sponsoring_enabled: sponsoringEnabled }),
+    ...(archetypesEnabled === null ? {} : { archetypes_enabled: archetypesEnabled }),
+  };
+
+  return { applied: true, needsRefetch: false, snapshot };
 }
 
 function applyScoutingCardPassed(snapshot: LobbySnapshot, event: GameEventSnapshot): GameEventApplyResult {

@@ -15,6 +15,8 @@ type LobbyEntryFormsProps = {
     max_draft_stars: number;
     turn_timeout_seconds: number;
     continental_cup_enabled?: boolean;
+    sponsoring_enabled?: boolean;
+    archetypes_enabled?: boolean;
   };
   cpuTeams: CpuTeamCatalogRow[];
 };
@@ -42,7 +44,29 @@ export function LobbyEntryForms({ defaultSettings, cpuTeams }: LobbyEntryFormsPr
         <form action={createFormAction} className="space-y-4">
           <ClubTemplateSelect name="club_template_id" />
           <CpuTeamSelect teams={cpuTeams} />
-          <ContinentalCupToggle defaultEnabled={defaultSettings.continental_cup_enabled ?? true} />
+          <div className="grid gap-3 md:grid-cols-3">
+            <BooleanSettingToggle
+              defaultEnabled={defaultSettings.continental_cup_enabled ?? true}
+              description="Nach geraden Saisons ab Saison 2 ein K.o.-Turnier."
+              disabledDescription="Aus: nach Saisonende direkt in die naechste Off-Season."
+              label="Continental Cup"
+              name="continental_cup_enabled"
+            />
+            <BooleanSettingToggle
+              defaultEnabled={defaultSettings.sponsoring_enabled ?? true}
+              description="Sponsorenvertraege, Ziele und Sponsoren-Effekte aktivieren."
+              disabledDescription="Aus: Sponsoring wird im Spiel ausgeblendet und ignoriert."
+              label="Sponsoring"
+              name="sponsoring_enabled"
+            />
+            <BooleanSettingToggle
+              defaultEnabled={defaultSettings.archetypes_enabled ?? true}
+              description="Archetype-Duelle im Angriffsdrittel aktivieren."
+              disabledDescription="Aus: Archetypes bleiben neutral und geben keine Boni/Mali."
+              label="Archetypes"
+              name="archetypes_enabled"
+            />
+          </div>
           <div className="grid gap-3 sm:grid-cols-3">
             <NumberField label="Startgeld" name="starting_money" defaultValue={defaultSettings.starting_money} />
             <NumberField label="Max Draft" name="max_draft_stars" defaultValue={defaultSettings.max_draft_stars} />
@@ -84,13 +108,25 @@ export function LobbyEntryForms({ defaultSettings, cpuTeams }: LobbyEntryFormsPr
   );
 }
 
-function ContinentalCupToggle({ defaultEnabled }: { defaultEnabled: boolean }) {
+function BooleanSettingToggle({
+  defaultEnabled,
+  description,
+  disabledDescription,
+  label,
+  name,
+}: {
+  defaultEnabled: boolean;
+  description: string;
+  disabledDescription: string;
+  label: string;
+  name: string;
+}) {
   const [enabled, setEnabled] = useState(defaultEnabled);
 
   return (
     <fieldset className="space-y-2 rounded-md border border-zinc-800 bg-zinc-900/50 p-3">
-      <legend className="px-1 text-sm font-medium text-zinc-300">Continental Cup</legend>
-      <input name="continental_cup_enabled" type="hidden" value={enabled ? "1" : "0"} />
+      <legend className="px-1 text-sm font-medium text-zinc-300">{label}</legend>
+      <input name={name} type="hidden" value={enabled ? "1" : "0"} />
       <label className="flex cursor-pointer items-start gap-3">
         <input
           checked={enabled}
@@ -99,9 +135,9 @@ function ContinentalCupToggle({ defaultEnabled }: { defaultEnabled: boolean }) {
           type="checkbox"
         />
         <span className="text-sm text-zinc-300">
-          Nach geraden Saisons ab Saison 2 ein K.o.-Turnier (32 Teams, 100 Mio. Praemie).
+          {description}
           <span className="mt-1 block text-xs text-zinc-500">
-            Ausgeschaltet: nach Saisonende direkt in die naechste Off-Season ohne Continental Cup.
+            {disabledDescription}
           </span>
         </span>
       </label>

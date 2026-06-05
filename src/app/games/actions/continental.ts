@@ -15,6 +15,8 @@ import {
   type ContinentalRound,
 } from "@/lib/lobby/continental-cup";
 import { calculateLineupPower, type CaptainBoost } from "@/lib/lobby/lineup-power";
+import { areArchetypesEnabled, normalizeApplicablePlayerArchetype } from "@/lib/lobby/archetypes";
+import { buildLineupSnapshotFromPlayers, type LineupSnapshotClubPlayerRow } from "@/lib/lobby/lineup-snapshot";
 import { getMatchPointsMode, resolveFixture, type FixtureSideInput } from "@/lib/lobby/season";
 import type { LobbyGame } from "@/lib/lobby/types";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
@@ -55,10 +57,6 @@ type ContinentalLineupRow = {
 
 const FIXTURE_SELECT =
   "id, tournament_id, round, match_index, home_participant_id, away_participant_id, home_continental_cpu_lineup_id, away_continental_cpu_lineup_id, home_lineup_locked, away_lineup_locked, home_locked_def, home_locked_mid, home_locked_att, away_locked_def, away_locked_mid, away_locked_att, status, match_state, winner_participant_id";
-
-function rollDie() {
-  return Math.floor(Math.random() * 6) + 1;
-}
 
 async function touchGameSave(supabase: SupabaseServiceClient, gameId: string, userId: string) {
   await supabase
@@ -327,6 +325,7 @@ async function buildContinentalFixtureSide(
         DEF: Number(data.def_stars),
         MID: Number(data.mid_stars),
       },
+      zone_players: [],
     };
   }
 
@@ -337,7 +336,7 @@ async function buildContinentalFixtureSide(
   const [{ data: playerData }, { data: staffData }] = await Promise.all([
     supabase
       .from("club_players")
-      .select("id, current_stars, current_zone, lineup_slot, player:players(chemistry_left, chemistry_right, position, eligible_positions)")
+      .select("id, current_stars, current_zone, lineup_slot, player:players(attacker_archetype, chemistry_left, chemistry_right, defender_archetype, display_name, position, eligible_positions)")
       .eq("club_id", participant.club_id)
       .neq("current_zone", "bench")
       .eq("injured", false),
@@ -378,6 +377,35 @@ async function buildContinentalFixtureSide(
     lineup: { ATT: [], DEF: [], GK: [], MID: [] },
     participantId: participant.id,
     powers: { ATT: powers.ATT.total, DEF: powers.DEF.total, MID: powers.MID.total },
+    zone_players: (playerData ?? [])
+      .filter((p) => ["ATT", "DEF", "GK", "MID"].includes(String(p.current_zone)))
+      .map((p) => {
+        const player = p.player as {
+          attacker_archetype?: string | null;
+          defender_archetype?: string | null;
+          display_name?: string | null;
+          eligible_positions?: string[] | null;
+          position?: string | null;
+        } | null;
+        return {
+          attacker_archetype: normalizeApplicablePlayerArchetype(
+            player?.attacker_archetype,
+            player?.position,
+            player?.eligible_positions,
+          ),
+          current_stars: Number(p.current_stars ?? 0),
+          current_zone: p.current_zone as "ATT" | "DEF" | "GK" | "MID",
+          defender_archetype: normalizeApplicablePlayerArchetype(
+            player?.defender_archetype,
+            player?.position,
+            player?.eligible_positions,
+          ),
+          display_name: player?.display_name ?? null,
+          id: p.id as string,
+          lineup_slot: p.lineup_slot as number | null,
+          position: player?.position ?? null,
+        };
+      }),
   };
 }
 
@@ -440,8 +468,8 @@ async function resolveContinentalFixtureServer(
   ]);
 
   const resolution = resolveFixture({
+    archetypesEnabled: areArchetypesEnabled(game.settings),
     away: awaySide,
-    diceRolls: Array.from({ length: 6 }, () => [rollDie(), rollDie()] as [number, number]),
     home: homeSide,
     matchPointsMode: getMatchPointsMode(game.settings),
   });
@@ -455,6 +483,33 @@ async function resolveContinentalFixtureServer(
 
   const loserId = winnerParticipantId === home.id ? away.id : home.id;
 
+  const emptyLineupPlayers = Promise.resolve({ data: [] as LineupSnapshotClubPlayerRow[] });
+  const [homePlayers, awayPlayers] = await Promise.all([
+    home.club_id
+      ? supabase
+          .from("club_players")
+          .select("current_stars, current_zone, lineup_slot, player:players(attacker_archetype, defender_archetype, display_name)")
+          .eq("club_id", home.club_id)
+          .neq("current_zone", "bench")
+          .order("lineup_slot", { ascending: true })
+          .returns<LineupSnapshotClubPlayerRow[]>()
+      : emptyLineupPlayers,
+    away.club_id
+      ? supabase
+          .from("club_players")
+          .select("current_stars, current_zone, lineup_slot, player:players(attacker_archetype, defender_archetype, display_name)")
+          .eq("club_id", away.club_id)
+          .neq("current_zone", "bench")
+          .order("lineup_slot", { ascending: true })
+          .returns<LineupSnapshotClubPlayerRow[]>()
+      : emptyLineupPlayers,
+  ]);
+
+  const lineupSnapshot = {
+    away: buildLineupSnapshotFromPlayers(awayPlayers.data ?? []),
+    home: buildLineupSnapshotFromPlayers(homePlayers.data ?? []),
+  };
+
   await supabase
     .from("continental_fixtures")
     .update({
@@ -463,7 +518,7 @@ async function resolveContinentalFixtureServer(
       completed_at: new Date().toISOString(),
       home_score: resolution.home_match_points,
       home_third_points: resolution.home_third_points,
-      result: resolution,
+      result: { ...resolution, lineup_snapshot: lineupSnapshot },
       status: "completed",
       match_state: "completed",
       winner_participant_id: winnerParticipantId,

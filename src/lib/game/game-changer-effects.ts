@@ -372,7 +372,7 @@ export async function applyImmediateEffect(
 
     case "status_tier_change": {
       const seasonNumber = Math.max(1, Math.trunc(ctx.seasonNumber ?? 1));
-      let { data: club, error: clubError } = await supabase
+      const clubResult = await supabase
         .from("clubs")
         .select("status, status_override, status_override_until_season")
         .eq("id", clubId)
@@ -381,6 +381,8 @@ export async function applyImmediateEffect(
           status_override: string | null;
           status_override_until_season: number | null;
         }>();
+      let club = clubResult.data;
+      const clubError = clubResult.error;
 
       if (clubError?.code === "42703") {
         const fallback = await supabase

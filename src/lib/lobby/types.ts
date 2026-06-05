@@ -26,6 +26,10 @@ export type LobbySettings = {
   cpu_team_ids?: string[];
   /** Continental Cup after even seasons from season 2 onward (default: enabled). */
   continental_cup_enabled?: boolean;
+  /** Sponsor contracts and sponsor-triggered effects (default: enabled). */
+  sponsoring_enabled?: boolean;
+  /** Archetype match effects and archetype UI helpers (default: enabled). */
+  archetypes_enabled?: boolean;
 };
 
 export type ClubTemplate = {
@@ -71,6 +75,12 @@ export type LobbyClub = {
   stadium_level?: number;
   scouting_level?: number;
   training_level?: number;
+  medical_center_level?: number;
+  analytics_hub_level?: number;
+  youth_academy_level?: number;
+  construction_yard_built?: boolean;
+  medical_heals_used_season?: number;
+  nlz_archetype_respecs_used_season?: number;
   offseason_scouting_capacity?: number | null;
   offseason_training_capacity?: number | null;
   status_override?: string | null;
@@ -111,6 +121,8 @@ export type DraftPlayerRow = {
   display_name: string;
   position: string;
   eligible_positions?: string[] | null;
+  attacker_archetype?: PlayerArchetype | null;
+  defender_archetype?: PlayerArchetype | null;
   role?: string | null;
   nationality?: string | null;
   age?: number | null;
@@ -128,6 +140,8 @@ export type DraftPlayerRow = {
   metadata?: Record<string, unknown> | null;
   visibility?: string | null;
 };
+
+export type PlayerArchetype = "alpha" | "beta" | "gamma";
 
 export type DraftRoundSnapshot = {
   id: string;
@@ -303,7 +317,7 @@ export type InvestmentSnapshot = {
   game_id: string;
   club_id: string;
   season_number: number;
-  action: "training" | "scouting" | "stadium" | "staff";
+  action: "training" | "scouting" | "stadium" | "staff" | "medical" | "analytics" | "youth_academy" | "construction_yard";
   cost: number;
   created_at: string;
 };
@@ -443,6 +457,10 @@ export type ClubOverviewSnapshot = {
   available_sponsor_deals: SponsorDealOverviewSnapshot[];
   sponsor_signing_allowed: boolean;
   stadium_upgrade_blocked_by_sponsor: boolean;
+  sponsor_prestige_tier: string;
+  sponsor_prestige_label: string;
+  medical_heals_remaining?: number;
+  nlz_archetype_respec_available?: boolean;
 };
 
 export type SponsorContractOverviewSnapshot = {
@@ -577,12 +595,27 @@ export type SeasonFixtureSnapshot = {
 
 export type SeasonZoneBoostSnapshot = Record<"ATT" | "DEF" | "MID", number>;
 
+export type OpponentLockedLineupSnapshot = {
+  fixture_id: string;
+  opponent_club_id: string;
+  lineup: {
+    starters: Array<{
+      display_name: string;
+      zone: string;
+      stars: number;
+      attacker_archetype?: PlayerArchetype | null;
+      defender_archetype?: PlayerArchetype | null;
+    }>;
+  };
+};
+
 export type SeasonSnapshot = {
   current_matchday: number;
   fixtures: SeasonFixtureSnapshot[];
   manager_standings: ManagerStandingSnapshot[];
   /** Active next_match zone deltas per human club — visible to all managers on the matchday. */
   next_match_zone_boosts_by_club_id?: Record<string, SeasonZoneBoostSnapshot>;
+  opponent_locked_lineups?: OpponentLockedLineupSnapshot[];
   setup_error?: string;
   standings: SeasonStandingSnapshot[];
 };
@@ -612,6 +645,10 @@ export type ContinentalFixtureSnapshot = {
   away_locked_att?: number | null;
   home_score?: number | null;
   away_score?: number | null;
+  home_third_points?: number | null;
+  away_third_points?: number | null;
+  partial_result?: Record<string, unknown> | null;
+  result?: Record<string, unknown> | null;
   winner_participant_id?: string | null;
   home_participant: ContinentalParticipantSnapshot;
   away_participant: ContinentalParticipantSnapshot;

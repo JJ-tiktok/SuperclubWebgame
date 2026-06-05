@@ -1,5 +1,6 @@
 "use client";
 
+import { Circle, Square, Triangle } from "lucide-react";
 import type { PointerEvent } from "react";
 import { useMemo, useRef, useState } from "react";
 import { saveLineupAction } from "@/app/games/actions/match";
@@ -7,6 +8,7 @@ import { PlayerCard } from "@/components/player-card/PlayerCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { ARCHETYPE_META, type PlayerArchetype } from "@/lib/lobby/archetypes";
 import { applyPositionPenalty, getPositionPenalty } from "@/lib/lobby/position-penalty";
 import { getTotalSkillValue, type PlayerCardData, type PlayerCardPosition } from "@/types/player-card";
 
@@ -62,6 +64,12 @@ const formations: Array<{ id: FormationKey; label: string }> = [
   { id: "5-3-2", label: "5-3-2" },
 ];
 
+const archetypeDuels: Array<{ attacker: PlayerArchetype; defender: PlayerArchetype }> = [
+  { attacker: "alpha", defender: "beta" },
+  { attacker: "beta", defender: "gamma" },
+  { attacker: "gamma", defender: "alpha" },
+];
+
 const formationLayouts: Record<FormationKey, FormationSlot[]> = {
   "3-4-3": [
     ...rowSlots("ATT", 3, 16),
@@ -98,6 +106,7 @@ const formationLayouts: Record<FormationKey, FormationSlot[]> = {
 type StaffZoneEffect = { type: string; zone?: string; stars?: number; factor?: number };
 
 export function GameLineupBoard({
+  archetypesEnabled = true,
   cards,
   gameId,
   roomCode,
@@ -105,6 +114,7 @@ export function GameLineupBoard({
   captainId = null,
   captainBoost = 0,
 }: {
+  archetypesEnabled?: boolean;
   cards: LineupCard[];
   gameId: string;
   roomCode: string;
@@ -322,6 +332,8 @@ export function GameLineupBoard({
           ))}
         </div>
 
+        {archetypesEnabled ? <ArchetypeMatchupGuide /> : null}
+
         <div
           className="relative h-[580px] touch-none overflow-hidden rounded-md border border-emerald-800 bg-emerald-950/70"
           ref={boardRef}
@@ -367,7 +379,13 @@ export function GameLineupBoard({
                         C{captainBoost > 0 ? ` +${captainBoost}` : ""}
                       </span>
                     ) : null}
-                    <LineupPlayerCard offPosPenalty={isOffPosition ? offPosPenalty : 0} player={player} selected={player.lockedDefault} variant="lineup" />
+                    <LineupPlayerCard
+                      offPosPenalty={isOffPosition ? offPosPenalty : 0}
+                      player={player}
+                      selected={player.lockedDefault}
+                      showArchetypes={archetypesEnabled}
+                      variant="lineup"
+                    />
                   </div>
                 ) : (
                   <span>{slot.label}</span>
@@ -376,7 +394,7 @@ export function GameLineupBoard({
             );
           })}
 
-          {drag ? <DraggedCard drag={drag} player={cardById.get(drag.playerId)} /> : null}
+          {drag ? <DraggedCard drag={drag} player={cardById.get(drag.playerId)} showArchetypes={archetypesEnabled} /> : null}
         </div>
 
         <div className="mt-3 grid grid-cols-4 gap-2 text-xs">
@@ -404,7 +422,7 @@ export function GameLineupBoard({
                 key={player.id}
                 onPointerDown={(event) => startBenchDrag(event, player.id)}
               >
-                <LineupPlayerCard player={player} variant="draft" />
+                <LineupPlayerCard player={player} showArchetypes={archetypesEnabled} variant="draft" />
               </div>
             ))}
           </div>
@@ -751,7 +769,7 @@ function findNearestDefenderBySide(defenderSlots: FormationSlot[], gkX: number, 
     .sort((a, b) => Math.abs(a.x - gkX) - Math.abs(b.x - gkX))[0];
 }
 
-function DraggedCard({ drag, player }: { drag: DragState; player: LineupCard | undefined }) {
+function DraggedCard({ drag, player, showArchetypes }: { drag: DragState; player: LineupCard | undefined; showArchetypes: boolean }) {
   if (!player) {
     return null;
   }
@@ -761,7 +779,7 @@ function DraggedCard({ drag, player }: { drag: DragState; player: LineupCard | u
       className="pointer-events-none absolute z-30 w-[92px] scale-105 opacity-95 shadow-2xl"
       style={{ left: `${drag.x}%`, top: `${drag.y}%`, transform: "translate(-50%, -50%)" }}
     >
-      <LineupPlayerCard player={player} variant="lineup" />
+      <LineupPlayerCard player={player} showArchetypes={showArchetypes} variant="lineup" />
     </div>
   );
 }
@@ -770,11 +788,13 @@ function LineupPlayerCard({
   offPosPenalty = 0,
   player,
   selected,
+  showArchetypes = true,
   variant,
 }: {
   offPosPenalty?: number;
   player: LineupCard;
   selected?: boolean;
+  showArchetypes?: boolean;
   variant: "draft" | "lineup";
 }) {
   const isOffPos = offPosPenalty > 0;
@@ -782,7 +802,7 @@ function LineupPlayerCard({
 
   return (
     <div className={cn("relative", player.injured ? "opacity-55 grayscale" : "")}>
-      <PlayerCard disabled={player.injured} player={player} selected={selected} variant={variant} />
+      <PlayerCard disabled={player.injured} player={player} selected={selected} showArchetypes={showArchetypes} variant={variant} />
       {player.injured ? (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-md bg-black/45">
           <span className="rounded bg-rose-500 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-white shadow-lg">
@@ -817,6 +837,78 @@ function getLineupPayload(assignments: Record<string, string>, cardById: Map<str
       },
     ];
   });
+}
+
+function ArchetypeMatchupGuide() {
+  return (
+    <div className="mb-4 rounded-md border border-zinc-800 bg-zinc-900/60 p-3">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Archetypes</p>
+          <p className="text-sm font-semibold text-zinc-100">Angriff gegen Abwehr</p>
+        </div>
+        <p className="text-xs text-zinc-500">Gleiche Symbole neutralisieren sich.</p>
+      </div>
+      <div className="grid gap-2 md:grid-cols-3">
+        {archetypeDuels.map((duel) => {
+          const attacker = ARCHETYPE_META[duel.attacker];
+          const defender = ARCHETYPE_META[duel.defender];
+
+          return (
+            <div className="flex items-center justify-between gap-2 rounded border border-zinc-800 bg-black/20 px-3 py-2" key={`${duel.attacker}-${duel.defender}`}>
+              <ArchetypeName archetype={duel.attacker} label={attacker.attackLabel} tone="attack" />
+              <span className="text-[11px] font-black uppercase text-zinc-500">schlaegt</span>
+              <ArchetypeName archetype={duel.defender} label={defender.defenseLabel} tone="defense" />
+            </div>
+          );
+        })}
+      </div>
+      <p className="mt-2 text-[11px] text-zinc-500">
+        Im Angriffsdrittel zaehlen nur Spieler mit Archetype: bester gegen bester, schwaechster gegen schwaechster. Spieler ohne Archetype werden ignoriert.
+      </p>
+    </div>
+  );
+}
+
+function ArchetypeName({
+  archetype,
+  label,
+  tone,
+}: {
+  archetype: PlayerArchetype;
+  label: string;
+  tone: "attack" | "defense";
+}) {
+  return (
+    <span className="flex min-w-0 items-center gap-1.5">
+      <span
+        className={cn(
+          "flex h-6 w-6 shrink-0 items-center justify-center rounded border",
+          tone === "attack"
+            ? "border-emerald-500/50 bg-emerald-950/50 text-emerald-200"
+            : "border-sky-500/50 bg-sky-950/50 text-sky-200",
+        )}
+      >
+        <ArchetypeGuideIcon archetype={archetype} />
+      </span>
+      <span className="min-w-0 truncate text-xs font-semibold text-zinc-200">{label}</span>
+    </span>
+  );
+}
+
+function ArchetypeGuideIcon({ archetype }: { archetype: PlayerArchetype }) {
+  const className = "h-3.5 w-3.5";
+  const symbol = ARCHETYPE_META[archetype].symbol;
+
+  if (symbol === "triangle") {
+    return <Triangle className={className} fill="currentColor" strokeWidth={2.4} />;
+  }
+
+  if (symbol === "circle") {
+    return <Circle className={className} fill="currentColor" strokeWidth={2.4} />;
+  }
+
+  return <Square className={className} fill="currentColor" strokeWidth={2.4} />;
 }
 
 function PitchBand({ height, label, top }: { height: string; label: string; top: string }) {
@@ -867,4 +959,3 @@ function clamp(value: number, min: number, max: number) {
 function formatNumber(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
-

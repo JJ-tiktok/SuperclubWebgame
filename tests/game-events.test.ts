@@ -406,6 +406,24 @@ describe("game live event store", () => {
     assert.equal(getGameStoreStateForTests().seq, 2);
   });
 
+  it("patches live game setting updates without snapshot recovery", () => {
+    resetGameStoreForTests();
+    hydrateGameStore(snapshot());
+
+    const result = applyGameEvent(event("SAVE_UPDATED", 1, {
+      settings: {
+        archetypes_enabled: true,
+        continental_cup_enabled: false,
+        sponsoring_enabled: false,
+      },
+    }));
+
+    assert.equal(result.needsRefetch, false);
+    assert.equal(getGameStoreStateForTests().snapshot?.game.settings.continental_cup_enabled, false);
+    assert.equal(getGameStoreStateForTests().snapshot?.game.settings.sponsoring_enabled, false);
+    assert.equal(getGameStoreStateForTests().snapshot?.game.settings.archetypes_enabled, true);
+  });
+
   it("requests recovery for event gaps and ignores stale events", () => {
     resetGameStoreForTests();
     hydrateGameStore(snapshot());

@@ -2,10 +2,8 @@
 
 import { Handshake, Trophy } from "lucide-react";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { pickSponsorRewardPlayerAction, signSponsorDealAction } from "@/app/games/actions/offseason";
-import { resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
-import { SPONSOR_PRESTIGE_LABELS } from "@/lib/lobby/sponsor-deals";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelDescription, PanelHeader, PanelTitle } from "@/components/ui/panel";
@@ -54,38 +52,12 @@ export function SponsorPanel({
   const sponsorError = searchParams.get("sponsor_error");
   const signingPhase = isSponsorSigningPhase(snapshot.game.phase);
   const [confirmDealId, setConfirmDealId] = useState<string | null>(null);
-  const seasonNumber = Number(snapshot.game.settings?.seasonNumber ?? 1);
-  const currentStatus = resolveEffectiveClubStatus(ownClub, seasonNumber);
-
-  const dealsByTier = useMemo(() => {
-    const grouped = new Map<string, ClubOverviewSnapshot["available_sponsor_deals"]>();
-    for (const deal of overview.available_sponsor_deals) {
-      const list = grouped.get(deal.prestige_tier) ?? [];
-      list.push(deal);
-      grouped.set(deal.prestige_tier, list);
-    }
-    return grouped;
-  }, [overview.available_sponsor_deals]);
-
-  const tierOrder = useMemo(
-    () => ["newly_promoted", "established", "mid_table", "title_contender"].filter((tier) => dealsByTier.has(tier)),
-    [dealsByTier],
-  );
-
-  const [activeTier, setActiveTier] = useState<string>(() =>
-    tierOrder.includes(currentStatus) ? currentStatus : (tierOrder[0] ?? currentStatus),
-  );
-
-  useEffect(() => {
-    if (tierOrder.length === 0) return;
-    if (!tierOrder.includes(activeTier)) {
-      setActiveTier(tierOrder.includes(currentStatus) ? currentStatus : tierOrder[0]!);
-    }
-  }, [activeTier, currentStatus, tierOrder]);
-
-  const visibleDeals = dealsByTier.get(activeTier) ?? [];
 
   const activeContract = overview.sponsor_contract;
+  const prestigeLabel = overview.sponsor_prestige_label;
+  const currentTierConsumed = overview.sponsor_history.some(
+    (entry) => entry.prestige_tier === overview.sponsor_prestige_tier,
+  );
 
   return (
     <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="sponsoring">
@@ -93,14 +65,17 @@ export function SponsorPanel({
         <div>
           <PanelTitle>Sponsoring</PanelTitle>
           <PanelDescription>
-            Pro Prestige-Stufe ein Deal — nur in der Off-Season abschliessbar. Maximal ein aktiver Vertrag.
+            Deals für deine aktuelle Prestige-Stufe ({prestigeLabel}) — nur in der Off-Season abschliessbar. Pro Stufe ein
+            Versuch, maximal ein aktiver Vertrag.
           </PanelDescription>
         </div>
         <Handshake size={18} className="text-[var(--club-color)]" aria-hidden />
       </PanelHeader>
 
       {sponsorError ? (
-        <p className="mb-3 rounded-md border border-red-800/60 bg-red-950/30 px-3 py-2 text-sm text-red-200">{decodeURIComponent(sponsorError)}</p>
+        <p className="mb-3 rounded-md border border-red-800/60 bg-red-950/30 px-3 py-2 text-sm text-red-200">
+          {decodeURIComponent(sponsorError)}
+        </p>
       ) : null}
 
       {activeContract ? (
@@ -121,8 +96,8 @@ export function SponsorPanel({
             <div className="rounded border border-zinc-800 bg-zinc-900/60 px-3 py-2">
               <p className="text-xs text-zinc-500">Laufzeit</p>
               <p className="font-semibold text-zinc-100">
-                Saison {activeContract.signed_season}–{activeContract.ends_season} ({activeContract.duration_seasons} Saison
-                {activeContract.duration_seasons === 1 ? "" : "en"})
+                Saison {activeContract.signed_season}–{activeContract.ends_season} ({activeContract.duration_seasons}{" "}
+                Saison{activeContract.duration_seasons === 1 ? "" : "en"})
               </p>
             </div>
             <div className="rounded border border-zinc-800 bg-zinc-900/60 px-3 py-2 sm:col-span-2">
@@ -144,41 +119,9 @@ export function SponsorPanel({
 
       {!activeContract && overview.available_sponsor_deals.length > 0 ? (
         <div className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="text-sm font-medium text-zinc-300">Verfügbare Deals</p>
-            {tierOrder.length > 1 ? (
-              <p className="text-xs text-zinc-500">Freie Prestige-Stufen — wähle eine Stufe</p>
-            ) : null}
-          </div>
-
-          {tierOrder.length > 1 ? (
-            <div className="flex flex-wrap gap-2">
-              {tierOrder.map((tier) => (
-                <button
-                  key={tier}
-                  type="button"
-                  onClick={() => setActiveTier(tier)}
-                  className={cn(
-                    "rounded-md border px-3 py-1.5 text-xs font-medium transition",
-                    activeTier === tier
-                      ? "border-[var(--club-color)] bg-[var(--club-color)]/15 text-zinc-100"
-                      : "border-zinc-800 bg-zinc-900/60 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200",
-                    tier === currentStatus ? "ring-1 ring-[var(--club-color)]/30" : "",
-                  )}
-                >
-                  {SPONSOR_PRESTIGE_LABELS[tier as keyof typeof SPONSOR_PRESTIGE_LABELS]}
-                  {tier === currentStatus ? " · deine Stufe" : ""}
-                </button>
-              ))}
-            </div>
-          ) : (
-            <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
-              {visibleDeals[0]?.prestige_label ?? SPONSOR_PRESTIGE_LABELS[activeTier as keyof typeof SPONSOR_PRESTIGE_LABELS]}
-            </p>
-          )}
-
+          <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{prestigeLabel}</p>
           <div className="grid gap-3 md:grid-cols-2">
-            {visibleDeals.map((deal) => {
+            {overview.available_sponsor_deals.map((deal) => {
               const isConfirming = confirmDealId === deal.id;
               return (
                 <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-4" key={deal.id}>
@@ -223,8 +166,22 @@ export function SponsorPanel({
         </div>
       ) : null}
 
-      {!activeContract && overview.available_sponsor_deals.length === 0 && overview.sponsor_history.length === 0 ? (
-        <p className="text-sm text-zinc-500">Noch keine Sponsoring-Deals verfügbar oder alle Stufen verbraucht.</p>
+      {!activeContract && overview.available_sponsor_deals.length === 0 && !currentTierConsumed && overview.sponsor_history.length === 0 ? (
+        <p className="text-sm text-zinc-500">Noch keine Sponsoring-Deals für {prestigeLabel} verfügbar.</p>
+      ) : null}
+
+      {!activeContract && overview.available_sponsor_deals.length === 0 && currentTierConsumed ? (
+        <p className="text-sm text-zinc-500">
+          Die Prestige-Stufe {prestigeLabel} wurde bereits verbraucht. Höhere Deals werden frei, sobald du in der
+          Managerwertung aufsteigst.
+        </p>
+      ) : null}
+
+      {!activeContract && overview.available_sponsor_deals.length === 0 && !currentTierConsumed && overview.sponsor_history.length > 0 ? (
+        <p className="text-sm text-zinc-500">
+          Für {prestigeLabel} stehen aktuell keine Deals bereit. Bei höherer Prestige-Stufe in der Tabelle werden neue
+          Sponsoren freigeschaltet.
+        </p>
       ) : null}
 
       {overview.sponsor_history.length > 0 ? (
@@ -232,13 +189,18 @@ export function SponsorPanel({
           <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">Verbrauchte Stufen</p>
           <div className="space-y-2">
             {overview.sponsor_history.map((entry) => (
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-zinc-800 bg-zinc-900/50 px-3 py-2 text-sm" key={entry.id}>
+              <div
+                className="flex flex-wrap items-center justify-between gap-2 rounded border border-zinc-800 bg-zinc-900/50 px-3 py-2 text-sm"
+                key={entry.id}
+              >
                 <div>
                   <p className="font-medium text-zinc-200">
                     {entry.display_name}{" "}
                     <span className="text-xs text-zinc-500">({entry.prestige_label})</span>
                   </p>
-                  <p className="text-xs text-zinc-500">Saison {entry.signed_season} · {entry.reward_description}</p>
+                  <p className="text-xs text-zinc-500">
+                    Saison {entry.signed_season} · {entry.reward_description}
+                  </p>
                 </div>
                 <Badge tone={sponsorStatusTone(entry.status)}>{sponsorStatusLabel(entry.status)}</Badge>
               </div>
@@ -277,7 +239,10 @@ function SponsorRewardPickForm({
 
   if (isDualPick) {
     return (
-      <form action={pickSponsorRewardPlayerAction} className="mt-4 space-y-3 rounded border border-emerald-800/50 bg-emerald-950/20 p-3">
+      <form
+        action={pickSponsorRewardPlayerAction}
+        className="mt-4 space-y-3 rounded border border-emerald-800/50 bg-emerald-950/20 p-3"
+      >
         <input name="game_id" type="hidden" value={gameId} />
         <input name="room_code" type="hidden" value={roomCode} />
         <input name="contract_id" type="hidden" value={contract.id} />
@@ -320,7 +285,10 @@ function SponsorRewardPickForm({
   }
 
   return (
-    <form action={pickSponsorRewardPlayerAction} className="mt-4 max-h-64 space-y-2 overflow-y-auto rounded border border-emerald-800/50 bg-emerald-950/20 p-3">
+    <form
+      action={pickSponsorRewardPlayerAction}
+      className="mt-4 max-h-64 space-y-2 overflow-y-auto rounded border border-emerald-800/50 bg-emerald-950/20 p-3"
+    >
       <input name="game_id" type="hidden" value={gameId} />
       <input name="room_code" type="hidden" value={roomCode} />
       <input name="contract_id" type="hidden" value={contract.id} />

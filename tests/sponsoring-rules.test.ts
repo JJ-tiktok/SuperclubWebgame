@@ -5,6 +5,7 @@ import {
   createInitialProgress,
   getActiveSponsorContract,
   getAvailableSponsorDeals,
+  isSponsoringEnabled,
   isStadiumUpgradeBlockedBySponsor,
   type SponsorContractRow,
 } from "@/lib/lobby/sponsoring";
@@ -24,11 +25,18 @@ function contract(partial: Partial<SponsorContractRow> & Pick<SponsorContractRow
 }
 
 describe("Sponsoring sign rules", () => {
+  it("defaults the sponsorship feature flag to enabled", () => {
+    assert.equal(isSponsoringEnabled(undefined), true);
+    assert.equal(isSponsoringEnabled({ sponsoring_enabled: true }), true);
+    assert.equal(isSponsoringEnabled({ sponsoring_enabled: false }), false);
+  });
+
   it("allows signing only in off_season", () => {
     const result = canSignSponsorDeal({
       phase: "season",
       contracts: [],
       dealId: "bockwurst_behrens",
+      clubStatus: "newly_promoted",
     });
     assert.equal(result.ok, false);
     if (!result.ok) {
@@ -41,6 +49,7 @@ describe("Sponsoring sign rules", () => {
       phase: "off_season",
       contracts: [contract({ deal_id: "bockwurst_behrens", prestige_tier: "newly_promoted" })],
       dealId: "autohaus_rumpel",
+      clubStatus: "newly_promoted",
     });
     assert.equal(result.ok, false);
   });
@@ -53,20 +62,40 @@ describe("Sponsoring sign rules", () => {
         status: "failed",
       }),
     ];
-    const available = getAvailableSponsorDeals(contracts);
+    const available = getAvailableSponsorDeals(contracts, "newly_promoted");
     assert.equal(available.some((deal) => deal.prestige_tier === "newly_promoted"), false);
   });
 
-  it("allows signing an unused tier deal in off_season", () => {
+  it("allows signing a deal matching club status in off_season", () => {
     const result = canSignSponsorDeal({
       phase: "off_season",
       contracts: [],
       dealId: "bockwurst_behrens",
+      clubStatus: "newly_promoted",
     });
     assert.equal(result.ok, true);
     if (result.ok) {
       assert.equal(result.deal.id, "bockwurst_behrens");
     }
+  });
+
+  it("blocks deals from other prestige tiers", () => {
+    const result = canSignSponsorDeal({
+      phase: "off_season",
+      contracts: [],
+      dealId: "nadidos_elite",
+      clubStatus: "newly_promoted",
+    });
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.match(result.reason, /aktuelle Prestige-Stufe/);
+    }
+  });
+
+  it("only lists deals for the current club status", () => {
+    const available = getAvailableSponsorDeals([], "mid_table");
+    assert.ok(available.length > 0);
+    assert.ok(available.every((deal) => deal.prestige_tier === "mid_table"));
   });
 
   it("blocks re-pick of consumed tier", () => {
@@ -80,6 +109,7 @@ describe("Sponsoring sign rules", () => {
         }),
       ],
       dealId: "autohaus_rumpel",
+      clubStatus: "newly_promoted",
     });
     assert.equal(result.ok, false);
   });

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { getInvestmentActionLimit } from "@/lib/lobby/endgame-facilities";
 import { canRecruitStaff, canUpgradeFacility, getStaffRecruitBlockReason, getUpgradeCost } from "@/lib/lobby/investments";
 import { getPlacementReward, getStadiumIncome } from "@/lib/game/rules";
 
@@ -27,6 +28,21 @@ describe("Club overview investment rules", () => {
         money: 200_000_000,
       }),
       { ok: false, reason: "investment_action_limit" },
+    );
+  });
+
+  it("respects custom action limits from construction yard", () => {
+    const actionLimit = getInvestmentActionLimit(0, true);
+    assert.equal(actionLimit, 4);
+    assert.deepEqual(
+      canUpgradeFacility({
+        action: "stadium",
+        actionsThisSeason: ["training", "scouting", "medical"],
+        currentLevel: 1,
+        money: 200_000_000,
+        actionLimit,
+      }),
+      { ok: true, cost: getUpgradeCost("stadium", 1) },
     );
   });
 

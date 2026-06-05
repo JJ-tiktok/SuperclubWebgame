@@ -142,10 +142,14 @@ export function getAuctionBadgeTone(status: string): "neutral" | "green" | "blue
 
 export function getInvestmentLabel(action: string): string {
   const labels: Record<string, string> = {
+    analytics: "Analyse-Zentrum",
+    construction_yard: "Bauhof",
+    medical: "Medizin-Zentrum",
     scouting: "Scouting",
     stadium: "Stadion",
     staff: "Mitarbeiter",
     training: "Training",
+    youth_academy: "NLZ",
   };
   return labels[action] ?? action;
 }

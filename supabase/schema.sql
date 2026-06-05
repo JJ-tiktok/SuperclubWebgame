@@ -21,6 +21,7 @@ create type public.game_phase as enum (
 );
 
 create type public.player_position as enum ('GK', 'DEF', 'MID', 'ATT');
+create type public.player_archetype as enum ('alpha', 'beta', 'gamma');
 create type public.lineup_zone as enum ('bench', 'GK', 'DEF', 'MID', 'ATT');
 create type public.formation as enum ('3-3-4', '3-4-3', '3-5-2', '4-3-3', '4-4-2', '5-3-2');
 create type public.auction_status as enum ('scheduled', 'open', 'resolving', 'resolved', 'passed');
@@ -36,7 +37,9 @@ create table public.games (
     'starting_money', 120000000,
     'squad_draft_size', 16,
     'squad_max_size', 23,
-    'season_number', 1
+    'season_number', 1,
+    'sponsoring_enabled', true,
+    'archetypes_enabled', true
   ),
   host_clerk_user_id text not null,
   current_turn_club_id uuid,
@@ -147,6 +150,8 @@ create table public.players (
   content_key text not null unique,
   display_name text not null,
   position public.player_position not null,
+  attacker_archetype public.player_archetype,
+  defender_archetype public.player_archetype,
   role text,
   nationality text,
   age integer check (age is null or age > 0),

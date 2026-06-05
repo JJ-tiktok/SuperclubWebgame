@@ -5,6 +5,7 @@ import {
   buildSeasonFixtures,
   getMatchPoints,
   getRequiredCpuCount,
+  resolveOneThird,
   resolveFixture,
   type FixtureSideInput,
   type SeasonParticipant,
@@ -32,6 +33,7 @@ function side(input: Partial<FixtureSideInput> & Pick<FixtureSideInput, "partici
     },
     participantId: input.participantId,
     powers: input.powers ?? { ATT: 8, DEF: 8, MID: 8 },
+    zone_players: input.zone_players ?? [],
   };
 }
 
@@ -164,5 +166,209 @@ describe("season and matchday rules", () => {
     assert.equal(result.thirds[0]?.home.zone_stars, 10);
     assert.equal(result.thirds[0]?.home.total, 12);
     assert.equal(result.thirds[1]?.home.zone_stars, 8);
+  });
+
+  it("uses W8 or W10 for the attacking side when the ATT line has evolved stars", () => {
+    const evolvedHome = side({
+      participantId: "home",
+      powers: { ATT: 8, DEF: 8, MID: 9 },
+      zone_players: [
+        { current_stars: 4, current_zone: "ATT", id: "att-strong", lineup_slot: 1 },
+      ],
+    });
+    const awaySide = side({ participantId: "away", powers: { ATT: 8, DEF: 8, MID: 5 } });
+
+    const w8 = resolveOneThird({
+      away: awaySide,
+      home: evolvedHome,
+      index: 2,
+      priorThirds: [{ away: { dice: [1, 1], dice_faces: 6, participant_id: "away", total: 7, zone: "MID", zone_stars: 5 }, home: { dice: [3, 3], dice_faces: 6, participant_id: "home", total: 15, zone: "MID", zone_stars: 9 }, index: 1, label: "midfield", winner_participant_id: "home" }],
+    }).third;
+
+    assert.equal(w8.home.dice_faces, 8);
+    assert.equal(w8.away.dice_faces, 6);
+
+    const w10 = resolveOneThird({
+      away: awaySide,
+      home: side({
+        participantId: "home",
+        powers: { ATT: 8, DEF: 8, MID: 9 },
+        zone_players: [
+          { current_stars: 4, current_zone: "ATT", id: "att-strong", lineup_slot: 1 },
+          { current_stars: 6, current_zone: "ATT", id: "att-elite", lineup_slot: 2 },
+        ],
+      }),
+      index: 2,
+      priorThirds: [{ away: { dice: [1, 1], dice_faces: 6, participant_id: "away", total: 7, zone: "MID", zone_stars: 5 }, home: { dice: [3, 3], dice_faces: 6, participant_id: "home", total: 15, zone: "MID", zone_stars: 9 }, index: 1, label: "midfield", winner_participant_id: "home" }],
+    }).third;
+
+    assert.equal(w10.home.dice_faces, 10);
+    assert.equal(w10.away.dice_faces, 6);
+  });
+
+  it("keeps midfield and defending sides on W6", () => {
+    const home = side({
+      participantId: "home",
+      powers: { ATT: 9, DEF: 9, MID: 9 },
+      zone_players: [{ current_stars: 6, current_zone: "ATT", id: "att-elite", lineup_slot: 1 }],
+    });
+    const away = side({ participantId: "away", powers: { ATT: 8, DEF: 8, MID: 8 } });
+
+    const midfield = resolveOneThird({ away, home, index: 1 }).third;
+    const defense = resolveOneThird({
+      away,
+      home,
+      index: 2,
+      priorThirds: [{ away: { dice: [5, 5], dice_faces: 6, participant_id: "away", total: 18, zone: "MID", zone_stars: 8 }, home: { dice: [1, 1], dice_faces: 6, participant_id: "home", total: 11, zone: "MID", zone_stars: 9 }, index: 1, label: "midfield", winner_participant_id: "away" }],
+    }).third;
+
+    assert.equal(midfield.home.dice_faces, 6);
+    assert.equal(defense.home.dice_faces, 6);
+  });
+
+  it("applies best and worst archetype duels only for attacking thirds", () => {
+    const result = resolveOneThird({
+      away: side({
+        participantId: "away",
+        powers: { ATT: 7, DEF: 8, MID: 5 },
+        zone_players: [
+          { current_stars: 4, current_zone: "DEF", defender_archetype: "beta", display_name: "Away Top Def", id: "def-top", lineup_slot: 1 },
+          { current_stars: 2, current_zone: "DEF", defender_archetype: "alpha", display_name: "Away Low Def", id: "def-low", lineup_slot: 2 },
+        ],
+      }),
+      home: side({
+        participantId: "home",
+        powers: { ATT: 10, DEF: 8, MID: 9 },
+        zone_players: [
+          { attacker_archetype: "alpha", current_stars: 5, current_zone: "ATT", display_name: "Home Top Att", id: "att-top", lineup_slot: 1 },
+          { attacker_archetype: "gamma", current_stars: 1, current_zone: "ATT", display_name: "Home Low Att", id: "att-low", lineup_slot: 2 },
+        ],
+      }),
+      homeDice: [1, 1],
+      awayDice: [1, 1],
+      index: 2,
+      priorThirds: [{ away: { dice: [1, 1], dice_faces: 6, participant_id: "away", total: 7, zone: "MID", zone_stars: 5 }, home: { dice: [3, 3], dice_faces: 6, participant_id: "home", total: 15, zone: "MID", zone_stars: 9 }, index: 1, label: "midfield", winner_participant_id: "home" }],
+    });
+
+    assert.equal(result.third.home.zone_stars, 12);
+    assert.equal(result.third.away.zone_stars, 6);
+    assert.equal(result.third.archetype_effects?.length, 2);
+    assert.ok(result.third.archetype_effects?.every((effect) => effect.winner === "attacker"));
+  });
+
+  it("ignores stronger players without archetype when selecting archetype duel candidates", () => {
+    const result = resolveOneThird({
+      away: side({
+        participantId: "away",
+        powers: { ATT: 7, DEF: 8, MID: 5 },
+        zone_players: [
+          { current_stars: 6, current_zone: "DEF", display_name: "Away Strong Neutral", id: "def-neutral", lineup_slot: 1 },
+          { current_stars: 4, current_zone: "DEF", defender_archetype: "beta", display_name: "Away Top Style", id: "def-top", lineup_slot: 2 },
+          { current_stars: 2, current_zone: "DEF", defender_archetype: "gamma", display_name: "Away Low Style", id: "def-low", lineup_slot: 3 },
+        ],
+      }),
+      home: side({
+        participantId: "home",
+        powers: { ATT: 10, DEF: 8, MID: 9 },
+        zone_players: [
+          { current_stars: 6, current_zone: "ATT", display_name: "Home Strong Neutral", id: "att-neutral", lineup_slot: 1 },
+          { attacker_archetype: "alpha", current_stars: 4, current_zone: "ATT", display_name: "Home Top Style", id: "att-top", lineup_slot: 2 },
+          { attacker_archetype: "beta", current_stars: 2, current_zone: "ATT", display_name: "Home Low Style", id: "att-low", lineup_slot: 3 },
+        ],
+      }),
+      homeDice: [1, 1],
+      awayDice: [1, 1],
+      index: 2,
+      priorThirds: [{ away: { dice: [1, 1], dice_faces: 6, participant_id: "away", total: 7, zone: "MID", zone_stars: 5 }, home: { dice: [3, 3], dice_faces: 6, participant_id: "home", total: 15, zone: "MID", zone_stars: 9 }, index: 1, label: "midfield", winner_participant_id: "home" }],
+    });
+
+    assert.equal(result.third.home.zone_stars, 12);
+    assert.equal(result.third.away.zone_stars, 6);
+    assert.deepEqual(
+      result.third.archetype_effects?.map((effect) => [effect.attacker_player_name, effect.defender_player_name]),
+      [
+        ["Home Top Style", "Away Top Style"],
+        ["Home Low Style", "Away Low Style"],
+      ],
+    );
+  });
+
+  it("does not count a single archetype player twice for top and low duel", () => {
+    const result = resolveOneThird({
+      away: side({
+        participantId: "away",
+        powers: { ATT: 7, DEF: 8, MID: 5 },
+        zone_players: [
+          { current_stars: 5, current_zone: "DEF", defender_archetype: "beta", display_name: "Away Only Style", id: "def-only", lineup_slot: 1 },
+          { current_stars: 1, current_zone: "DEF", display_name: "Away Neutral", id: "def-neutral", lineup_slot: 2 },
+        ],
+      }),
+      home: side({
+        participantId: "home",
+        powers: { ATT: 10, DEF: 8, MID: 9 },
+        zone_players: [
+          { attacker_archetype: "alpha", current_stars: 5, current_zone: "ATT", display_name: "Home Only Style", id: "att-only", lineup_slot: 1 },
+          { current_stars: 1, current_zone: "ATT", display_name: "Home Neutral", id: "att-neutral", lineup_slot: 2 },
+        ],
+      }),
+      homeDice: [1, 1],
+      awayDice: [1, 1],
+      index: 2,
+      priorThirds: [{ away: { dice: [1, 1], dice_faces: 6, participant_id: "away", total: 7, zone: "MID", zone_stars: 5 }, home: { dice: [3, 3], dice_faces: 6, participant_id: "home", total: 15, zone: "MID", zone_stars: 9 }, index: 1, label: "midfield", winner_participant_id: "home" }],
+    });
+
+    assert.equal(result.third.home.zone_stars, 11);
+    assert.equal(result.third.away.zone_stars, 7);
+    assert.equal(result.third.archetype_effects?.length, 1);
+  });
+
+  it("can disable archetype effects per fixture", () => {
+    const result = resolveOneThird({
+      archetypesEnabled: false,
+      away: side({
+        participantId: "away",
+        powers: { ATT: 7, DEF: 8, MID: 5 },
+        zone_players: [
+          { current_stars: 4, current_zone: "DEF", defender_archetype: "beta", display_name: "Away Top Def", id: "def-top", lineup_slot: 1 },
+          { current_stars: 2, current_zone: "DEF", defender_archetype: "alpha", display_name: "Away Low Def", id: "def-low", lineup_slot: 2 },
+        ],
+      }),
+      home: side({
+        participantId: "home",
+        powers: { ATT: 10, DEF: 8, MID: 9 },
+        zone_players: [
+          { attacker_archetype: "alpha", current_stars: 5, current_zone: "ATT", display_name: "Home Top Att", id: "att-top", lineup_slot: 1 },
+          { attacker_archetype: "gamma", current_stars: 1, current_zone: "ATT", display_name: "Home Low Att", id: "att-low", lineup_slot: 2 },
+        ],
+      }),
+      homeDice: [1, 1],
+      awayDice: [1, 1],
+      index: 2,
+      priorThirds: [{ away: { dice: [1, 1], dice_faces: 6, participant_id: "away", total: 7, zone: "MID", zone_stars: 5 }, home: { dice: [3, 3], dice_faces: 6, participant_id: "home", total: 15, zone: "MID", zone_stars: 9 }, index: 1, label: "midfield", winner_participant_id: "home" }],
+    });
+
+    assert.equal(result.third.home.zone_stars, 10);
+    assert.equal(result.third.away.zone_stars, 8);
+    assert.equal(result.third.archetype_effects?.length, 0);
+  });
+
+  it("creates only a game-changer when a W10 double misses the active slot count", () => {
+    const result = resolveOneThird({
+      away: side({ canReceiveEvents: false, participantId: "away" }),
+      awayDice: [1, 2],
+      home: side({
+        participantId: "home",
+        lineup: { ATT: ["att-1", "att-2"] },
+        powers: { ATT: 9, DEF: 8, MID: 9 },
+        zone_players: [{ current_stars: 6, current_zone: "ATT", id: "att-1", lineup_slot: 1 }],
+      }),
+      homeDice: [10, 10],
+      index: 2,
+      priorThirds: [{ away: { dice: [1, 1], dice_faces: 6, participant_id: "away", total: 7, zone: "MID", zone_stars: 5 }, home: { dice: [3, 3], dice_faces: 6, participant_id: "home", total: 15, zone: "MID", zone_stars: 9 }, index: 1, label: "midfield", winner_participant_id: "home" }],
+    });
+
+    assert.equal(result.third.home.dice_faces, 10);
+    assert.equal(result.events.length, 1);
+    assert.equal(result.events[0]?.event_type, "game_changer");
   });
 });

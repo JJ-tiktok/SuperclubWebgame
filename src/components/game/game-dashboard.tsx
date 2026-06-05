@@ -174,7 +174,7 @@ import {
 } from "@/lib/lobby/scouting";
 import { getClubTheme } from "@/lib/lobby/theme";
 import { canTrainOwnedPlayer } from "@/lib/lobby/training";
-import { getClubPlayerMarketValues } from "@/lib/lobby/player-market";
+import { getClubPlayerMarketValues, resolvePlayerPotentialCeiling } from "@/lib/lobby/player-market";
 import { MANAGER_TRANSFER_DEPARTURE_LIMIT } from "@/lib/lobby/transfers";
 import type {
   ClubPlayerSnapshot,
@@ -4651,7 +4651,12 @@ function mapOwnedPlayerToCardData(owned: NonNullable<LobbySnapshot["club_overvie
     skill: {
       ...card.skill,
       current: currentStars,
-      potential: Number(owned.player.potential_stars ?? currentStars),
+      potential: resolvePlayerPotentialCeiling({
+        baseStars: owned.player.base_stars,
+        currentStars,
+        potentialStars: owned.player.potential_stars,
+        skillMax: owned.player.skill_max,
+      }),
       max: Number(owned.player.skill_max ?? card.skill.max),
     },
   };

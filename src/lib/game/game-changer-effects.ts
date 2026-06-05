@@ -342,19 +342,29 @@ export async function applyImmediateEffect(
       if (!clubPlayerId) return { applied: false };
       const { data: cp } = await supabase
         .from("club_players")
-        .select("id, current_stars, player_id, player:players(display_name, potential_stars)")
+        .select("id, current_stars, player_id, player:players(display_name, base_stars, potential_stars, skill_max)")
         .eq("id", clubPlayerId)
         .eq("club_id", clubId)
         .maybeSingle<{
           id: string;
           current_stars: number | string;
-          player: { display_name: string; potential_stars?: number | string | null } | null;
+          player: {
+            base_stars?: number | string | null;
+            display_name: string;
+            potential_stars?: number | string | null;
+            skill_max?: number | string | null;
+          } | null;
           player_id: string;
         }>();
       if (!cp) return { applied: false };
       const newStars = Math.max(0, Number(cp.current_stars) - Math.max(1, Math.trunc(effect.stars)));
       await supabase.from("club_players").update({ current_stars: newStars }).eq("id", cp.id);
-      await syncPlayerRowMarketValues(supabase, cp.player_id, newStars, Number(cp.player?.potential_stars ?? 0));
+      await syncPlayerRowMarketValues(supabase, cp.player_id, {
+        baseStars: Number(cp.player?.base_stars ?? newStars),
+        potentialStars: Number(cp.player?.potential_stars ?? 0),
+        skillMax: Number(cp.player?.skill_max ?? 0),
+        stars: newStars,
+      });
       return { applied: true, detail: `${cp.player?.display_name ?? "Spieler"}: -${effect.stars} Stern` };
     }
 

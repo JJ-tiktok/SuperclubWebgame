@@ -1918,16 +1918,19 @@ function TransferOfferCard({
         </div>
         <Badge tone="amber">offen</Badge>
       </div>
-      {offeredPlayer ? (
+      {offeredPlayer && targetPlayer ? (
         <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] lg:items-center">
           <div className="rounded-md border border-zinc-800 bg-zinc-950/50 p-3">
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
               {direction === "incoming" ? "Dein Spieler" : "Angefragt"}
             </p>
-            <p className="mt-1 text-sm font-semibold text-zinc-50">{targetName}</p>
-            {targetPlayer ? (
-              <p className="mt-1 text-xs text-zinc-400">{formatTransferPlayerMeta(targetPlayer)}</p>
-            ) : null}
+            <PlayerCard
+              disabled={targetPlayer.injured}
+              player={mapOwnedPlayerToCardData(targetPlayer)}
+              showArchetypes={archetypesEnabled}
+              variant="draft"
+            />
+            <p className="mt-2 text-xs text-zinc-400">{formatTransferPlayerMeta(targetPlayer)}</p>
           </div>
           <div className="flex flex-col items-center justify-center gap-1 px-1 text-zinc-500">
             <ArrowLeftRight size={16} aria-hidden />
@@ -1935,25 +1938,22 @@ function TransferOfferCard({
               <p className="text-center text-xs font-semibold text-lime-300">+ {formatMoney(offer.cash_amount)}</p>
             ) : null}
           </div>
-          <div className="grid gap-3 rounded-md border border-zinc-800 bg-zinc-950/50 p-3 sm:grid-cols-[132px_minmax(0,1fr)]">
+          <div className="rounded-md border border-zinc-800 bg-zinc-950/50 p-3">
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+              {direction === "incoming" ? "Im Tausch angeboten" : "Dein Spieler im Tausch"}
+            </p>
             <PlayerCard
               disabled={offeredPlayer.injured}
               player={mapOwnedPlayerToCardData(offeredPlayer)}
               showArchetypes={archetypesEnabled}
               variant="draft"
             />
-            <div className="flex min-w-0 flex-col justify-center gap-1">
-              <p className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
-                {direction === "incoming" ? "Im Tausch angeboten" : "Dein Spieler im Tausch"}
-              </p>
-              <p className="text-sm font-semibold text-zinc-50">{offeredPlayer.player.display_name}</p>
-              <p className="text-xs text-zinc-400">{formatTransferPlayerMeta(offeredPlayer)}</p>
-              {offeredPlayer.injured ? (
-                <Badge className="mt-1 w-fit" tone="red">
-                  verletzt
-                </Badge>
-              ) : null}
-            </div>
+            <p className="mt-2 text-xs text-zinc-400">{formatTransferPlayerMeta(offeredPlayer)}</p>
+            {offeredPlayer.injured ? (
+              <Badge className="mt-2 w-fit" tone="red">
+                verletzt
+              </Badge>
+            ) : null}
           </div>
         </div>
       ) : (
@@ -3111,24 +3111,60 @@ function TransferOfferModal({
   snapshot: LobbySnapshot;
   target: ClubPlayerSnapshot;
 }) {
+  const [offeredPlayerId, setOfferedPlayerId] = useState("none");
+  const archetypesEnabled = snapshot.game.settings.archetypes_enabled !== false;
   const defaultCashMillions = Math.max(1, Math.round(getClubPlayerMarketValues(target).minimumBid / 1_000_000));
+  const selectedOfferPlayer =
+    offeredPlayerId === "none" ? null : (offerPlayers.find((ownPlayer) => ownPlayer.id === offeredPlayerId) ?? null);
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 px-4 py-6">
-      <div className="w-full max-w-lg rounded-lg border border-zinc-700 bg-zinc-950 p-4 shadow-2xl shadow-black">
+      <div className="w-full max-w-3xl rounded-lg border border-zinc-700 bg-zinc-950 p-4 shadow-2xl shadow-black">
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-lg font-bold text-zinc-50">Angebot machen</p>
-            <p className="mt-1 text-sm text-zinc-400">
-              {target.player.display_name} · {formatTransferPlayerMeta(target)}
-            </p>
+            <p className="mt-1 text-sm text-zinc-400">Waehle Geld und optional einen eigenen Spieler fuer den Tausch.</p>
           </div>
           <Button className="h-8 px-2" onClick={onClose} type="button" variant="outline">
             <X size={15} aria-hidden />
           </Button>
         </div>
 
-        <form action={createTransferOfferAction} className="mt-4 grid gap-3">
+        <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] lg:items-start">
+          <div className="rounded-md border border-zinc-800 bg-zinc-900/50 p-3">
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Angefragt</p>
+            <PlayerCard
+              disabled={target.injured}
+              player={mapOwnedPlayerToCardData(target)}
+              showArchetypes={archetypesEnabled}
+              variant="draft"
+            />
+            <p className="mt-2 text-xs text-zinc-400">{formatTransferPlayerMeta(target)}</p>
+          </div>
+          <div className="flex flex-col items-center justify-center gap-1 px-1 pt-8 text-zinc-500">
+            <ArrowLeftRight size={18} aria-hidden />
+          </div>
+          <div className="rounded-md border border-zinc-800 bg-zinc-900/50 p-3">
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Dein Spieler</p>
+            {selectedOfferPlayer ? (
+              <>
+                <PlayerCard
+                  disabled={selectedOfferPlayer.injured}
+                  player={mapOwnedPlayerToCardData(selectedOfferPlayer)}
+                  showArchetypes={archetypesEnabled}
+                  variant="draft"
+                />
+                <p className="mt-2 text-xs text-zinc-400">{formatTransferPlayerMeta(selectedOfferPlayer)}</p>
+              </>
+            ) : (
+              <div className="flex min-h-[220px] items-center justify-center rounded-md border border-dashed border-zinc-700 bg-zinc-950/60 px-4 text-center text-xs text-zinc-500">
+                Optional unten einen eigenen Spieler auswaehlen
+              </div>
+            )}
+          </div>
+        </div>
+
+        <form action={createTransferOfferAction} className="mt-4 grid gap-3 sm:grid-cols-2">
           <input name="game_id" type="hidden" value={snapshot.game.id} />
           <input name="room_code" type="hidden" value={snapshot.game.room_code} />
           <input name="target_club_player_id" type="hidden" value={target.id} />
@@ -3150,7 +3186,8 @@ function TransferOfferModal({
             <select
               className="h-10 rounded-md border border-zinc-700 bg-zinc-950 px-3 text-sm text-zinc-100 outline-none focus:border-lime-300"
               name="offered_club_player_id"
-              defaultValue="none"
+              onChange={(event) => setOfferedPlayerId(event.target.value)}
+              value={offeredPlayerId}
             >
               <option value="none">Kein Spieler</option>
               {offerPlayers.map((ownPlayer) => (
@@ -3160,7 +3197,7 @@ function TransferOfferModal({
               ))}
             </select>
           </label>
-          <div className="flex flex-wrap justify-end gap-2 pt-1">
+          <div className="flex flex-wrap justify-end gap-2 pt-1 sm:col-span-2">
             <Button onClick={onClose} type="button" variant="outline">
               Abbrechen
             </Button>

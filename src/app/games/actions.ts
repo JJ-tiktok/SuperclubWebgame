@@ -114,7 +114,11 @@ import {
   resolveTrainingAttempt,
   type TrainingEventMetadata,
 } from "@/lib/lobby/training";
-import { getClubPlayerMarketValues, syncPlayerRowMarketValues } from "@/lib/lobby/player-market";
+import {
+  computePlayerMarketValues,
+  getClubPlayerMarketValues,
+  syncPlayerRowMarketValues,
+} from "@/lib/lobby/player-market";
 import {
   canAcceptTransferOffer,
   canCreateTransferOffer,
@@ -974,7 +978,10 @@ export async function buyScoutedPlayerAction(formData: FormData) {
   }
 
   const ownDraws = draws.filter((item) => item.club_id === ownClub.id);
-  const baseScoutingPrice = Number(draw.player.scouting_price ?? 0);
+  const baseScoutingPrice = computePlayerMarketValues({
+    potentialStars: Number(draw.player.potential_stars ?? 0),
+    stars: Number(draw.player.base_stars ?? 1),
+  }).scoutingPrice;
   const scoutingPendingEffects = buyPendingEffects.filter((eff) =>
     isOffseasonPendingScopeActive(eff.scope, game.phase),
   );
@@ -1077,7 +1084,7 @@ export async function buyScoutedPlayerAction(formData: FormData) {
   }
 
   if (isSponsoringEnabled(game.settings)) {
-    await onSponsorNewSigning(supabase, ownClub.id, seasonNumber, Number(draw.player.scouting_price ?? price));
+    await onSponsorNewSigning(supabase, ownClub.id, seasonNumber, price);
   }
 
   // Consume one-shot transfer effects after a successful buy
@@ -1787,7 +1794,10 @@ export async function initializeDeadlineDayAction(formData: FormData) {
     current_amount: 0,
     current_bid_club_id: index === 0 ? firstClubId : null,
     game_id: gameId,
-    minimum_bid: Number(player.minimum_bid ?? 0),
+    minimum_bid: computePlayerMarketValues({
+      potentialStars: Number(player.potential_stars ?? 0),
+      stars: Number(player.base_stars ?? 1),
+    }).minimumBid,
     passed_club_ids: [],
     player_id: player.id,
     season_number: seasonNumber,

@@ -1,3 +1,4 @@
+import { computePlayerMarketValues } from "@/lib/lobby/player-market";
 import type { Club, ClubPlayer, Lineup, PlayerCard, StaffCard } from "./types";
 
 const MILLION = 1_000_000;
@@ -10,6 +11,7 @@ export const samplePlayers: PlayerCard[] = Array.from({ length: 80 }, (_, index)
   const position = positions[index % positions.length];
   const baseStars = (index % 6) + 1;
   const potentialStars = index % 4 === 0 ? 2 : index % 3 === 0 ? 1 : 0;
+  const market = computePlayerMarketValues({ potentialStars, stars: baseStars });
 
   return {
     id: `player-${String(index + 1).padStart(2, "0")}`,
@@ -18,8 +20,8 @@ export const samplePlayers: PlayerCard[] = Array.from({ length: 80 }, (_, index)
     baseStars,
     potentialStars,
     chemistry: chemistry[index % chemistry.length],
-    scoutingPrice: (12 + baseStars * 4 + potentialStars * 3) * MILLION,
-    minimumBid: (18 + baseStars * 6 + potentialStars * 4) * MILLION,
+    scoutingPrice: market.scoutingPrice,
+    minimumBid: market.minimumBid,
     region: regions[index % regions.length],
     visibility: "room",
   };

@@ -4,19 +4,17 @@ import { computePlayerMarketValues, getClubPlayerMarketValues } from "@/lib/lobb
 
 describe("player market values", () => {
   it("scales transfer and scouting values with current stars", () => {
-    assert.deepEqual(computePlayerMarketValues({ stars: 4 }), {
-      minimumBid: 42_000_000,
-      scoutingPrice: 28_000_000,
-    });
     assert.deepEqual(computePlayerMarketValues({ stars: 5 }), {
-      minimumBid: 48_000_000,
-      scoutingPrice: 32_000_000,
+      minimumBid: 50_000_000,
+      scoutingPrice: 25_000_000,
     });
   });
 
   it("includes potential stars in the market formula", () => {
-    assert.equal(computePlayerMarketValues({ potentialStars: 1, stars: 5 }).minimumBid, 52_000_000);
-    assert.equal(computePlayerMarketValues({ potentialStars: 1, stars: 5 }).scoutingPrice, 35_000_000);
+    assert.deepEqual(computePlayerMarketValues({ potentialStars: 2, stars: 3 }), {
+      minimumBid: 34_000_000,
+      scoutingPrice: 17_000_000,
+    });
   });
 
   it("uses owned current stars instead of static player prices", () => {
@@ -27,7 +25,7 @@ describe("player market values", () => {
       },
     });
 
-    assert.equal(market.minimumBid, 48_000_000);
-    assert.equal(market.scoutingPrice, 32_000_000);
+    assert.equal(market.minimumBid, 50_000_000);
+    assert.equal(market.scoutingPrice, 25_000_000);
   });
 });

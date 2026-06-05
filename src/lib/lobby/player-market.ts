@@ -2,13 +2,23 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 const MILLION = 1_000_000;
 
+/** Volle Sterne: 10 Mio Transferwert, 5 Mio Scouting. */
+export const PLAYER_MARKET_STAR_TRANSFER_MILLIONS = 10;
+export const PLAYER_MARKET_STAR_SCOUTING_MILLIONS = 5;
+
+/** Pro Potential-Punkt: +2 Mio Transfer, +1 Mio Scouting. */
+export const PLAYER_MARKET_POTENTIAL_TRANSFER_MILLIONS = 2;
+export const PLAYER_MARKET_POTENTIAL_SCOUTING_MILLIONS = 1;
+
 export function computePlayerMarketValues(params: { potentialStars?: number; stars: number }) {
-  const stars = Math.max(0, Number(params.stars));
-  const potential = Math.max(0, Number(params.potentialStars ?? 0));
+  const stars = Math.max(0, Math.trunc(Number(params.stars)));
+  const potential = Math.max(0, Math.trunc(Number(params.potentialStars ?? 0)));
 
   return {
-    minimumBid: (18 + stars * 6 + potential * 4) * MILLION,
-    scoutingPrice: (12 + stars * 4 + potential * 3) * MILLION,
+    minimumBid:
+      (stars * PLAYER_MARKET_STAR_TRANSFER_MILLIONS + potential * PLAYER_MARKET_POTENTIAL_TRANSFER_MILLIONS) * MILLION,
+    scoutingPrice:
+      (stars * PLAYER_MARKET_STAR_SCOUTING_MILLIONS + potential * PLAYER_MARKET_POTENTIAL_SCOUTING_MILLIONS) * MILLION,
   };
 }
 

@@ -1663,7 +1663,7 @@ function ScoutingDrawsPanel({
                 {clubDraws.map((draw) => {
                   const card = mapDbPlayerToPlayerCardData(draw.player);
                   const pendingEffects = overview.pending_effects ?? [];
-                  const purchasePrice = getScoutingPurchasePrice(Number(draw.player.scouting_price ?? 0), pendingEffects);
+                  const purchasePrice = getScoutingPurchasePrice(card.market.scoutingFee * 1_000_000, pendingEffects);
                   const buyCheck = canBuyScoutedPlayer({
                     drawnCount: ownDraws.length,
                     money: overview.finance.money,

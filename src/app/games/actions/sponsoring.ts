@@ -6,6 +6,7 @@ import { redirect } from "next/navigation";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
 import type { LobbyClub, LobbyGame } from "@/lib/lobby/types";
 import type { SupabaseServiceClient } from "@/app/games/actions/_shared";
+import { resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
 import { canSignSponsorDeal } from "@/lib/lobby/sponsoring";
 import {
   applySponsorReward,
@@ -17,7 +18,11 @@ import { buildSponsorContractSnapshot } from "@/lib/lobby/sponsoring";
 async function getGameClubContext(supabase: SupabaseServiceClient, gameId: string, userId: string) {
   const [{ data: game, error: gameError }, { data: clubs, error: clubsError }] = await Promise.all([
     supabase.from("games").select("id, room_code, phase, settings").eq("id", gameId).single<LobbyGame>(),
-    supabase.from("clubs").select("id, game_id, clerk_user_id, club_name").eq("game_id", gameId).returns<LobbyClub[]>(),
+    supabase
+      .from("clubs")
+      .select("id, game_id, clerk_user_id, club_name, status, status_override, status_override_until_season")
+      .eq("game_id", gameId)
+      .returns<LobbyClub[]>(),
   ]);
   if (gameError) throw gameError;
   if (clubsError) throw clubsError;
@@ -47,13 +52,14 @@ export async function signSponsorDealAction(formData: FormData) {
 
   const { game, ownClub } = await getGameClubContext(supabase, gameId, userId);
   const contracts = await loadClubSponsorContracts(supabase, ownClub.id);
-  const check = canSignSponsorDeal({ phase: game.phase, contracts, dealId });
+  const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
+  const clubStatus = resolveEffectiveClubStatus(ownClub, seasonNumber);
+  const check = canSignSponsorDeal({ phase: game.phase, contracts, dealId, clubStatus });
 
   if (!check.ok) {
     redirect(`/games/${roomCode}?view=grounds&sponsor_error=${encodeURIComponent(check.reason)}`);
   }
 
-  const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
   await signSponsorContract(supabase, {
     gameId,
     clubId: ownClub.id,

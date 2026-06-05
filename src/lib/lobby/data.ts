@@ -54,6 +54,7 @@ import {
   normalizeSponsorProgress,
   type SponsorContractRow,
 } from "@/lib/lobby/sponsoring";
+import { SPONSOR_PRESTIGE_LABELS } from "@/lib/lobby/sponsor-deals";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
 
 const GAME_SELECT_LEGACY =
@@ -1249,8 +1250,8 @@ async function getClubOverviewSnapshot(
           progress: normalizeSponsorProgress(row.progress),
         }));
   const sponsorOverview = sponsorContracts.length || !isUndefinedTableError(sponsorContractsError)
-    ? buildClubSponsorOverview(sponsorContracts, game.phase)
-    : EMPTY_SPONSOR_OVERVIEW;
+    ? buildClubSponsorOverview(sponsorContracts, game.phase, effectiveStatus)
+    : { ...EMPTY_SPONSOR_OVERVIEW, sponsor_prestige_tier: effectiveStatus, sponsor_prestige_label: SPONSOR_PRESTIGE_LABELS[effectiveStatus] };
 
   return {
     season_number: seasonNumber,

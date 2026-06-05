@@ -447,6 +447,8 @@ export type ClubOverviewSnapshot = {
   available_sponsor_deals: SponsorDealOverviewSnapshot[];
   sponsor_signing_allowed: boolean;
   stadium_upgrade_blocked_by_sponsor: boolean;
+  sponsor_prestige_tier: string;
+  sponsor_prestige_label: string;
 };
 
 export type SponsorContractOverviewSnapshot = {

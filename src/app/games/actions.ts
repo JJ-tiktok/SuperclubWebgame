@@ -259,7 +259,7 @@ export async function upgradeInvestmentAction(formData: FormData) {
 
   let check: { ok: true; cost: number } | { ok: false; reason: string };
   let clubUpdate: Record<string, unknown> = { money: 0 };
-  let investmentAction = actionRaw;
+  const investmentAction = actionRaw;
 
   if (isEndgame) {
     const action = actionRaw as EndgameFacilityAction;

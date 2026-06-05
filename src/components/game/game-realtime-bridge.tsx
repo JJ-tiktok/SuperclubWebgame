@@ -11,6 +11,10 @@ import {
 import { createClerkBrowserClient } from "@/lib/supabase/client";
 import type { GameEventSnapshot, LobbySnapshot } from "@/lib/lobby/types";
 
+const SNAPSHOT_RECOVERY_DEBOUNCE_MS = 750;
+const VISIBILITY_RECOVERY_AFTER_MS = 60_000;
+const MIN_SNAPSHOT_POLL_MS = 15_000;
+
 export function GameRealtimeBridge({
   currentUserId,
   currentView,
@@ -49,6 +53,8 @@ export function GameRealtimeBridge({
     let recoveryTimer: ReturnType<typeof setTimeout> | null = null;
     const gameId = snapshot.game.id;
     const roomCode = snapshot.game.room_code;
+    const snapshotPollMs = getConfiguredSnapshotPollMs();
+    let lastLiveActivityAt = Date.now();
     const eventChannel = client.channel(`game:${gameId}`, {
       config: {
         presence: {
@@ -56,13 +62,13 @@ export function GameRealtimeBridge({
         },
       },
     });
-    const fallbackChannel = client.channel(`game-fallback:${gameId}`);
 
     async function recover(reason: string) {
       if (!active) {
         return;
       }
 
+      lastLiveActivityAt = Date.now();
       await refetchGameSnapshot({ reason, roomCode, view: currentView });
     }
 
@@ -77,11 +83,11 @@ export function GameRealtimeBridge({
           return;
         }
 
-        recoveryInFlight = true;
-        void recover(reason).finally(() => {
-          recoveryInFlight = false;
-        });
-      }, 120);
+          recoveryInFlight = true;
+          void recover(reason).finally(() => {
+            recoveryInFlight = false;
+          });
+      }, SNAPSHOT_RECOVERY_DEBOUNCE_MS);
     }
 
     async function subscribe() {
@@ -102,6 +108,7 @@ export function GameRealtimeBridge({
             table: "game_events",
           },
           (payload) => {
+            lastLiveActivityAt = Date.now();
             const event = normalizeGameEvent(payload.new);
             if (!event) {
               scheduleRecover("invalid_event_payload");
@@ -115,6 +122,7 @@ export function GameRealtimeBridge({
           },
         )
         .on("presence", { event: "sync" }, () => {
+          lastLiveActivityAt = Date.now();
           setGamePresence(normalizePresenceState(eventChannel.presenceState()));
         })
         .subscribe((status) => {
@@ -133,56 +141,51 @@ export function GameRealtimeBridge({
             scheduleRecover(`events_${status.toLowerCase()}`);
           }
         });
-
-      const fallbackRecover = (reason: string) => {
-        scheduleRecover(reason);
-      };
-
-      fallbackChannel
-        .on("postgres_changes", { event: "*", schema: "public", table: "games", filter: `id=eq.${gameId}` }, () => fallbackRecover("fallback_games"))
-        .on("postgres_changes", { event: "*", schema: "public", table: "clubs", filter: `game_id=eq.${gameId}` }, () => fallbackRecover("fallback_clubs"))
-        .on("postgres_changes", { event: "*", schema: "public", table: "game_members", filter: `game_id=eq.${gameId}` }, () => fallbackRecover("fallback_game_members"))
-        .on("postgres_changes", { event: "*", schema: "public", table: "draft_rounds", filter: `game_id=eq.${gameId}` }, () => fallbackRecover("fallback_draft_rounds"))
-        .on("postgres_changes", { event: "*", schema: "public", table: "scouting_draws", filter: `game_id=eq.${gameId}` }, () => fallbackRecover("fallback_scouting_draws"))
-        .on("postgres_changes", { event: "*", schema: "public", table: "auctions", filter: `game_id=eq.${gameId}` }, () => fallbackRecover("fallback_auctions"))
-        .on("postgres_changes", { event: "*", schema: "public", table: "bids" }, () => fallbackRecover("fallback_bids"))
-        .on("postgres_changes", { event: "*", schema: "public", table: "fixtures", filter: `game_id=eq.${gameId}` }, () => fallbackRecover("fallback_fixtures"))
-        .on("postgres_changes", { event: "*", schema: "public", table: "season_standings", filter: `game_id=eq.${gameId}` }, () => fallbackRecover("fallback_season_standings"))
-        .on("postgres_changes", { event: "*", schema: "public", table: "transactions", filter: `game_id=eq.${gameId}` }, () => fallbackRecover("fallback_transactions"))
-        .on("postgres_changes", { event: "*", schema: "public", table: "club_players" }, () => fallbackRecover("fallback_club_players"))
-        .on("postgres_changes", { event: "*", schema: "public", table: "club_staff" }, () => fallbackRecover("fallback_club_staff"))
-        .on("postgres_changes", { event: "*", schema: "public", table: "staff_offers" }, () => fallbackRecover("fallback_staff_offers"))
-        .on("postgres_changes", { event: "*", schema: "public", table: "transfer_offers" }, () => fallbackRecover("fallback_transfer_offers"))
-        .on("postgres_changes", { event: "*", schema: "public", table: "investments", filter: `game_id=eq.${gameId}` }, () => fallbackRecover("fallback_investments"))
-        .on("postgres_changes", { event: "*", schema: "public", table: "club_game_changers" }, () => fallbackRecover("fallback_club_game_changers"))
-        .on("postgres_changes", { event: "*", schema: "public", table: "club_sponsor_contracts" }, () => fallbackRecover("fallback_club_sponsor_contracts"))
-        .on("postgres_changes", { event: "*", schema: "public", table: "match_news", filter: `game_id=eq.${gameId}` }, () => fallbackRecover("fallback_match_news"))
-        .subscribe((status) => {
-          if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-            scheduleRecover(`fallback_${status.toLowerCase()}`);
-          }
-        });
     }
 
     void subscribe();
-    const pollInterval = window.setInterval(() => {
-      if (document.visibilityState === "visible") {
-        scheduleRecover("poll");
+    const pollInterval = snapshotPollMs
+      ? window.setInterval(() => {
+          if (document.visibilityState === "visible") {
+            scheduleRecover("configured_poll");
+          }
+        }, snapshotPollMs)
+      : null;
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== "visible") {
+        return;
       }
-    }, 2_000);
+
+      if (Date.now() - lastLiveActivityAt >= VISIBILITY_RECOVERY_AFTER_MS) {
+        scheduleRecover("visibility_resume");
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       active = false;
-      window.clearInterval(pollInterval);
+      if (pollInterval) {
+        window.clearInterval(pollInterval);
+      }
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       if (recoveryTimer) {
         clearTimeout(recoveryTimer);
       }
       void client.removeChannel(eventChannel);
-      void client.removeChannel(fallbackChannel);
     };
   }, [currentUserId, currentView, isLoaded, ownClub?.id, ownClub?.is_ready, ownClub?.manager_name, ownMember?.display_name, ownMember?.phase_done, session, snapshot.game.id, snapshot.game.phase, snapshot.game.room_code]);
 
   return null;
+}
+
+function getConfiguredSnapshotPollMs() {
+  const raw = process.env.NEXT_PUBLIC_GAME_SNAPSHOT_POLL_MS;
+  const value = Number(raw ?? 0);
+  if (!Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+
+  return Math.max(MIN_SNAPSHOT_POLL_MS, Math.trunc(value));
 }
 
 function normalizeGameEvent(value: unknown): GameEventSnapshot | null {

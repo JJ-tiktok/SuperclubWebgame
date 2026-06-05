@@ -9,6 +9,7 @@ import {
   Banknote,
   Building2,
   CalendarDays,
+  Circle,
   ClipboardList,
   Crown,
   Dumbbell,
@@ -23,9 +24,11 @@ import {
   Settings,
   Shield,
   ShoppingCart,
+  Square,
   Sparkles,
   Target,
   Trash2,
+  Triangle,
   Trophy,
   UserCheck,
   UserMinus,
@@ -135,6 +138,7 @@ import { canUpgradeFacility, getStaffRecruitBlockReason, getStaffRecruitHint, ge
 import { isOffseasonPendingScopeActive } from "@/lib/lobby/offseason-pending-effects";
 import { calculateLineupPower } from "@/lib/lobby/lineup-power";
 import { getPhaseLabel, isInvestmentPhase } from "@/lib/lobby/phases";
+import { buildSeasonEndSummaryModel } from "@/lib/lobby/season-end-summary";
 import { isClubStatusOverrideActive, resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
 import { getManagerScoreBand, getPlacementReward, getScoutingCapacity, getStadiumIncome, getTrainingCapacity, MAX_SQUAD_SIZE } from "@/lib/game/rules";
 import { CPU_TIER_LABEL } from "@/lib/lobby/cpu-teams";
@@ -674,6 +678,10 @@ function DashboardView({
 
   return (
     <div className="space-y-4">
+      {snapshot.game.phase === "season_end" ? (
+        <SeasonEndSummary isHost={isHost} ownClub={ownClub} snapshot={snapshot} />
+      ) : null}
+
       <Panel className="border-[var(--club-border)] bg-zinc-950/85">
         <PanelHeader>
           <div>
@@ -724,6 +732,185 @@ function DashboardView({
 
       <ManagersPanel snapshot={snapshot} />
     </div>
+  );
+}
+
+function SeasonEndSummary({
+  isHost,
+  ownClub,
+  snapshot,
+}: {
+  isHost: boolean;
+  ownClub: LobbyClub | undefined;
+  snapshot: LobbySnapshot;
+}) {
+  const seasonNumber = Number(snapshot.game.settings?.seasonNumber ?? 1);
+  const summary = buildSeasonEndSummaryModel({
+    finance: snapshot.club_overview?.finance,
+    matchNews: snapshot.match_news,
+    ownClub,
+    season: snapshot.season,
+    settings: snapshot.game.settings,
+  });
+  const nextStepTitle = summary.goesToContinentalCup ? "Naechster Schritt: Continental Cup" : "Naechster Schritt: Neue Off-Season";
+  const nextStepText = summary.goesToContinentalCup
+    ? "Nach der Bestaetigung wechselt der Host in den Continental Cup. Danach startet die naechste Off-Season."
+    : `Nach der Bestaetigung startet Saison ${seasonNumber + 1} mit der Finanzphase der neuen Off-Season.`;
+
+  if (!summary.hasSeasonData) {
+    return (
+      <Panel className="border-amber-800/70 bg-amber-950/20">
+        <PanelHeader>
+          <div>
+            <PanelTitle>Saisonabschluss</PanelTitle>
+            <PanelDescription>Saisonwertung wird geladen oder wurde noch nicht berechnet.</PanelDescription>
+          </div>
+          <Trophy size={18} className="text-amber-300" aria-hidden />
+        </PanelHeader>
+        <p className="text-sm text-amber-100/85">
+          {summary.setupError ?? "Sobald die Saisonwertung verfuegbar ist, erscheinen hier Platzierungen, Ereignisse und der naechste Schritt."}
+        </p>
+      </Panel>
+    );
+  }
+
+  return (
+    <Panel className="border-[var(--club-border)] bg-zinc-950/90">
+      <PanelHeader>
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <PanelTitle>Saison abgeschlossen</PanelTitle>
+            <Badge tone={summary.goesToContinentalCup ? "blue" : "green"}>
+              {summary.goesToContinentalCup ? "Continental Cup folgt" : "Off-Season folgt"}
+            </Badge>
+          </div>
+          <PanelDescription>Saison {seasonNumber} ist ausgewertet. Markiere dich als Fertig, danach kann der Host fortsetzen.</PanelDescription>
+        </div>
+        <Trophy size={18} className="text-[var(--club-color)]" aria-hidden />
+      </PanelHeader>
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <Metric icon={CalendarDays} label="Saison" value={`#${seasonNumber}`} detail="abgeschlossen" />
+        <Metric
+          icon={Crown}
+          label="Manager-Sieger"
+          value={summary.topManagers[0]?.club_name ?? "-"}
+          detail={summary.topManagers[0] ? `${summary.topManagers[0].season_score} Score` : "noch offen"}
+        />
+        <Metric
+          icon={Trophy}
+          label="Liga-Sieger"
+          value={summary.leagueWinner?.participant.display_name ?? "-"}
+          detail="kosmetische Saison-Tabelle"
+        />
+        <Metric
+          icon={ListOrdered}
+          label="Spiele"
+          value={`${summary.completedFixtureCount}/${summary.totalFixtureCount}`}
+          detail="abgeschlossen"
+        />
+      </div>
+
+      <div className="mt-4 grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
+        <div className="rounded-md border border-zinc-800 bg-zinc-900/60 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-medium uppercase text-zinc-500">Managerwertung</p>
+              <p className="mt-1 text-sm text-zinc-400">Top 3 aus Kadersternen + Saisonpunkten.</p>
+            </div>
+            <Badge>Top 3</Badge>
+          </div>
+          <div className="mt-3 space-y-2">
+            {summary.topManagers.map((standing) => (
+              <div
+                className={cn(
+                  "flex flex-wrap items-center justify-between gap-3 rounded-md border p-3",
+                  standing.club_id === ownClub?.id
+                    ? "border-[var(--club-border)] bg-[var(--club-soft)]"
+                    : "border-zinc-800 bg-zinc-950/50",
+                )}
+                key={standing.club_id}
+              >
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-zinc-700 bg-zinc-950 text-sm font-semibold text-zinc-50">
+                    #{standing.rank}
+                  </span>
+                  <div className="min-w-0">
+                    <p className="truncate font-semibold text-zinc-50">{standing.club_name}</p>
+                    <p className="mt-0.5 text-xs text-zinc-500">
+                      {standing.squad_stars} Kader + {standing.season_match_points} Saisonpunkte
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge tone="blue">{standing.season_score} Score</Badge>
+                  <Badge>{getClubStatusLabel(standing.status)}</Badge>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded-md border border-zinc-800 bg-zinc-900/60 p-4">
+          <p className="text-xs font-medium uppercase text-zinc-500">Dein Abschluss</p>
+          {summary.ownStanding ? (
+            <>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <SmallInfo label="Platz" value={`#${summary.ownStanding.rank}`} />
+                <SmallInfo label="Score" value={String(summary.ownStanding.season_score)} />
+                <SmallInfo label="Status" value={getClubStatusLabel(summary.ownStanding.status)} />
+                <SmallInfo label="Attraktivitaet" value={`${summary.ownStanding.attractiveness_stars} Sterne`} />
+                <SmallInfo label="Kadersterne" value={String(summary.ownStanding.squad_stars)} />
+                <SmallInfo label="Saisonpunkte" value={String(summary.ownStanding.season_match_points)} />
+              </div>
+              <div className="mt-3 rounded-md border border-zinc-800 bg-zinc-950/60 p-3">
+                <p className="text-xs font-medium uppercase text-zinc-500">Finance-Ausblick</p>
+                <p className="mt-1 text-lg font-semibold text-zinc-50">{formatMoney(summary.finance?.projected_net ?? 0)}</p>
+                <p className="mt-1 text-xs text-zinc-500">Stadion + Praemie minus Gehaelter, gebucht beim Start der Finance-Phase.</p>
+              </div>
+            </>
+          ) : (
+            <p className="mt-3 text-sm text-zinc-400">Dein Verein ist in der Managerwertung noch nicht verfuegbar.</p>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-4 xl:grid-cols-[1fr_360px]">
+        <div className="rounded-md border border-zinc-800 bg-zinc-900/60 p-4">
+          <p className="text-xs font-medium uppercase text-zinc-500">Ereignisse</p>
+          {summary.highlightNews.length > 0 ? (
+            <div className="mt-3 space-y-2">
+              {summary.highlightNews.map((news) => (
+                <div className="rounded-md border border-zinc-800 bg-zinc-950/50 p-3" key={news.id}>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="font-medium text-zinc-100">{news.headline}</p>
+                    <Badge tone={news.category === "injury" ? "red" : "blue"}>{news.category}</Badge>
+                  </div>
+                  {news.detail ? <p className="mt-1 text-sm text-zinc-400">{news.detail}</p> : null}
+                  <p className="mt-2 text-xs text-zinc-600">{formatSavedAt(news.created_at)}</p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-3 text-sm text-zinc-400">Keine Ereignisse fuer diese Saison geloggt.</p>
+          )}
+        </div>
+
+        <div className="rounded-md border border-[var(--club-border)] bg-[var(--club-soft)] p-4">
+          <p className="text-xs font-medium uppercase text-zinc-500">Naechster Schritt</p>
+          <p className="mt-1 text-lg font-semibold text-zinc-50">{nextStepTitle}</p>
+          <p className="mt-2 text-sm text-zinc-400">{nextStepText}</p>
+          <div className="mt-4 rounded-md border border-zinc-800 bg-zinc-950/55 p-3 text-sm text-zinc-300">
+            <p>
+              {isHost
+                ? "Alle Manager markieren oben Fertig. Sobald alle bereit sind, kannst du mit Fortsetzen wechseln."
+                : "Markiere dich oben als Fertig. Sobald alle bereit sind, setzt der Host die Runde fort."}
+            </p>
+            <p className="mt-2 text-xs text-zinc-500">Zielphase: {getPhaseLabel(summary.nextPhase)}</p>
+          </div>
+        </div>
+      </div>
+    </Panel>
   );
 }
 
@@ -3460,6 +3647,10 @@ function FixtureCard({
             />
           </div>
 
+          {isPvP && snapshot.game.settings.archetypes_enabled !== false ? (
+            <ArchetypeScoutPanel away={away} home={home} snapshot={snapshot} />
+          ) : null}
+
           {(home.kind === "human" || away.kind === "human") && (result ?? partialThirds.length > 0) ? (
             <MatchResultDetail
               away={away}
@@ -3706,6 +3897,208 @@ function FixtureSideCard({
       </div>
     </div>
   );
+}
+
+type ArchetypeScoutCandidate = {
+  archetype: PlayerArchetype;
+  id: string;
+  name: string;
+  stars: number;
+};
+
+type ArchetypeScoutLine = {
+  best: ArchetypeScoutCandidate | null;
+  counts: Record<PlayerArchetype, number>;
+  total: number;
+  worst: ArchetypeScoutCandidate | null;
+  zone: "ATT" | "DEF";
+};
+
+type ArchetypeScout = {
+  attack: ArchetypeScoutLine;
+  defense: ArchetypeScoutLine;
+  clubName: string;
+};
+
+function ArchetypeScoutPanel({
+  away,
+  home,
+  snapshot,
+}: {
+  away: SeasonFixtureSnapshot["away_participant"];
+  home: SeasonFixtureSnapshot["home_participant"];
+  snapshot: LobbySnapshot;
+}) {
+  const homeScout = buildParticipantArchetypeScout(snapshot, home.club_id, home.display_name);
+  const awayScout = buildParticipantArchetypeScout(snapshot, away.club_id, away.display_name);
+
+  if (!homeScout && !awayScout) {
+    return null;
+  }
+
+  return (
+    <div className="mt-3 rounded-md border border-zinc-800 bg-zinc-900/45 p-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Archetype-Scout</p>
+          <p className="text-sm font-semibold text-zinc-100">Moegliche Profile aus dem Kader</p>
+        </div>
+        <p className="text-xs text-zinc-500">Keine Starter-Vorschau</p>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2">
+        {homeScout ? <ArchetypeScoutCard scout={homeScout} /> : null}
+        {awayScout ? <ArchetypeScoutCard scout={awayScout} /> : null}
+      </div>
+    </div>
+  );
+}
+
+function ArchetypeScoutCard({ scout }: { scout: ArchetypeScout }) {
+  return (
+    <div className="rounded border border-zinc-800 bg-black/20 p-3">
+      <p className="truncate text-sm font-semibold text-zinc-100">{scout.clubName}</p>
+      <div className="mt-3 grid gap-2">
+        <ArchetypeScoutLineView line={scout.attack} />
+        <ArchetypeScoutLineView line={scout.defense} />
+      </div>
+    </div>
+  );
+}
+
+function ArchetypeScoutLineView({ line }: { line: ArchetypeScoutLine }) {
+  const label = line.zone === "ATT" ? "Angriff" : "Abwehr";
+
+  return (
+    <div className="rounded border border-zinc-800 bg-zinc-950/70 p-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-xs font-semibold uppercase text-zinc-500">
+          {label} {line.total > 0 ? `(${line.total})` : ""}
+        </span>
+        <div className="flex flex-wrap gap-1">
+          {(Object.keys(ARCHETYPE_META) as PlayerArchetype[]).map((archetype) => (
+            <span
+              className="inline-flex h-6 min-w-8 items-center justify-center gap-1 rounded border border-zinc-700 bg-zinc-900 px-1.5 text-[11px] font-semibold text-zinc-300"
+              key={`${line.zone}-${archetype}`}
+              title={getArchetypeLabel(archetype, line.zone)}
+            >
+              <ArchetypeScoutIcon archetype={archetype} />
+              {line.counts[archetype]}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="mt-2 grid gap-1 text-[11px] text-zinc-400">
+        <ArchetypeCandidateRow candidate={line.best} label="Top" zone={line.zone} />
+        <ArchetypeCandidateRow candidate={line.worst} label="Low" zone={line.zone} />
+      </div>
+    </div>
+  );
+}
+
+function ArchetypeCandidateRow({
+  candidate,
+  label,
+  zone,
+}: {
+  candidate: ArchetypeScoutCandidate | null;
+  label: string;
+  zone: "ATT" | "DEF";
+}) {
+  if (!candidate) {
+    return (
+      <div className="flex items-center justify-between gap-2 text-zinc-600">
+        <span>{label}</span>
+        <span>-</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span className="w-7 shrink-0 text-zinc-600">{label}</span>
+        <ArchetypeScoutIcon archetype={candidate.archetype} />
+        <span className="truncate" title={`${candidate.name} - ${getArchetypeLabel(candidate.archetype, zone)}`}>
+          {candidate.name}
+        </span>
+      </span>
+      <span className="shrink-0 font-semibold text-zinc-200">{formatStars(candidate.stars)}</span>
+    </div>
+  );
+}
+
+function buildParticipantArchetypeScout(
+  snapshot: LobbySnapshot,
+  clubId: string | null | undefined,
+  fallbackName: string,
+): ArchetypeScout | null {
+  if (!clubId) return null;
+  const clubSquad = snapshot.club_squads?.find((entry) => entry.club.id === clubId);
+  if (!clubSquad) return null;
+
+  return {
+    attack: buildArchetypeScoutLine(clubSquad.squad, "ATT"),
+    clubName: clubSquad.club.club_name || fallbackName,
+    defense: buildArchetypeScoutLine(clubSquad.squad, "DEF"),
+  };
+}
+
+function buildArchetypeScoutLine(squad: ClubPlayerSnapshot[], zone: "ATT" | "DEF"): ArchetypeScoutLine {
+  const candidates = squad
+    .filter((owned) => !owned.injured && getPlayerPositions(owned.player).includes(zone))
+    .flatMap((owned): ArchetypeScoutCandidate[] => {
+      const archetype = zone === "ATT" ? owned.player.attacker_archetype : owned.player.defender_archetype;
+      return archetype
+        ? [{
+            archetype,
+            id: owned.id,
+            name: owned.player.display_name,
+            stars: Math.trunc(Number(owned.current_stars)),
+          }]
+        : [];
+    })
+    .sort((a, b) => {
+      const stars = b.stars - a.stars;
+      if (stars !== 0) return stars;
+      return a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+    });
+
+  const counts = (Object.keys(ARCHETYPE_META) as PlayerArchetype[]).reduce(
+    (acc, archetype) => ({ ...acc, [archetype]: candidates.filter((candidate) => candidate.archetype === archetype).length }),
+    { alpha: 0, beta: 0, gamma: 0 } satisfies Record<PlayerArchetype, number>,
+  );
+
+  return {
+    best: candidates[0] ?? null,
+    counts,
+    total: candidates.length,
+    worst: candidates.length > 1 ? candidates.at(-1) ?? null : null,
+    zone,
+  };
+}
+
+function getPlayerPositions(player: DraftPlayerRow) {
+  return (player.eligible_positions?.length ? player.eligible_positions : [player.position]).filter(Boolean);
+}
+
+function getArchetypeLabel(archetype: PlayerArchetype, zone: "ATT" | "DEF") {
+  const meta = ARCHETYPE_META[archetype];
+  return zone === "ATT" ? meta.attackLabel : meta.defenseLabel;
+}
+
+function ArchetypeScoutIcon({ archetype }: { archetype: PlayerArchetype }) {
+  const className = "h-3 w-3 shrink-0";
+  const symbol = ARCHETYPE_META[archetype].symbol;
+
+  if (symbol === "triangle") {
+    return <Triangle className={className} fill="currentColor" strokeWidth={2.4} />;
+  }
+
+  if (symbol === "circle") {
+    return <Circle className={className} fill="currentColor" strokeWidth={2.4} />;
+  }
+
+  return <Square className={className} fill="currentColor" strokeWidth={2.4} />;
 }
 
 function TableView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snapshot: LobbySnapshot }) {

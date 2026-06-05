@@ -256,6 +256,72 @@ describe("season and matchday rules", () => {
     assert.ok(result.third.archetype_effects?.every((effect) => effect.winner === "attacker"));
   });
 
+  it("ignores stronger players without archetype when selecting archetype duel candidates", () => {
+    const result = resolveOneThird({
+      away: side({
+        participantId: "away",
+        powers: { ATT: 7, DEF: 8, MID: 5 },
+        zone_players: [
+          { current_stars: 6, current_zone: "DEF", display_name: "Away Strong Neutral", id: "def-neutral", lineup_slot: 1 },
+          { current_stars: 4, current_zone: "DEF", defender_archetype: "beta", display_name: "Away Top Style", id: "def-top", lineup_slot: 2 },
+          { current_stars: 2, current_zone: "DEF", defender_archetype: "gamma", display_name: "Away Low Style", id: "def-low", lineup_slot: 3 },
+        ],
+      }),
+      home: side({
+        participantId: "home",
+        powers: { ATT: 10, DEF: 8, MID: 9 },
+        zone_players: [
+          { current_stars: 6, current_zone: "ATT", display_name: "Home Strong Neutral", id: "att-neutral", lineup_slot: 1 },
+          { attacker_archetype: "alpha", current_stars: 4, current_zone: "ATT", display_name: "Home Top Style", id: "att-top", lineup_slot: 2 },
+          { attacker_archetype: "beta", current_stars: 2, current_zone: "ATT", display_name: "Home Low Style", id: "att-low", lineup_slot: 3 },
+        ],
+      }),
+      homeDice: [1, 1],
+      awayDice: [1, 1],
+      index: 2,
+      priorThirds: [{ away: { dice: [1, 1], dice_faces: 6, participant_id: "away", total: 7, zone: "MID", zone_stars: 5 }, home: { dice: [3, 3], dice_faces: 6, participant_id: "home", total: 15, zone: "MID", zone_stars: 9 }, index: 1, label: "midfield", winner_participant_id: "home" }],
+    });
+
+    assert.equal(result.third.home.zone_stars, 12);
+    assert.equal(result.third.away.zone_stars, 6);
+    assert.deepEqual(
+      result.third.archetype_effects?.map((effect) => [effect.attacker_player_name, effect.defender_player_name]),
+      [
+        ["Home Top Style", "Away Top Style"],
+        ["Home Low Style", "Away Low Style"],
+      ],
+    );
+  });
+
+  it("does not count a single archetype player twice for top and low duel", () => {
+    const result = resolveOneThird({
+      away: side({
+        participantId: "away",
+        powers: { ATT: 7, DEF: 8, MID: 5 },
+        zone_players: [
+          { current_stars: 5, current_zone: "DEF", defender_archetype: "beta", display_name: "Away Only Style", id: "def-only", lineup_slot: 1 },
+          { current_stars: 1, current_zone: "DEF", display_name: "Away Neutral", id: "def-neutral", lineup_slot: 2 },
+        ],
+      }),
+      home: side({
+        participantId: "home",
+        powers: { ATT: 10, DEF: 8, MID: 9 },
+        zone_players: [
+          { attacker_archetype: "alpha", current_stars: 5, current_zone: "ATT", display_name: "Home Only Style", id: "att-only", lineup_slot: 1 },
+          { current_stars: 1, current_zone: "ATT", display_name: "Home Neutral", id: "att-neutral", lineup_slot: 2 },
+        ],
+      }),
+      homeDice: [1, 1],
+      awayDice: [1, 1],
+      index: 2,
+      priorThirds: [{ away: { dice: [1, 1], dice_faces: 6, participant_id: "away", total: 7, zone: "MID", zone_stars: 5 }, home: { dice: [3, 3], dice_faces: 6, participant_id: "home", total: 15, zone: "MID", zone_stars: 9 }, index: 1, label: "midfield", winner_participant_id: "home" }],
+    });
+
+    assert.equal(result.third.home.zone_stars, 11);
+    assert.equal(result.third.away.zone_stars, 7);
+    assert.equal(result.third.archetype_effects?.length, 1);
+  });
+
   it("can disable archetype effects per fixture", () => {
     const result = resolveOneThird({
       archetypesEnabled: false,

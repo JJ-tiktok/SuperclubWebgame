@@ -864,7 +864,7 @@ function ArchetypeMatchupGuide() {
         })}
       </div>
       <p className="mt-2 text-[11px] text-zinc-500">
-        Im Angriffsdrittel wird Top gegen Top und Low gegen Low verglichen. Gewonnenes Pair: eigene Zone +1, Gegenzone -1.
+        Im Angriffsdrittel zaehlen nur Spieler mit Archetype: bester gegen bester, schwaechster gegen schwaechster. Spieler ohne Archetype werden ignoriert.
       </p>
     </div>
   );

@@ -408,8 +408,8 @@ function getArchetypeZoneResultForSides(
 }
 
 function getArchetypeZoneResult(attacker: FixtureSideInput, defender: FixtureSideInput) {
-  const attackingPlayers = getSortedZonePlayers(attacker, "ATT");
-  const defendingPlayers = getSortedZonePlayers(defender, "DEF");
+  const attackingPlayers = getSortedZonePlayers(attacker, "ATT").filter((player) => player.attacker_archetype);
+  const defendingPlayers = getSortedZonePlayers(defender, "DEF").filter((player) => player.defender_archetype);
   const effects: ArchetypeEffect[] = [];
 
   if (attackingPlayers.length === 0 || defendingPlayers.length === 0) {
@@ -421,7 +421,16 @@ function getArchetypeZoneResult(attacker: FixtureSideInput, defender: FixtureSid
   ];
 
   if (attackingPlayers.length > 1 && defendingPlayers.length > 1) {
-    pairs.push({ attacker: attackingPlayers.at(-1), defender: defendingPlayers.at(-1), pair: "worst" });
+    const weakestAttacker = attackingPlayers.at(-1);
+    const weakestDefender = defendingPlayers.at(-1);
+    if (
+      weakestAttacker &&
+      weakestDefender &&
+      weakestAttacker.id !== attackingPlayers[0]?.id &&
+      weakestDefender.id !== defendingPlayers[0]?.id
+    ) {
+      pairs.push({ attacker: weakestAttacker, defender: weakestDefender, pair: "worst" });
+    }
   }
 
   let attackerDelta = 0;

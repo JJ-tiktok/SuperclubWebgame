@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { refreshOffseasonScoutingSnapshot } from "@/lib/lobby/scouting";
 import { applyClubStatusDelta, normalizeClubStatus, resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
+import { resolvePendingEffectSeasonNumber } from "@/lib/lobby/offseason-pending-effects";
 import type { GameChangerCategory } from "@/lib/lobby/types";
 
 // ---------------------------------------------------------------------------
@@ -244,6 +245,7 @@ export function describeGameChangerEffects(effects: GameChangerEffect[]): string
 
 export type ImmediateContext = {
   fixtureId?: string;
+  gamePhase?: string;
   matchday?: number;
   seasonNumber?: number;
   resolvedPayload?: Record<string, unknown>;
@@ -520,9 +522,14 @@ export async function enqueuePendingEffect(
 ): Promise<boolean> {
   const pending = effectToPendingScope(effect);
   if (!pending) return false;
+  const drawSeason = Math.max(1, Math.trunc(ctx.seasonNumber ?? 1));
   await supabase.from("club_pending_effects").insert({
     club_id: clubId,
-    season_number: Math.max(1, Math.trunc(ctx.seasonNumber ?? 1)),
+    season_number: resolvePendingEffectSeasonNumber({
+      drawSeason,
+      phase: ctx.gamePhase,
+      scope: pending.scope,
+    }),
     effect_type: effect.type,
     payload: pending.payload,
     scope: pending.scope,

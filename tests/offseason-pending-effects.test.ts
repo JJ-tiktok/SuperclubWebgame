@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   computeTrainingExtraPlayers,
+  getOffseasonPromotionTargetSeason,
   isOffseasonPendingScopeActive,
+  resolvePendingEffectSeasonNumber,
   shouldPromoteOffseasonEffectsOnPhaseAdvance,
   sumTrainingCapacityFromPendingEffects,
 } from "@/lib/lobby/offseason-pending-effects";
@@ -63,5 +65,32 @@ describe("offseason pending effects", () => {
   it("isOffseasonPendingScopeActive without phase only allows current_offseason", () => {
     assert.equal(isOffseasonPendingScopeActive("current_offseason", undefined), true);
     assert.equal(isOffseasonPendingScopeActive("next_offseason", undefined), false);
+  });
+
+  it("stores next_offseason effects for the upcoming offseason season number", () => {
+    assert.equal(
+      resolvePendingEffectSeasonNumber({ drawSeason: 1, scope: "next_offseason" }),
+      2,
+    );
+    assert.equal(
+      resolvePendingEffectSeasonNumber({ drawSeason: 2, scope: "next_offseason", phase: "off_season" }),
+      3,
+    );
+  });
+
+  it("stores current_offseason effects for the active offseason when already in off_season", () => {
+    assert.equal(
+      resolvePendingEffectSeasonNumber({ drawSeason: 2, scope: "current_offseason", phase: "off_season" }),
+      2,
+    );
+    assert.equal(
+      resolvePendingEffectSeasonNumber({ drawSeason: 1, scope: "current_offseason", phase: "season" }),
+      2,
+    );
+  });
+
+  it("computes the promotion target season from the current settings season", () => {
+    assert.equal(getOffseasonPromotionTargetSeason(1), 2);
+    assert.equal(getOffseasonPromotionTargetSeason(4), 5);
   });
 });

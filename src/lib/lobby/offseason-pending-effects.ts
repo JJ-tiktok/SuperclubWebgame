@@ -38,6 +38,36 @@ export type OffseasonPendingEffectRow = {
   payload: Record<string, unknown>;
 };
 
+/**
+ * Season number stored on `club_pending_effects` is the settings season when the effect
+ * should apply (same convention as sponsor rewards), not necessarily the draw season.
+ */
+export function resolvePendingEffectSeasonNumber(params: {
+  drawSeason: number;
+  scope: string;
+  phase?: string;
+}): number {
+  const drawSeason = Math.max(1, Math.trunc(params.drawSeason));
+  if (params.scope === "next_match" || params.scope === "next_transfer" || params.scope === "this_season") {
+    return drawSeason;
+  }
+  if (params.scope === "next_offseason") {
+    return drawSeason + 1;
+  }
+  if (params.scope === "current_offseason") {
+    if (params.phase && isOffseasonPendingEffectWindow(params.phase)) {
+      return drawSeason;
+    }
+    return drawSeason + 1;
+  }
+  return drawSeason;
+}
+
+/** Target settings season for a `next_offseason` row that should promote now. */
+export function getOffseasonPromotionTargetSeason(currentSeasonNumber: number): number {
+  return Math.max(1, Math.trunc(currentSeasonNumber)) + 1;
+}
+
 export function sumTrainingCapacityFromPendingEffects(
   pendingEffects: OffseasonPendingEffectRow[],
   phase: string,

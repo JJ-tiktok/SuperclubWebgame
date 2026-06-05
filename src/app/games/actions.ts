@@ -51,6 +51,7 @@ import {
 import { isSponsoringEnabled, isStadiumUpgradeBlockedBySponsor } from "@/lib/lobby/sponsoring";
 import {
   computeTrainingExtraPlayers,
+  getOffseasonPromotionTargetSeason,
   isOffseasonPendingEffectWindow,
   isOffseasonPendingScopeActive,
   shouldPromoteOffseasonEffectsOnPhaseAdvance,
@@ -3529,6 +3530,7 @@ async function consumePendingEffects(
 
 /**
  * Promotes next_offseason → current_offseason for all clubs of a game when entering off_season.
+ * Also repairs legacy rows that still use the draw season instead of the target offseason season.
  */
 async function transitionPendingEffectsToOffseason(
   supabase: SupabaseServiceClient,
@@ -3536,12 +3538,60 @@ async function transitionPendingEffectsToOffseason(
 ): Promise<void> {
   const clubIds = await listClubIds(supabase, gameId);
   if (clubIds.length === 0) return;
-  await supabase
+
+  const { data: game, error: gameError } = await supabase
+    .from("games")
+    .select("settings")
+    .eq("id", gameId)
+    .single<{ settings: { seasonNumber?: number } | null }>();
+
+  if (gameError) {
+    throw gameError;
+  }
+
+  const currentSeasonNumber = Number(game?.settings?.seasonNumber ?? 1);
+  const promotionTargetSeason = getOffseasonPromotionTargetSeason(currentSeasonNumber);
+  const { data: pendingRows, error: pendingError } = await supabase
     .from("club_pending_effects")
-    .update({ scope: "current_offseason" })
+    .select("id, season_number")
     .in("club_id", clubIds)
     .eq("scope", "next_offseason")
-    .is("consumed_at", null);
+    .is("consumed_at", null)
+    .returns<Array<{ id: string; season_number: number }>>();
+
+  if (pendingError) {
+    throw pendingError;
+  }
+
+  for (const row of pendingRows ?? []) {
+    if (row.season_number > promotionTargetSeason) {
+      continue;
+    }
+
+    const { error: updateError } = await supabase
+      .from("club_pending_effects")
+      .update({
+        scope: "current_offseason",
+        season_number: Math.max(row.season_number, promotionTargetSeason),
+      })
+      .eq("id", row.id);
+
+    if (updateError) {
+      throw updateError;
+    }
+  }
+
+  const { error: legacyRepairError } = await supabase
+    .from("club_pending_effects")
+    .update({ season_number: currentSeasonNumber })
+    .in("club_id", clubIds)
+    .in("scope", ["current_offseason", "next_offseason"])
+    .is("consumed_at", null)
+    .lt("season_number", currentSeasonNumber);
+
+  if (legacyRepairError) {
+    throw legacyRepairError;
+  }
 }
 
 /**

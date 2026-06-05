@@ -72,7 +72,25 @@ export function computePlayerMarketValues(input: PlayerMarketInput) {
   };
 }
 
-export function getClubPlayerMarketValues(owned: {
+export function readSyncedPlayerMarketValues(player: {
+  minimum_bid?: number | string | null;
+  scouting_price?: number | string | null;
+}): { minimumBid: number; scoutingPrice: number } | null {
+  const minimumBid = Number(player.minimum_bid ?? 0);
+  const scoutingPrice = Number(player.scouting_price ?? 0);
+
+  if (!Number.isFinite(minimumBid) || !Number.isFinite(scoutingPrice)) {
+    return null;
+  }
+
+  if (minimumBid <= 0 && scoutingPrice <= 0) {
+    return null;
+  }
+
+  return { minimumBid, scoutingPrice };
+}
+
+export function computeOwnedPlayerMarketValues(owned: {
   current_stars: number | string;
   player: {
     base_stars?: number | string | null;
@@ -92,6 +110,19 @@ export function getClubPlayerMarketValues(owned: {
     potentialCeiling,
     stars: currentStars,
   });
+}
+
+export function getClubPlayerMarketValues(owned: {
+  current_stars: number | string;
+  player: {
+    base_stars?: number | string | null;
+    minimum_bid?: number | string | null;
+    potential_stars?: number | string | null;
+    scouting_price?: number | string | null;
+    skill_max?: number | string | null;
+  };
+}) {
+  return readSyncedPlayerMarketValues(owned.player) ?? computeOwnedPlayerMarketValues(owned);
 }
 
 export function toPlayerMarketColumns(market: { minimumBid: number; scoutingPrice: number }) {

@@ -4,6 +4,7 @@ import {
   computePlayerMarketValues,
   getClubPlayerMarketValues,
   getRemainingPotentialPoints,
+  readSyncedPlayerMarketValues,
   resolvePlayerPotentialCeiling,
 } from "@/lib/lobby/player-market";
 
@@ -113,6 +114,25 @@ describe("player market values", () => {
       }),
       6,
     );
+  });
+
+  it("prefers synced database market values on player cards", () => {
+    const market = getClubPlayerMarketValues({
+      current_stars: 3,
+      player: {
+        base_stars: 4,
+        minimum_bid: 42_000_000,
+        potential_stars: 0,
+        scouting_price: 21_000_000,
+        skill_max: 5,
+      },
+    });
+
+    assert.deepEqual(market, {
+      minimumBid: 42_000_000,
+      scoutingPrice: 21_000_000,
+    });
+    assert.deepEqual(readSyncedPlayerMarketValues({ minimum_bid: 42_000_000, scouting_price: 21_000_000 }), market);
   });
 
   it("uses owned current stars instead of static player prices", () => {

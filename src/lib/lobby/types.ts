@@ -622,6 +622,10 @@ export type ContinentalFixtureSnapshot = {
   away_locked_att?: number | null;
   home_score?: number | null;
   away_score?: number | null;
+  home_third_points?: number | null;
+  away_third_points?: number | null;
+  partial_result?: Record<string, unknown> | null;
+  result?: Record<string, unknown> | null;
   winner_participant_id?: string | null;
   home_participant: ContinentalParticipantSnapshot;
   away_participant: ContinentalParticipantSnapshot;

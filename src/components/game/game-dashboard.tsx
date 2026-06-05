@@ -1924,9 +1924,7 @@ function TransferOfferCard({
             </p>
             <p className="mt-1 text-sm font-semibold text-zinc-50">{targetName}</p>
             {targetPlayer ? (
-              <p className="mt-1 text-xs text-zinc-400">
-                {getPlayerPositionLabel(targetPlayer.player)} · {formatStars(Number(targetPlayer.current_stars))}
-              </p>
+              <p className="mt-1 text-xs text-zinc-400">{formatTransferPlayerMeta(targetPlayer)}</p>
             ) : null}
           </div>
           <div className="flex flex-col items-center justify-center gap-1 px-1 text-zinc-500">
@@ -1947,8 +1945,7 @@ function TransferOfferCard({
                 {direction === "incoming" ? "Im Tausch angeboten" : "Dein Spieler im Tausch"}
               </p>
               <p className="text-sm font-semibold text-zinc-50">{offeredPlayer.player.display_name}</p>
-              <p className="text-xs text-zinc-400">{getPlayerPositionLabel(offeredPlayer.player)}</p>
-              <p className="text-xs text-zinc-400">{formatStars(Number(offeredPlayer.current_stars))} Sterne</p>
+              <p className="text-xs text-zinc-400">{formatTransferPlayerMeta(offeredPlayer)}</p>
               {offeredPlayer.injured ? (
                 <Badge className="mt-1 w-fit" tone="red">
                   verletzt
@@ -1960,8 +1957,8 @@ function TransferOfferCard({
       ) : (
         <div className="mt-3 grid gap-2 text-xs text-zinc-400 sm:grid-cols-2">
           <SmallInfo label="Angefragt" value={targetName} />
+          <SmallInfo label="Position / Staerke" value={formatTransferPlayerMeta(targetPlayer)} />
           <SmallInfo label="Geld" value={formatMoney(offer.cash_amount)} />
-          <SmallInfo label="Spielerangebot" value="Kein Spieler" />
           <SmallInfo label="Von" value={offer.from_club.club_name} />
         </div>
       )}
@@ -3120,7 +3117,9 @@ function TransferOfferModal({
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-lg font-bold text-zinc-50">Angebot machen</p>
-            <p className="mt-1 text-sm text-zinc-400">{target.player.display_name} - {formatStars(Number(target.current_stars))} Sterne</p>
+            <p className="mt-1 text-sm text-zinc-400">
+              {target.player.display_name} · {formatTransferPlayerMeta(target)}
+            </p>
           </div>
           <Button className="h-8 px-2" onClick={onClose} type="button" variant="outline">
             <X size={15} aria-hidden />
@@ -3154,7 +3153,7 @@ function TransferOfferModal({
               <option value="none">Kein Spieler</option>
               {offerPlayers.map((ownPlayer) => (
                 <option key={ownPlayer.id} value={ownPlayer.id}>
-                  {ownPlayer.player.display_name} ({formatStars(Number(ownPlayer.current_stars))})
+                  {ownPlayer.player.display_name} ({formatTransferPlayerMeta(ownPlayer)})
                 </option>
               ))}
             </select>
@@ -4666,6 +4665,14 @@ function mapOwnedPlayerToLineupCardData(owned: NonNullable<LobbySnapshot["club_o
 
 function getPlayerPositionLabel(player: DraftPlayerRow) {
   return getPositionLabel((player.eligible_positions?.length ? player.eligible_positions : [player.position]) as PlayerCardPosition[]);
+}
+
+function formatTransferPlayerMeta(player: ClubPlayerSnapshot | null | undefined): string {
+  if (!player) {
+    return "–";
+  }
+
+  return `${getPlayerPositionLabel(player.player)} · ${formatStars(Number(player.current_stars))}`;
 }
 
 function formatEffects(effects: unknown[]) {

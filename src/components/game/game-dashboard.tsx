@@ -146,7 +146,12 @@ import { Button } from "@/components/ui/button";
 import { Panel, PanelDescription, PanelHeader, PanelTitle } from "@/components/ui/panel";
 import { DEADLINE_BID_STEP, DEADLINE_TURN_SECONDS, getMinimumNextBid } from "@/lib/lobby/deadline";
 import { ARCHETYPE_META } from "@/lib/lobby/archetypes";
-import { mapDbPlayerToPlayerCardData } from "@/lib/lobby/draft";
+import {
+  createEmptyDraftOverviewPositionCounts,
+  DRAFT_OVERVIEW_POSITIONS,
+  getDraftOverviewPositionKey,
+  mapDbPlayerToPlayerCardData,
+} from "@/lib/lobby/draft";
 import { canUpgradeFacility, getStaffRecruitBlockReason, getStaffRecruitHint, getStaffRecruitReasonLabel, getUpgradeCost, getUpgradeReasonLabel, type UpgradeAction } from "@/lib/lobby/investments";
 import { isOffseasonPendingScopeActive } from "@/lib/lobby/offseason-pending-effects";
 import { calculateLineupPower } from "@/lib/lobby/lineup-power";
@@ -1023,21 +1028,20 @@ function DraftView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
   const isMyTurn = Boolean(ownClub && draft.current_club_id === ownClub.id && snapshot.game.current_turn_club_id === ownClub.id);
   const ownSquadCount = ownClub ? draft.squad_counts[ownClub.id] ?? 0 : 0;
   const playerNames = new Map(draft.board_players.map((player) => [player.id, player.display_name]));
-  const playerPositions = new Map(draft.board_players.map((player) => [player.id, player.position]));
+  const playerById = new Map(draft.board_players.map((player) => [player.id, player]));
   const clubNames = new Map(snapshot.clubs.map((club) => [club.id, club.club_name]));
 
-  type PositionKey = "GK" | "DEF" | "MID" | "ATT";
-  const POSITIONS: PositionKey[] = ["GK", "DEF", "MID", "ATT"];
-  const clubPositionCounts: Record<string, Record<PositionKey, number>> = {};
+  const clubPositionCounts: Record<string, ReturnType<typeof createEmptyDraftOverviewPositionCounts>> = {};
   for (const club of snapshot.clubs) {
-    clubPositionCounts[club.id] = { GK: 0, DEF: 0, MID: 0, ATT: 0 };
+    clubPositionCounts[club.id] = createEmptyDraftOverviewPositionCounts();
   }
   for (const pick of draft.picks) {
-    const pos = playerPositions.get(pick.playerId) ?? "";
-    const key = POSITIONS.find((p) => p === pos);
-    if (key && clubPositionCounts[pick.clubId]) {
-      clubPositionCounts[pick.clubId][key] += 1;
+    const player = playerById.get(pick.playerId);
+    if (!player || !clubPositionCounts[pick.clubId]) {
+      continue;
     }
+    const key = getDraftOverviewPositionKey(player);
+    clubPositionCounts[pick.clubId][key] += 1;
   }
 
   return (
@@ -1118,7 +1122,7 @@ function DraftView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
             </PanelHeader>
             <div className="space-y-2">
               {snapshot.clubs.map((club) => {
-                const counts = clubPositionCounts[club.id] ?? { GK: 0, DEF: 0, MID: 0, ATT: 0 };
+                const counts = clubPositionCounts[club.id] ?? createEmptyDraftOverviewPositionCounts();
                 const total = draft.squad_counts[club.id] ?? 0;
                 const isOwn = club.id === ownClub?.id;
                 return (
@@ -1133,12 +1137,27 @@ function DraftView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
                       <p className="text-xs font-semibold text-zinc-200 truncate">{club.club_name}</p>
                       <span className="shrink-0 text-xs text-zinc-500">{total} Picks</span>
                     </div>
-                    <div className="mt-2 grid grid-cols-4 gap-1 text-center text-xs">
-                      {POSITIONS.map((pos) => (
-                        <div key={pos} className="rounded bg-zinc-800/70 px-1 py-1">
-                          <p className="font-medium text-zinc-400">{pos}</p>
-                          <p className={cn("font-bold", counts[pos] > 0 ? "text-zinc-100" : "text-zinc-600")}>
-                            {counts[pos]}
+                    <div className="mt-2 grid grid-cols-5 gap-1 text-center text-xs">
+                      {DRAFT_OVERVIEW_POSITIONS.map(({ key, label }) => (
+                        <div
+                          className={cn(
+                            "rounded px-1 py-1",
+                            key === "UTIL" ? "bg-violet-950/50" : "bg-zinc-800/70",
+                          )}
+                          key={key}
+                        >
+                          <p className={cn("font-medium", key === "UTIL" ? "text-violet-300" : "text-zinc-400")}>{label}</p>
+                          <p
+                            className={cn(
+                              "font-bold",
+                              counts[key] > 0
+                                ? key === "UTIL"
+                                  ? "text-violet-100"
+                                  : "text-zinc-100"
+                                : "text-zinc-600",
+                            )}
+                          >
+                            {counts[key]}
                           </p>
                         </div>
                       ))}
@@ -1161,13 +1180,25 @@ function DraftView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
               {draft.picks.length === 0 ? (
                 <p className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3 text-sm text-zinc-400">Noch kein Pick in dieser Runde.</p>
               ) : (
-                draft.picks.map((pick) => (
-                  <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3" key={`${pick.clubId}-${pick.playerId}`}>
-                    <p className="text-xs font-medium uppercase text-zinc-500">Pick {pick.pickIndex + 1}</p>
-                    <p className="mt-1 text-sm font-semibold text-zinc-100">{playerNames.get(pick.playerId) ?? "Spieler"}</p>
-                    <p className="mt-1 text-xs text-zinc-500">{clubNames.get(pick.clubId) ?? "Club"}</p>
-                  </div>
-                ))
+                draft.picks.map((pick) => {
+                  const player = playerById.get(pick.playerId);
+                  const positionLabel = player
+                    ? getDraftOverviewPositionKey(player) === "UTIL"
+                      ? "UTIL"
+                      : getPositionLabel(mapDbPlayerToPlayerCardData(player).positions)
+                    : null;
+
+                  return (
+                    <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3" key={`${pick.clubId}-${pick.playerId}`}>
+                      <p className="text-xs font-medium uppercase text-zinc-500">Pick {pick.pickIndex + 1}</p>
+                      <p className="mt-1 text-sm font-semibold text-zinc-100">{playerNames.get(pick.playerId) ?? "Spieler"}</p>
+                      <p className="mt-1 text-xs text-zinc-500">
+                        {clubNames.get(pick.clubId) ?? "Club"}
+                        {positionLabel ? ` · ${positionLabel}` : ""}
+                      </p>
+                    </div>
+                  );
+                })
               )}
             </div>
           </Panel>

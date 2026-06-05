@@ -17,6 +17,19 @@ import { areArchetypesEnabled, normalizeApplicablePlayerArchetype } from "@/lib/
 import { createDraftRound, getSquadCounts, allDraftSquadsComplete } from "@/lib/lobby/draft-server";
 import { getActiveCpuTeams, pickCpuTeamsForSeason } from "@/lib/lobby/cpu-teams";
 import { canRecruitStaff, canUpgradeFacility, type UpgradeAction } from "@/lib/lobby/investments";
+import {
+  canUpgradeEndgameFacility,
+  getEndgameFacilityLevel,
+  getInvestmentActionLimit,
+  getMedicalHealsRemaining,
+  hasAutoMedicalCenter,
+  isEndgameFacilityAction,
+  getNlzTalentCountPerOffseason,
+  resolveClubInvestmentStatus,
+  type EndgameFacilityAction,
+} from "@/lib/lobby/endgame-facilities";
+import { buildLineupSnapshotFromPlayers } from "@/lib/lobby/lineup-snapshot";
+import { buildYouthPlayerSeed, isNlzOriginPlayer } from "@/lib/lobby/youth-generator";
 import { calculateLineupPower, type CaptainBoost } from "@/lib/lobby/lineup-power";
 import {
   ensureContinentalTournament,
@@ -159,10 +172,12 @@ export async function upgradeInvestmentAction(formData: FormData) {
   const gameId = String(formData.get("game_id") || "");
   const roomCode = String(formData.get("room_code") || "");
   const clubId = String(formData.get("club_id") || "");
-  const action = String(formData.get("action") || "") as UpgradeAction;
+  const actionRaw = String(formData.get("action") || "");
   const supabase = createSupabaseServiceClient();
+  const isClassic = isUpgradeAction(actionRaw);
+  const isEndgame = isEndgameFacilityAction(actionRaw);
 
-  if (!userId || !gameId || !roomCode || !clubId || !isUpgradeAction(action) || !supabase) {
+  if (!userId || !gameId || !roomCode || !clubId || (!isClassic && !isEndgame) || !supabase) {
     redirect(`/games/${roomCode}?view=grounds`);
   }
 
@@ -174,18 +189,12 @@ export async function upgradeInvestmentAction(formData: FormData) {
       .single<{ id: string; phase: LobbyPhase; room_code: string; settings: { seasonNumber?: number } }>(),
     supabase
       .from("clubs")
-      .select("id, game_id, clerk_user_id, money, training_level, scouting_level, stadium_level")
+      .select(
+        "id, game_id, clerk_user_id, money, training_level, scouting_level, stadium_level, medical_center_level, analytics_hub_level, youth_academy_level, construction_yard_built, status, status_override, status_override_until_season",
+      )
       .eq("id", clubId)
       .eq("game_id", gameId)
-      .single<{
-        id: string;
-        game_id: string;
-        clerk_user_id: string;
-        money: number;
-        training_level: number;
-        scouting_level: number;
-        stadium_level: number;
-      }>(),
+      .single<LobbyClub>(),
   ]);
 
   if (gameError) {
@@ -227,29 +236,69 @@ export async function upgradeInvestmentAction(formData: FormData) {
     .flatMap((s) => s.card?.effects ?? [])
     .filter((e) => e.type === "investment_action_bonus")
     .reduce((sum, e) => sum + Number(e.extra ?? 0), 0);
+  const actionsThisSeason = (investments ?? []).map((investment) => investment.action);
+  const actionLimit = getInvestmentActionLimit(upgradeExtraBonus, club.construction_yard_built ?? false);
+  const clubStatus = resolveClubInvestmentStatus(club, seasonNumber);
 
-  const currentLevel = getClubFacilityLevel(club, action);
-  const check = canUpgradeFacility({
-    action,
-    actionsThisSeason: (investments ?? []).map((investment) => investment.action),
-    currentLevel,
-    extraActionBonus: upgradeExtraBonus,
-    money: Number(club.money),
-  });
+  let check: { ok: true; cost: number } | { ok: false; reason: string };
+  let clubUpdate: Record<string, unknown> = { money: 0 };
+  let investmentAction = actionRaw;
 
-  if (!check.ok) {
-    redirect(`/games/${roomCode}?view=grounds`);
-  }
+  if (isEndgame) {
+    const action = actionRaw as EndgameFacilityAction;
+    const currentLevel = getEndgameFacilityLevel(club, action);
+    const endgameCheck = canUpgradeEndgameFacility({
+      action,
+      actionsThisSeason,
+      clubStatus,
+      currentLevel,
+      money: Number(club.money),
+      actionLimit,
+    });
+    if (!endgameCheck.ok) {
+      redirect(`/games/${roomCode}?view=grounds`);
+    }
+    check = endgameCheck;
+    clubUpdate = { money: Number(club.money) - endgameCheck.cost };
+    if (action === "construction_yard") {
+      clubUpdate.construction_yard_built = true;
+    } else if (action === "medical") {
+      clubUpdate.medical_center_level = currentLevel + 1;
+    } else if (action === "analytics") {
+      clubUpdate.analytics_hub_level = currentLevel + 1;
+    } else if (action === "youth_academy") {
+      clubUpdate.youth_academy_level = currentLevel + 1;
+    }
+  } else {
+    const action = actionRaw as UpgradeAction;
+    const currentLevel = getClubFacilityLevel(club, action);
+    const classicCheck = canUpgradeFacility({
+      action,
+      actionsThisSeason,
+      currentLevel,
+      extraActionBonus: upgradeExtraBonus,
+      money: Number(club.money),
+      actionLimit,
+    });
+    if (!classicCheck.ok) {
+      redirect(`/games/${roomCode}?view=grounds`);
+    }
+    check = classicCheck;
+    clubUpdate = {
+      [`${action}_level`]: currentLevel + 1,
+      money: Number(club.money) - classicCheck.cost,
+    };
 
-  if (action === "stadium" && isSponsoringEnabled(game.settings)) {
-    const sponsorContracts = await loadClubSponsorContracts(supabase, clubId);
-    if (isStadiumUpgradeBlockedBySponsor(sponsorContracts)) {
-      redirect(`/games/${roomCode}?view=grounds&sponsor_error=${encodeURIComponent("Denkmalschutz: Stadionausbau während Sponsoring gesperrt")}`);
+    if (action === "stadium" && isSponsoringEnabled(game.settings)) {
+      const sponsorContracts = await loadClubSponsorContracts(supabase, clubId);
+      if (isStadiumUpgradeBlockedBySponsor(sponsorContracts)) {
+        redirect(`/games/${roomCode}?view=grounds&sponsor_error=${encodeURIComponent("Denkmalschutz: Stadionausbau während Sponsoring gesperrt")}`);
+      }
     }
   }
 
   const { error: investmentError } = await supabase.from("investments").insert({
-    action,
+    action: investmentAction,
     club_id: clubId,
     cost: check.cost,
     game_id: gameId,
@@ -260,13 +309,9 @@ export async function upgradeInvestmentAction(formData: FormData) {
     throw investmentError;
   }
 
-  const nextLevelColumn = `${action}_level`;
   const { error: updateClubError } = await supabase
     .from("clubs")
-    .update({
-      [nextLevelColumn]: currentLevel + 1,
-      money: Number(club.money) - check.cost,
-    })
+    .update(clubUpdate)
     .eq("id", clubId)
     .eq("clerk_user_id", userId);
 
@@ -274,7 +319,7 @@ export async function upgradeInvestmentAction(formData: FormData) {
     throw updateClubError;
   }
 
-  if (action === "stadium" && isSponsoringEnabled(game.settings)) {
+  if (isClassic && actionRaw === "stadium" && isSponsoringEnabled(game.settings)) {
     await onSponsorStadiumUpgrade(supabase, clubId, seasonNumber);
   }
 
@@ -502,8 +547,8 @@ export async function trainPlayerAction(formData: FormData) {
       .from("club_players")
       .select(
         `id, club_id, player_id, current_stars, injured,
-        club:clubs!club_players_club_id_fkey(id, game_id, clerk_user_id, training_level, offseason_training_capacity),
-        player:players(id, skill_max)`,
+        club:clubs!club_players_club_id_fkey(id, game_id, clerk_user_id, training_level, offseason_training_capacity, youth_academy_level),
+        player:players(id, skill_max, potential_stars, metadata)`,
       )
       .eq("id", clubPlayerId)
       .single<{
@@ -518,10 +563,13 @@ export async function trainPlayerAction(formData: FormData) {
           clerk_user_id: string;
           training_level: number;
           offseason_training_capacity: number | null;
+          youth_academy_level?: number | null;
         };
         player: {
           id: string;
           skill_max: number | string | null;
+          potential_stars?: number | string | null;
+          metadata?: Record<string, unknown> | null;
         };
       }>(),
   ]);
@@ -610,13 +658,27 @@ export async function trainPlayerAction(formData: FormData) {
   }
 
   const diceRoll = Math.floor(Math.random() * 6) + 1;
-  const resolution = resolveTrainingAttempt({
-    currentStars,
-    diceRoll,
-    guaranteedBonusAvailable: trainingStatus.guaranteed_bonus_available,
-    skillMax,
-    trainingLevel: ownedPlayer.club.training_level,
-  });
+  const potentialStars = Math.trunc(Number(ownedPlayer.player.potential_stars ?? skillMax));
+  const nlzGuaranteed =
+    (ownedPlayer.club.youth_academy_level ?? 0) >= 3 &&
+    isNlzOriginPlayer(ownedPlayer.player.metadata) &&
+    currentStars < potentialStars;
+
+  const resolution = nlzGuaranteed
+    ? {
+        afterStars: Math.min(currentStars + 1, skillMax),
+        beforeStars: currentStars,
+        diceRoll,
+        guaranteedBonusUsed: false,
+        success: true,
+      }
+    : resolveTrainingAttempt({
+        currentStars,
+        diceRoll,
+        guaranteedBonusAvailable: trainingStatus.guaranteed_bonus_available,
+        skillMax,
+        trainingLevel: ownedPlayer.club.training_level,
+      });
   const metadata: TrainingEventMetadata = {
     after_stars: resolution.afterStars,
     before_stars: resolution.beforeStars,
@@ -2292,9 +2354,9 @@ export async function setPhaseDoneAction(formData: FormData) {
 async function snapshotOffseasonCapacities(supabase: SupabaseServiceClient, gameId: string) {
   const { data: gameClubs } = await supabase
     .from("clubs")
-    .select("id, scouting_level, training_level")
+    .select("id, scouting_level, training_level, youth_academy_level")
     .eq("game_id", gameId)
-    .returns<Array<{ id: string; scouting_level: number; training_level: number }>>();
+    .returns<Array<{ id: string; scouting_level: number; training_level: number; youth_academy_level?: number }>>();
 
   if (!gameClubs?.length) return;
 
@@ -2305,7 +2367,7 @@ async function snapshotOffseasonCapacities(supabase: SupabaseServiceClient, game
     .returns<Array<{ club_id: string; staff_card: { effects: Array<{ type: string; cards?: number; players?: number }> } | null }>>();
 
   await Promise.all(
-    gameClubs.map((club) => {
+    gameClubs.map(async (club) => {
       const clubStaff = (staffRows ?? []).filter((s) => s.club_id === club.id);
       const allEffects = clubStaff.flatMap((s) => s.staff_card?.effects ?? []);
       const scoutingBonus = allEffects
@@ -2316,12 +2378,46 @@ async function snapshotOffseasonCapacities(supabase: SupabaseServiceClient, game
         .reduce((sum, e) => sum + Number(e.players ?? 0), 0);
       const scoutingCap = getScoutingCapacity(club.scouting_level ?? 1).players + scoutingBonus;
       const trainingCap = getTrainingCapacity(club.training_level ?? 1).players + trainingBonus;
-      return supabase
+      await supabase
         .from("clubs")
-        .update({ offseason_scouting_capacity: scoutingCap, offseason_training_capacity: trainingCap })
+        .update({
+          offseason_scouting_capacity: scoutingCap,
+          offseason_training_capacity: trainingCap,
+          medical_heals_used_season: 0,
+          nlz_archetype_respecs_used_season: 0,
+        })
         .eq("id", club.id);
+
+      const talentCount = getNlzTalentCountPerOffseason(club.youth_academy_level ?? 0);
+      for (let index = 0; index < talentCount; index += 1) {
+        await insertNlzTalentForClub(supabase, gameId, club.id);
+      }
     }),
   );
+}
+
+async function insertNlzTalentForClub(supabase: SupabaseServiceClient, gameId: string, clubId: string) {
+  const seed = buildYouthPlayerSeed();
+  const { data: player, error: playerError } = await supabase
+    .from("players")
+    .insert(seed)
+    .select("id")
+    .single<{ id: string }>();
+
+  if (playerError) {
+    throw playerError;
+  }
+
+  const { error: clubPlayerError } = await supabase.from("club_players").insert({
+    club_id: clubId,
+    current_stars: seed.base_stars,
+    current_zone: "bench",
+    player_id: player.id,
+  });
+
+  if (clubPlayerError) {
+    throw clubPlayerError;
+  }
 }
 
 export async function advancePhaseAction(formData: FormData) {
@@ -2790,6 +2886,95 @@ async function getHumanFixtureSide(supabase: SupabaseServiceClient, fixture: Fix
   return null;
 }
 
+type LineupSnapshotClubPlayerRow = {
+  current_stars: number | string;
+  current_zone: string;
+  lineup_slot: number | null;
+  player: {
+    attacker_archetype?: string | null;
+    defender_archetype?: string | null;
+    display_name: string;
+  } | null;
+};
+
+async function loadClubLineupSnapshotPlayers(supabase: SupabaseServiceClient, clubId: string | null | undefined) {
+  if (!clubId) {
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from("club_players")
+    .select("current_stars, current_zone, lineup_slot, player:players(attacker_archetype, defender_archetype, display_name)")
+    .eq("club_id", clubId)
+    .neq("current_zone", "bench")
+    .order("lineup_slot", { ascending: true })
+    .returns<LineupSnapshotClubPlayerRow[]>();
+
+  if (error) {
+    throw error;
+  }
+
+  return data ?? [];
+}
+
+async function buildFixtureLineupSnapshot(
+  supabase: SupabaseServiceClient,
+  participants: { away: FixtureParticipantRow; home: FixtureParticipantRow },
+) {
+  const [homePlayers, awayPlayers] = await Promise.all([
+    loadClubLineupSnapshotPlayers(supabase, participants.home.club_id),
+    loadClubLineupSnapshotPlayers(supabase, participants.away.club_id),
+  ]);
+
+  return {
+    away: buildLineupSnapshotFromPlayers(awayPlayers),
+    home: buildLineupSnapshotFromPlayers(homePlayers),
+  };
+}
+
+async function applyFixtureInjuryEvent(
+  supabase: SupabaseServiceClient,
+  params: {
+    clubId: string;
+    playerId: string;
+    untilMatchday: number;
+    fixtureId: string;
+    gameId: string;
+    zone: string;
+  },
+) {
+  const { data: club } = await supabase
+    .from("clubs")
+    .select("medical_center_level")
+    .eq("id", params.clubId)
+    .maybeSingle<{ medical_center_level: number | null }>();
+
+  if (hasAutoMedicalCenter(club?.medical_center_level ?? 0)) {
+    return;
+  }
+
+  await supabase
+    .from("club_players")
+    .update({ injured: true, injured_until_matchday: params.untilMatchday })
+    .eq("id", params.playerId)
+    .eq("club_id", params.clubId);
+
+  const { data: injuredPlayer } = await supabase
+    .from("club_players")
+    .select("player:players(display_name)")
+    .eq("id", params.playerId)
+    .maybeSingle<{ player: { display_name: string } | null }>();
+
+  await writeMatchNews(supabase, {
+    gameId: params.gameId,
+    fixtureId: params.fixtureId,
+    clubId: params.clubId,
+    category: "injury",
+    headline: `Verletzung in Zone ${params.zone}`,
+    detail: injuredPlayer?.player?.display_name ? `${injuredPlayer.player.display_name} verletzt` : undefined,
+  });
+}
+
 async function resolveFixtureServer(params: {
   fixture: FixtureActionRow;
   game: LobbyGame;
@@ -2823,23 +3008,13 @@ async function resolveFixtureServer(params: {
   for (const event of resolution.events) {
     if (event.event_type === "injury" && event.club_id) {
       const untilMatchday = Math.max(1, Math.trunc(fixture.matchday)) + 1;
-      await supabase
-        .from("club_players")
-        .update({ injured: true, injured_until_matchday: untilMatchday })
-        .eq("id", event.player_id)
-        .eq("club_id", event.club_id);
-      const { data: injuredPlayer } = await supabase
-        .from("club_players")
-        .select("player:players(display_name)")
-        .eq("id", event.player_id)
-        .maybeSingle<{ player: { display_name: string } | null }>();
-      await writeMatchNews(supabase, {
-        gameId: fixture.game_id,
-        fixtureId: fixture.id,
+      await applyFixtureInjuryEvent(supabase, {
         clubId: event.club_id,
-        category: "injury",
-        headline: `Verletzung in Zone ${event.zone}`,
-        detail: injuredPlayer?.player?.display_name ? `${injuredPlayer.player.display_name} verletzt` : undefined,
+        fixtureId: fixture.id,
+        gameId: fixture.game_id,
+        playerId: event.player_id,
+        untilMatchday,
+        zone: event.zone,
       });
     }
 
@@ -2881,6 +3056,7 @@ async function resolveFixtureServer(params: {
     }
   }
 
+  const lineupSnapshot = await buildFixtureLineupSnapshot(supabase, participants);
   const { error: fixtureError } = await supabase
     .from("fixtures")
     .update({
@@ -2889,7 +3065,7 @@ async function resolveFixtureServer(params: {
       completed_at: new Date().toISOString(),
       home_score: resolution.home_match_points,
       home_third_points: resolution.home_third_points,
-      result: resolution,
+      result: { ...resolution, lineup_snapshot: lineupSnapshot },
       status: "completed",
     })
     .eq("id", fixture.id);
@@ -3098,6 +3274,7 @@ export async function updateGameSettingsAction(formData: FormData) {
 
   const nextSettings = {
     ...(game.settings ?? {}),
+    continental_cup_enabled: getBooleanFormValue("continental_cup_enabled"),
     sponsoring_enabled: getBooleanFormValue("sponsoring_enabled"),
     archetypes_enabled: getBooleanFormValue("archetypes_enabled"),
   };
@@ -3122,6 +3299,7 @@ export async function updateGameSettingsAction(formData: FormData) {
     payload: {
       settings: {
         archetypes_enabled: nextSettings.archetypes_enabled,
+        continental_cup_enabled: nextSettings.continental_cup_enabled,
         sponsoring_enabled: nextSettings.sponsoring_enabled,
       },
     },
@@ -3670,23 +3848,13 @@ export async function markReadyForNextThirdAction(formData: FormData) {
   for (const event of events) {
     if (event.event_type === "injury" && event.club_id) {
       const untilMatchday = Math.max(1, Math.trunc(fixture.matchday)) + 1;
-      await supabase
-        .from("club_players")
-        .update({ injured: true, injured_until_matchday: untilMatchday })
-        .eq("id", event.player_id)
-        .eq("club_id", event.club_id);
-      const { data: injuredPlayer } = await supabase
-        .from("club_players")
-        .select("player:players(display_name)")
-        .eq("id", event.player_id)
-        .maybeSingle<{ player: { display_name: string } | null }>();
-      await writeMatchNews(supabase, {
-        gameId,
-        fixtureId,
+      await applyFixtureInjuryEvent(supabase, {
         clubId: event.club_id,
-        category: "injury",
-        headline: `Verletzung in Zone ${event.zone}`,
-        detail: injuredPlayer?.player?.display_name ? `${injuredPlayer.player.display_name} verletzt` : undefined,
+        fixtureId,
+        gameId,
+        playerId: event.player_id,
+        untilMatchday,
+        zone: event.zone,
       });
     }
 
@@ -3755,6 +3923,7 @@ export async function markReadyForNextThirdAction(formData: FormData) {
     const allEvents = newThirds.flatMap((t) => getDoubleDiceEventsFromThird(t, homeSide, awaySide));
 
     const completedAt = new Date().toISOString();
+    const lineupSnapshot = await buildFixtureLineupSnapshot(supabase, participants);
     const fixturePatch = {
       away_ready_for_next_third: false,
       away_score: matchPoints.away,
@@ -3766,7 +3935,13 @@ export async function markReadyForNextThirdAction(formData: FormData) {
       home_third_points: scores.home,
       match_state: "completed",
       partial_result: newPartial,
-      result: { thirds: newThirds, events: allEvents, home_match_points: matchPoints.home, away_match_points: matchPoints.away },
+      result: {
+        thirds: newThirds,
+        events: allEvents,
+        home_match_points: matchPoints.home,
+        away_match_points: matchPoints.away,
+        lineup_snapshot: lineupSnapshot,
+      },
       status: "completed",
     };
     const { error: updateError } = await supabase
@@ -5766,7 +5941,7 @@ export async function healInjuredPlayerAction(formData: FormData) {
 
   const { error: healError } = await supabase
     .from("club_players")
-    .update({ injured: false })
+    .update({ injured: false, injured_until_matchday: null })
     .eq("id", clubPlayerId)
     .eq("club_id", clubId);
 
@@ -5774,6 +5949,159 @@ export async function healInjuredPlayerAction(formData: FormData) {
 
   revalidatePath(`/games/${roomCode}`);
   redirect(`/games/${roomCode}`);
+}
+
+export async function healPlayerMedicalAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const clubId = String(formData.get("club_id") || "");
+  const clubPlayerId = String(formData.get("club_player_id") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !clubId || !clubPlayerId || !supabase) {
+    redirect(`/games/${roomCode}?view=squad`);
+  }
+
+  const [{ data: club, error: clubError }, { data: ownedPlayer, error: playerError }] = await Promise.all([
+    supabase
+      .from("clubs")
+      .select("id, clerk_user_id, medical_center_level, medical_heals_used_season")
+      .eq("id", clubId)
+      .eq("game_id", gameId)
+      .single<{
+        id: string;
+        clerk_user_id: string;
+        medical_center_level: number | null;
+        medical_heals_used_season: number | null;
+      }>(),
+    supabase
+      .from("club_players")
+      .select("id, injured")
+      .eq("id", clubPlayerId)
+      .eq("club_id", clubId)
+      .single<{ id: string; injured: boolean }>(),
+  ]);
+
+  if (clubError) throw clubError;
+  if (playerError) throw playerError;
+  if (club.clerk_user_id !== userId) throw new Error("Unauthorized");
+
+  const medicalLevel = club.medical_center_level ?? 0;
+  const healsUsed = club.medical_heals_used_season ?? 0;
+  if (
+    medicalLevel <= 0 ||
+    hasAutoMedicalCenter(medicalLevel) ||
+    getMedicalHealsRemaining(medicalLevel, healsUsed) <= 0 ||
+    !ownedPlayer.injured
+  ) {
+    redirect(`/games/${roomCode}?view=squad`);
+  }
+
+  const { error: healError } = await supabase
+    .from("club_players")
+    .update({ injured: false, injured_until_matchday: null })
+    .eq("id", clubPlayerId)
+    .eq("club_id", clubId);
+
+  if (healError) throw healError;
+
+  const { error: clubUpdateError } = await supabase
+    .from("clubs")
+    .update({ medical_heals_used_season: healsUsed + 1 })
+    .eq("id", clubId);
+
+  if (clubUpdateError) throw clubUpdateError;
+
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=squad`);
+}
+
+export async function respecPlayerArchetypeAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const clubId = String(formData.get("club_id") || "");
+  const clubPlayerId = String(formData.get("club_player_id") || "");
+  const archetype = String(formData.get("archetype") || "");
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !clubId || !clubPlayerId || !archetype || !supabase) {
+    redirect(`/games/${roomCode}?view=squad`);
+  }
+
+  const [{ data: game, error: gameError }, { data: club, error: clubError }, { data: ownedPlayer, error: playerError }] =
+    await Promise.all([
+      supabase.from("games").select("id, phase").eq("id", gameId).single<{ id: string; phase: LobbyPhase }>(),
+      supabase
+        .from("clubs")
+        .select("id, clerk_user_id, youth_academy_level, nlz_archetype_respecs_used_season")
+        .eq("id", clubId)
+        .eq("game_id", gameId)
+        .single<{
+          id: string;
+          clerk_user_id: string;
+          youth_academy_level: number | null;
+          nlz_archetype_respecs_used_season: number | null;
+        }>(),
+      supabase
+        .from("club_players")
+        .select("id, player:players(id, position, metadata, attacker_archetype, defender_archetype)")
+        .eq("id", clubPlayerId)
+        .eq("club_id", clubId)
+        .single<{
+          id: string;
+          player: {
+            id: string;
+            position: string;
+            metadata: Record<string, unknown> | null;
+            attacker_archetype: string | null;
+            defender_archetype: string | null;
+          };
+        }>(),
+    ]);
+
+  if (gameError) throw gameError;
+  if (clubError) throw clubError;
+  if (playerError) throw playerError;
+  if (club.clerk_user_id !== userId) throw new Error("Unauthorized");
+  if (!isOffseasonPhase(game.phase)) {
+    redirect(`/games/${roomCode}?view=squad`);
+  }
+  if ((club.youth_academy_level ?? 0) < 2 || (club.nlz_archetype_respecs_used_season ?? 0) >= 1) {
+    redirect(`/games/${roomCode}?view=squad`);
+  }
+  if (!isNlzOriginPlayer(ownedPlayer.player.metadata)) {
+    redirect(`/games/${roomCode}?view=squad`);
+  }
+
+  const normalizedArchetype = normalizeApplicablePlayerArchetype(archetype);
+  if (!normalizedArchetype) {
+    redirect(`/games/${roomCode}?view=squad`);
+  }
+
+  const position = ownedPlayer.player.position;
+  const playerUpdate =
+    position === "ATT" || position === "MID"
+      ? { attacker_archetype: normalizedArchetype }
+      : { defender_archetype: normalizedArchetype };
+
+  const { error: updatePlayerError } = await supabase
+    .from("players")
+    .update(playerUpdate)
+    .eq("id", ownedPlayer.player.id);
+
+  if (updatePlayerError) throw updatePlayerError;
+
+  const { error: clubUpdateError } = await supabase
+    .from("clubs")
+    .update({ nlz_archetype_respecs_used_season: (club.nlz_archetype_respecs_used_season ?? 0) + 1 })
+    .eq("id", clubId);
+
+  if (clubUpdateError) throw clubUpdateError;
+
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}?view=squad`);
 }
 
 export async function triggerDrawRerollAction(formData: FormData) {

@@ -7,9 +7,9 @@ export type StaffRecruitCheckInput = {
   extraActionBonus?: number;
 };
 
-export function canRecruitStaff(input: StaffRecruitCheckInput) {
-  const { actionsThisSeason, currentStaffCount, hasOpenOffer, extraActionBonus = 0 } = input;
-  const actionLimit = 2 + extraActionBonus;
+export function canRecruitStaff(input: StaffRecruitCheckInput & { actionLimit?: number }) {
+  const { actionsThisSeason, currentStaffCount, hasOpenOffer, extraActionBonus = 0, actionLimit: actionLimitInput } = input;
+  const actionLimit = actionLimitInput ?? 2 + extraActionBonus;
 
   if (hasOpenOffer) {
     return { ok: false, reason: "open_offer_pending" } as const;
@@ -58,8 +58,9 @@ export function getStaffRecruitHint(input: {
   hasFreeStaffSigning?: boolean;
   actionsThisSeason: string[];
   extraActionBonus?: number;
+  actionLimit?: number;
 }) {
-  const limit = 2 + (input.extraActionBonus ?? 0);
+  const limit = input.actionLimit ?? 2 + (input.extraActionBonus ?? 0);
   const slotsLeft = limit - input.actionsThisSeason.length;
   if (input.hasFreeStaffOffer && slotsLeft > 0) {
     return "Game Changer aktiv: Mitarbeiter-Zug jetzt nutzen – kostet keine Aktion, braucht aber noch freie Investment-Slots.";
@@ -82,6 +83,7 @@ export type UpgradeCheckInput = {
   money: number;
   actionsThisSeason: string[];
   extraActionBonus?: number;
+  actionLimit?: number;
 };
 
 export function getUpgradeCost(action: UpgradeAction, currentLevel: number) {
@@ -89,8 +91,8 @@ export function getUpgradeCost(action: UpgradeAction, currentLevel: number) {
 }
 
 export function canUpgradeFacility(input: UpgradeCheckInput) {
-  const { action, actionsThisSeason, currentLevel, money, extraActionBonus = 0 } = input;
-  const actionLimit = 2 + extraActionBonus;
+  const { action, actionsThisSeason, currentLevel, money, extraActionBonus = 0, actionLimit: actionLimitInput } = input;
+  const actionLimit = actionLimitInput ?? 2 + extraActionBonus;
 
   if (currentLevel >= 4) {
     return { ok: false, reason: "max_level" } as const;

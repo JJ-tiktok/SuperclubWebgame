@@ -15,7 +15,11 @@ import {
   Dumbbell,
   Eye,
   Gavel,
+  GraduationCap,
+  Hammer,
+  HeartPulse,
   Home,
+  LineChart,
   ListOrdered,
   MapIcon,
   PanelLeftClose,
@@ -50,6 +54,8 @@ import {
 } from "@/app/games/actions/lobby";
 import { makeDraftPickAction } from "@/app/games/actions/draft";
 import {
+  healPlayerMedicalAction,
+  respecPlayerArchetypeAction,
   trainPlayerAction,
   upgradeInvestmentAction,
 } from "@/app/games/actions/offseason";
@@ -105,6 +111,19 @@ import {
   type GameView,
 } from "@/components/game/lib/dashboard-helpers";
 import { ContinentalView } from "@/components/game/continental/continental-view";
+import { OpponentIntelPanel } from "@/components/game/opponent-intel-panel";
+import {
+  canUpgradeEndgameFacility,
+  ENDGAME_FACILITY_LABELS,
+  getEndgameFacilityLevel,
+  getEndgameUpgradeCost,
+  getEndgameUpgradeReasonLabel,
+  getEndgameUnlockRequirement,
+  getInvestmentActionLimit,
+  isEndgameUnlockMet,
+  resolveClubInvestmentStatus,
+  type EndgameFacilityAction,
+} from "@/lib/lobby/endgame-facilities";
 import { FixtureSideCard } from "@/components/game/shared/fixture-side-card";
 import { MatchResultDetail, parseFixtureResult, type FixtureThird } from "@/components/game/shared/match-result-detail";
 import { Metric, SmallInfo } from "@/components/game/shared/metric";
@@ -566,6 +585,9 @@ function GameHeader({
             <Badge>{snapshot.game.phase.toUpperCase()}</Badge>
             <Badge>{phaseDoneCount}/{phaseDoneTotal} fertig</Badge>
             <Badge>Save v{snapshot.game.save_version ?? 1}</Badge>
+            <Badge tone={snapshot.game.settings.continental_cup_enabled === false ? "neutral" : "blue"}>
+              Continental Cup {snapshot.game.settings.continental_cup_enabled === false ? "aus" : "an"}
+            </Badge>
             <Badge tone={snapshot.game.settings.sponsoring_enabled === false ? "neutral" : "blue"}>
               Sponsoring {snapshot.game.settings.sponsoring_enabled === false ? "aus" : "an"}
             </Badge>
@@ -2118,7 +2140,7 @@ function DeadlineAuctionList({ deadline, snapshot }: { deadline: NonNullable<Lob
       </PanelHeader>
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {deadline.auctions.map((auction) => {
-          const hidden = auction.status === "scheduled";
+          const hidden = auction.status === "scheduled" && auction.player.visibility === "hidden";
           return (
             <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3" key={auction.id}>
               <div className="flex items-start justify-between gap-3">
@@ -2138,11 +2160,16 @@ function DeadlineAuctionList({ deadline, snapshot }: { deadline: NonNullable<Lob
                 <Badge tone={getAuctionBadgeTone(auction.status)}>{getAuctionStatusLabel(auction.status)}</Badge>
               </div>
               {!hidden ? (
-                <p className="mt-3 text-xs text-zinc-400">
-                  {auction.winning_club_id
-                    ? `${clubNames.get(auction.winning_club_id) ?? "Club"} — ${formatMoney(auction.current_amount)}`
-                    : "Noch kein Zuschlag"}
-                </p>
+                <>
+                  <div className="mt-3 max-w-[180px]">
+                    <PlayerCard player={mapDbPlayerToPlayerCardData(auction.player)} showArchetypes={snapshot.game.settings.archetypes_enabled !== false} variant="draft" />
+                  </div>
+                  <p className="mt-3 text-xs text-zinc-400">
+                    {auction.winning_club_id
+                      ? `${clubNames.get(auction.winning_club_id) ?? "Club"} — ${formatMoney(auction.current_amount)}`
+                      : "Noch kein Zuschlag"}
+                  </p>
+                </>
               ) : null}
             </div>
           );
@@ -2174,6 +2201,23 @@ function LineupView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; sna
   const staffEffects = (overview.staff ?? []).flatMap(
     (s) => s.card.effects as Array<{ type: string; zone?: string; stars?: number }>,
   );
+  const currentFixture = snapshot.season?.fixtures.find(
+    (fixture) =>
+      fixture.matchday === snapshot.season?.current_matchday &&
+      fixture.status !== "completed" &&
+      (fixture.home_participant.club_id === ownClub.id || fixture.away_participant.club_id === ownClub.id),
+  );
+  const opponentClubId =
+    currentFixture?.home_participant.club_id === ownClub.id
+      ? currentFixture.away_participant.club_id
+      : currentFixture?.away_participant.club_id;
+  const opponentName = !currentFixture
+    ? ""
+    : currentFixture.home_participant.club_id === ownClub.id
+      ? currentFixture.away_participant.display_name
+      : currentFixture.home_participant.display_name;
+  const liveOpponentLineup =
+    snapshot.season?.opponent_locked_lineups?.find((entry) => entry.fixture_id === currentFixture?.id)?.lineup ?? null;
 
   return (
     <div className="space-y-4">
@@ -2199,6 +2243,16 @@ function LineupView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; sna
         captainClubPlayerId={ownClub.captain_club_player_id}
         boostRank={ownClub.captain_boost_rank}
       />
+
+      {currentFixture ? (
+        <OpponentIntelPanel
+          analyticsLevel={ownClub.analytics_hub_level ?? 0}
+          fixtures={snapshot.season?.fixtures ?? []}
+          liveLineup={liveOpponentLineup}
+          opponentClubId={opponentClubId}
+          opponentName={opponentName}
+        />
+      ) : null}
 
       <GameLineupBoard
         archetypesEnabled={snapshot.game.settings.archetypes_enabled !== false}
@@ -2388,6 +2442,12 @@ function FacilityUpgradePanel({
       .filter((e) => e.type === "investment_action_bonus")
       .reduce((a, e) => a + (e.extra ?? 0), 0);
   }, 0);
+  const actionLimit = getInvestmentActionLimit(extraInvestmentSlots, ownClub.construction_yard_built ?? false);
+  const investmentClubStatus = resolveClubInvestmentStatus(
+    ownClub,
+    seasonNumber,
+    managerStanding?.season_score,
+  );
 
   const LEVELS = [1, 2, 3, 4] as const;
   const ALL_STATUSES = ["newly_promoted", "established", "mid_table", "title_contender"] as const;
@@ -2519,7 +2579,8 @@ function FacilityUpgradePanel({
         <div>
           <PanelTitle>Vereinsgelaende</PanelTitle>
           <PanelDescription>
-            {overview.investments.length}/{2 + extraInvestmentSlots} Investment-Aktionen in Saison {overview.season_number} verwendet.
+            {overview.investments.length}/{actionLimit} Investment-Aktionen in Saison {overview.season_number} verwendet.
+            {ownClub.construction_yard_built ? " · Bauhof: +2 Slots" : ""}
           </PanelDescription>
         </div>
         <Building2 size={18} className="text-[var(--club-color)]" aria-hidden />
@@ -2532,6 +2593,7 @@ function FacilityUpgradePanel({
             currentLevel: facility.level,
             money: overview.finance.money,
             extraActionBonus: extraInvestmentSlots,
+            actionLimit,
           });
           const stadiumBlocked = facility.action === "stadium" && overview.stadium_upgrade_blocked_by_sponsor;
           const upgradeDisabled = !investmentPhaseActive || !check.ok || stadiumBlocked;
@@ -2585,6 +2647,100 @@ function FacilityUpgradePanel({
           );
         })}
 
+        {(
+          [
+            { action: "medical" as EndgameFacilityAction, icon: HeartPulse, effects: ["1 manuelle Heilung/Saison", "2 manuelle Heilungen/Saison", "Alle Verletzungen sofort geheilt"] },
+            { action: "analytics" as EndgameFacilityAction, icon: LineChart, effects: ["Letzte Gegner-Aufstellung", "Live-Spionage bei Lock", "Deadline-Day Insider"] },
+            { action: "youth_academy" as EndgameFacilityAction, icon: GraduationCap, effects: ["1 NLZ-Talent/Off-Season", "Archetyp-Umschmiede 1x/Saison", "2 Talente + Trainingsgarantie"] },
+            { action: "construction_yard" as EndgameFacilityAction, icon: Hammer, effects: ["+2 Investment-Aktionen dauerhaft"] },
+          ] as const
+        ).map((facility) => {
+          const level = getEndgameFacilityLevel(ownClub, facility.action);
+          const maxLevel = facility.action === "construction_yard" ? 1 : 3;
+          const targetLevel = facility.action === "construction_yard" ? 1 : Math.min(maxLevel, level + 1);
+          const requirement = getEndgameUnlockRequirement(facility.action, targetLevel);
+          const unlockMet = isEndgameUnlockMet(investmentClubStatus, requirement);
+          const check = canUpgradeEndgameFacility({
+            action: facility.action,
+            actionsThisSeason,
+            clubStatus: investmentClubStatus,
+            currentLevel: level,
+            money: overview.finance.money,
+            actionLimit,
+          });
+          const upgradeDisabled = !investmentPhaseActive || !check.ok;
+          const cost = getEndgameUpgradeCost(facility.action, level);
+          const Icon = facility.icon;
+          const lockLabel =
+            requirement === "title_contender" ? "Benötigt: Titelanwärter" : "Benötigt: Mittlerer Tabellenplatz";
+
+          return (
+            <div className="rounded-md border border-violet-900/50 bg-violet-950/20 p-4 lg:col-span-1" key={facility.action}>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold text-zinc-50">{ENDGAME_FACILITY_LABELS[facility.action]}</p>
+                  <p className="mt-0.5 text-xs font-bold text-violet-300">
+                    {facility.action === "construction_yard"
+                      ? level >= 1
+                        ? "Gebaut"
+                        : "Nicht gebaut"
+                      : `Stufe ${level}/${maxLevel}`}
+                  </p>
+                </div>
+                <Icon size={18} className="text-violet-300" aria-hidden />
+              </div>
+              {!unlockMet && level < maxLevel ? (
+                <p className="mt-2 rounded border border-amber-900/60 bg-amber-950/30 px-2 py-1 text-[11px] text-amber-200">{lockLabel}</p>
+              ) : null}
+              <div className="mt-3 rounded-md border border-zinc-800 bg-zinc-950/50 p-3 text-xs text-zinc-300">
+                {facility.action === "construction_yard" ? (
+                  <p>Einmaliger Kauf — dauerhaft +2 Bauprojekte pro Off-Season.</p>
+                ) : (
+                  <ul className="space-y-1">
+                    {facility.effects.map((effect, index) => (
+                      <li className={cn(index + 1 === level ? "font-semibold text-violet-200" : index + 1 < level ? "text-zinc-600 line-through" : "")} key={effect}>
+                        Stufe {index + 1}: {effect}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div className="mt-3 flex items-center justify-between text-xs text-zinc-500">
+                <span>{facility.action === "construction_yard" && level >= 1 ? "Status" : "Naechstes Upgrade"}</span>
+                <span className="font-semibold text-zinc-300">
+                  {level >= maxLevel ? "Max erreicht" : formatMoney(cost)}
+                </span>
+              </div>
+              <form action={upgradeInvestmentAction} className="mt-2">
+                <input name="game_id" type="hidden" value={snapshot.game.id} />
+                <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                <input name="club_id" type="hidden" value={ownClub.id} />
+                <input name="action" type="hidden" value={facility.action} />
+                <Button
+                  className="w-full"
+                  disabled={upgradeDisabled}
+                  title={
+                    !investmentPhaseActive
+                      ? "Nur in der Investmentphase"
+                      : check.ok
+                        ? "Upgrade kaufen"
+                        : getEndgameUpgradeReasonLabel(check.reason)
+                  }
+                  type="submit"
+                >
+                  {!investmentPhaseActive
+                    ? "Investmentphase abwarten"
+                    : check.ok
+                      ? facility.action === "construction_yard" && level >= 1
+                        ? "Bereits gebaut"
+                        : "Upgrade kaufen"
+                      : getEndgameUpgradeReasonLabel(check.reason)}
+                </Button>
+              </form>
+            </div>
+          );
+        })}
+
         {/* Mitarbeiter-Karte */}
         {(() => {
           const hasFreeStaffOffer = overview.pending_effects.some(
@@ -2602,6 +2758,7 @@ function FacilityUpgradePanel({
             currentStaffCount: overview.staff.length,
             hasOpenOffer: Boolean(overview.open_staff_offer),
             extraActionBonus: extraInvestmentSlots,
+            actionLimit,
             hasFreeStaffOffer,
           };
           const staffBlockReason = getStaffRecruitBlockReason(staffRecruitInput);
@@ -2611,6 +2768,7 @@ function FacilityUpgradePanel({
             hasFreeStaffSigning,
             actionsThisSeason,
             extraActionBonus: extraInvestmentSlots,
+            actionLimit,
           });
           const staffDisabled = !investmentPhaseActive || !staffCheckOk;
           return (
@@ -2952,6 +3110,10 @@ function SquadPanel({
       .filter((e) => e.type === "injury_heal_manual")
       .reduce((a, e) => a + (e.perMatchday ?? 0), 0);
   }, 0);
+  const medicalHealsRemaining = overview.medical_heals_remaining ?? 0;
+  const hasMedicalHeals =
+    Number.isFinite(medicalHealsRemaining) && medicalHealsRemaining > 0;
+  const nlzRespecAvailable = overview.nlz_archetype_respec_available ?? false;
 
   return (
     <Panel className="border-[var(--club-border)] bg-zinc-950/85">
@@ -2989,6 +3151,13 @@ function SquadPanel({
           <p className="mt-0.5 text-amber-400">Klicke auf &quot;Heilen&quot; bei einem verletzten Spieler.</p>
         </div>
       )}
+      {hasMedicalHeals ? (
+        <div className="rounded-md border border-rose-900/60 bg-rose-950/20 p-3 text-xs text-rose-200">
+          <p className="font-semibold">
+            Medizin-Zentrum — {Number.isFinite(medicalHealsRemaining) ? medicalHealsRemaining : "∞"} Heilung(en) diese Saison
+          </p>
+        </div>
+      ) : null}
       {overview.squad.length === 0 ? (
         <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-4 text-sm text-zinc-400">
           Noch keine Spieler im Kader. Nach dem Draft erscheinen sie hier.
@@ -3013,6 +3182,44 @@ function SquadPanel({
                     <input name="club_player_id" type="hidden" value={owned.id} />
                     <Button className="h-7 w-full text-xs" type="submit" variant="secondary">
                       Heilen (Mira)
+                    </Button>
+                  </form>
+                ) : null}
+                {owned.injured && hasMedicalHeals && ownClub && snapshot ? (
+                  <form action={healPlayerMedicalAction} className="mt-2">
+                    <input name="game_id" type="hidden" value={snapshot.game.id} />
+                    <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                    <input name="club_id" type="hidden" value={ownClub.id} />
+                    <input name="club_player_id" type="hidden" value={owned.id} />
+                    <Button className="h-7 w-full text-xs" type="submit" variant="secondary">
+                      Heilen (Medizin)
+                    </Button>
+                  </form>
+                ) : null}
+                {nlzRespecAvailable &&
+                ownClub &&
+                snapshot &&
+                owned.player.metadata &&
+                typeof owned.player.metadata === "object" &&
+                (owned.player.metadata as Record<string, unknown>).nlz_origin === true ? (
+                  <form action={respecPlayerArchetypeAction} className="mt-2 space-y-1">
+                    <input name="game_id" type="hidden" value={snapshot.game.id} />
+                    <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                    <input name="club_id" type="hidden" value={ownClub.id} />
+                    <input name="club_player_id" type="hidden" value={owned.id} />
+                    <select
+                      className="h-7 w-full rounded border border-zinc-700 bg-zinc-900 px-2 text-xs text-zinc-200"
+                      name="archetype"
+                      defaultValue={owned.player.attacker_archetype ?? owned.player.defender_archetype ?? "beta"}
+                    >
+                      {Object.entries(ARCHETYPE_META).map(([key, meta]) => (
+                        <option key={key} value={key}>
+                          {meta.attackLabel} / {meta.defenseLabel}
+                        </option>
+                      ))}
+                    </select>
+                    <Button className="h-7 w-full text-xs" type="submit" variant="secondary">
+                      Archetyp umschmieden (NLZ)
                     </Button>
                   </form>
                 ) : null}
@@ -3423,6 +3630,11 @@ function FixtureCard({
     const e = (s.card.effects as Array<{ type: string; threshold?: number }>).find((eff) => eff.type === "draw_reroll");
     return e ? Math.min(min, e.threshold ?? 8) : min;
   }, Infinity) ?? Infinity;
+  const opponentClubId = ownSide === "home" ? away.club_id : ownSide === "away" ? home.club_id : null;
+  const opponentName =
+    ownSide === "home" ? away.display_name : ownSide === "away" ? home.display_name : "";
+  const liveOpponentLineup =
+    snapshot.season?.opponent_locked_lineups?.find((entry) => entry.fixture_id === fixture.id)?.lineup ?? null;
 
   function handleLockClick() {
     if (hasLineupWarning) {
@@ -3433,6 +3645,7 @@ function FixtureCard({
   }
 
   return (
+    <div className="space-y-3">
     <Panel className="border-[var(--club-border)] bg-zinc-950/85">
       <div className="grid gap-4 p-4 lg:grid-cols-[1fr_220px]">
         <div>
@@ -3638,6 +3851,16 @@ function FixtureCard({
         </div>
       </div>
     </Panel>
+    {ownSide && ownClub ? (
+      <OpponentIntelPanel
+        analyticsLevel={ownClub.analytics_hub_level ?? 0}
+        fixtures={snapshot.season?.fixtures ?? []}
+        liveLineup={liveOpponentLineup}
+        opponentClubId={opponentClubId}
+        opponentName={opponentName}
+      />
+    ) : null}
+    </div>
   );
 }
 
@@ -4210,6 +4433,7 @@ function SettingsView({
   snapshot: LobbySnapshot;
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const continentalCupEnabled = snapshot.game.settings.continental_cup_enabled !== false;
   const sponsoringEnabled = snapshot.game.settings.sponsoring_enabled !== false;
   const archetypesEnabled = snapshot.game.settings.archetypes_enabled !== false;
 
@@ -4247,11 +4471,19 @@ function SettingsView({
           </div>
           <Settings size={18} className="text-[var(--club-color)]" aria-hidden />
         </PanelHeader>
-        <form action={updateGameSettingsAction} className="grid gap-3 md:grid-cols-[1fr_1fr_auto] md:items-end">
+        <form action={updateGameSettingsAction} className="grid gap-3 md:grid-cols-3 xl:grid-cols-[1fr_1fr_1fr_auto] xl:items-end">
           <input name="game_id" type="hidden" value={snapshot.game.id} />
           <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+          <input name="continental_cup_enabled" type="hidden" value="0" />
           <input name="sponsoring_enabled" type="hidden" value="0" />
           <input name="archetypes_enabled" type="hidden" value="0" />
+          <FeatureToggle
+            defaultChecked={continentalCupEnabled}
+            disabled={!isHost}
+            label="Continental Cup"
+            name="continental_cup_enabled"
+            text="Turnier nach geraden Saisons zwischen Saisonabschluss und Off-Season."
+          />
           <FeatureToggle
             defaultChecked={sponsoringEnabled}
             disabled={!isHost}
@@ -4463,13 +4695,18 @@ function getPositionRank(player: DraftPlayerRow) {
 function mapOwnedPlayerToCardData(owned: NonNullable<LobbySnapshot["club_overview"]>["squad"][number]): PlayerCardData {
   const card = mapDbPlayerToPlayerCardData(owned.player);
   const currentStars = Number(owned.current_stars);
+  const isNlzTalent =
+    owned.player.metadata &&
+    typeof owned.player.metadata === "object" &&
+    (owned.player.metadata as Record<string, unknown>).nlz_origin === true;
 
   return {
     ...card,
+    cardStyle: isNlzTalent ? { ...card.cardStyle, theme: "purple" } : card.cardStyle,
     skill: {
       ...card.skill,
       current: currentStars,
-      potential: currentStars,
+      potential: Number(owned.player.potential_stars ?? currentStars),
       max: Number(owned.player.skill_max ?? card.skill.max),
     },
   };

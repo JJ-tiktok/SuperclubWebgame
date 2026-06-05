@@ -10,8 +10,10 @@
  */
 
 export {
-  upgradeInvestmentAction,
+  healPlayerMedicalAction,
+  respecPlayerArchetypeAction,
   trainPlayerAction,
+  upgradeInvestmentAction,
 } from "@/app/games/actions";
 
 export { signSponsorDealAction, pickSponsorRewardPlayerAction } from "@/app/games/actions/sponsoring";

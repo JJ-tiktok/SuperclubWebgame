@@ -16,6 +16,7 @@ import {
 } from "@/lib/lobby/continental-cup";
 import { calculateLineupPower, type CaptainBoost } from "@/lib/lobby/lineup-power";
 import { areArchetypesEnabled, normalizeApplicablePlayerArchetype } from "@/lib/lobby/archetypes";
+import { buildLineupSnapshotFromPlayers } from "@/lib/lobby/lineup-snapshot";
 import { getMatchPointsMode, resolveFixture, type FixtureSideInput } from "@/lib/lobby/season";
 import type { LobbyGame } from "@/lib/lobby/types";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
@@ -482,6 +483,30 @@ async function resolveContinentalFixtureServer(
 
   const loserId = winnerParticipantId === home.id ? away.id : home.id;
 
+  const [homePlayers, awayPlayers] = await Promise.all([
+    home.club_id
+      ? supabase
+          .from("club_players")
+          .select("current_stars, current_zone, lineup_slot, player:players(attacker_archetype, defender_archetype, display_name)")
+          .eq("club_id", home.club_id)
+          .neq("current_zone", "bench")
+          .order("lineup_slot", { ascending: true })
+      : Promise.resolve({ data: [] as [] }),
+    away.club_id
+      ? supabase
+          .from("club_players")
+          .select("current_stars, current_zone, lineup_slot, player:players(attacker_archetype, defender_archetype, display_name)")
+          .eq("club_id", away.club_id)
+          .neq("current_zone", "bench")
+          .order("lineup_slot", { ascending: true })
+      : Promise.resolve({ data: [] as [] }),
+  ]);
+
+  const lineupSnapshot = {
+    away: buildLineupSnapshotFromPlayers(awayPlayers.data ?? []),
+    home: buildLineupSnapshotFromPlayers(homePlayers.data ?? []),
+  };
+
   await supabase
     .from("continental_fixtures")
     .update({
@@ -490,7 +515,7 @@ async function resolveContinentalFixtureServer(
       completed_at: new Date().toISOString(),
       home_score: resolution.home_match_points,
       home_third_points: resolution.home_third_points,
-      result: resolution,
+      result: { ...resolution, lineup_snapshot: lineupSnapshot },
       status: "completed",
       match_state: "completed",
       winner_participant_id: winnerParticipantId,

@@ -2,6 +2,14 @@ import { auth } from "@clerk/nextjs/server";
 import { normalizeRoomCode } from "./rules";
 import { DRAFT_PLAYER_SELECT } from "./draft";
 import { buildNextMatchZoneBoostsByClubId } from "@/lib/game/game-changer-effects";
+import {
+  buildLineupSnapshotFromPlayers,
+  type LineupSnapshotSide,
+} from "@/lib/lobby/lineup-snapshot";
+import {
+  canRevealDeadlineAuctionPlayers,
+  getMedicalHealsRemaining,
+} from "@/lib/lobby/endgame-facilities";
 import type {
   ClubGameChangerSnapshot,
   CpuStrengthTier,
@@ -67,6 +75,7 @@ const CLUB_SELECT_LEGACY =
 const CLUB_SELECT_V3 =
   "id, game_id, clerk_user_id, club_template_id, club_name, club_slogan, club_color, manager_name, money, points, season_rank, status, status_override, status_override_until_season, stadium_level, stadium_level_cap, stadium_level_cap_until_season, scouting_level, training_level, offseason_scouting_capacity, offseason_training_capacity, supercup_cards, captain_boost_rank, is_ready, image_url, created_at";
 const CLUB_SELECT_V4 = `${CLUB_SELECT_V3}, captain_club_player_id`;
+const CLUB_SELECT_V5 = `${CLUB_SELECT_V4}, medical_center_level, analytics_hub_level, youth_academy_level, construction_yard_built, medical_heals_used_season, nlz_archetype_respecs_used_season`;
 const CLUB_SELECT = CLUB_SELECT_V3;
 
 const CLUB_GAME_CHANGER_SELECT_LEGACY =
@@ -163,10 +172,10 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
     return { snapshot: null, currentUserId: userId };
   }
 
-  const [clubsResultV4, { data: members, error: membersError }] = await Promise.all([
+  const [clubsResultV5, { data: members, error: membersError }] = await Promise.all([
     supabase
       .from("clubs")
-      .select(CLUB_SELECT_V4)
+      .select(CLUB_SELECT_V5)
       .eq("game_id", game.id)
       .order("created_at", { ascending: true })
       .returns<LobbyClub[]>(),
@@ -178,9 +187,21 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
       .returns<LobbyMember[]>(),
   ]);
 
-  let clubs = clubsResultV4.data;
-  let clubsError = clubsResultV4.error;
-  // Fallback chain for DBs without the latest migrations: V4 -> V3 -> legacy.
+  let clubs = clubsResultV5.data;
+  let clubsError = clubsResultV5.error;
+  // Fallback chain for DBs without the latest migrations: V5 -> V4 -> V3 -> legacy.
+  if (isUndefinedColumnError(clubsError)) {
+    const v4 = await supabase
+      .from("clubs")
+      .select(CLUB_SELECT_V4)
+      .eq("game_id", game.id)
+      .order("created_at", { ascending: true })
+      .returns<LobbyClub[]>();
+    if (!isUndefinedColumnError(v4.error)) {
+      clubs = v4.data;
+      clubsError = v4.error;
+    }
+  }
   if (isUndefinedColumnError(clubsError)) {
     const v3 = await supabase
       .from("clubs")
@@ -212,12 +233,12 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
   }
 
   const clubsWithStars = await addSquadStars(clubs ?? []);
+  const ownClub = clubsWithStars.find((club) => club.clerk_user_id === userId);
   const draft = await getDraftSnapshot(game, clubsWithStars);
   const scouting = await getScoutingSnapshot(game, clubsWithStars);
-  const deadline = await getDeadlineSnapshot(game, clubsWithStars);
-  const season = await getSeasonSnapshot(game);
+  const deadline = await getDeadlineSnapshot(game, clubsWithStars, ownClub);
+  const season = await getSeasonSnapshot(game, ownClub);
   const continental = await getContinentalSnapshot(game);
-  const ownClub = clubsWithStars.find((club) => club.clerk_user_id === userId);
   const clubOverview = ownClub ? await getClubOverviewSnapshot(game, ownClub, clubsWithStars.length) : null;
   const clubSquads =
     ownClub && (options?.activeView === "squad" || options?.activeView === "transfer")
@@ -709,7 +730,37 @@ function sortClubPlayers(squad: ClubPlayerSnapshot[]) {
   });
 }
 
-async function getSeasonSnapshot(game: LobbyGame): Promise<SeasonSnapshot | null> {
+async function loadClubLockedLineupSnapshot(
+  supabase: NonNullable<ReturnType<typeof createSupabaseServiceClient>>,
+  clubId: string,
+): Promise<LineupSnapshotSide> {
+  const { data, error } = await supabase
+    .from("club_players")
+    .select("current_stars, current_zone, lineup_slot, player:players(attacker_archetype, defender_archetype, display_name)")
+    .eq("club_id", clubId)
+    .neq("current_zone", "bench")
+    .order("lineup_slot", { ascending: true })
+    .returns<
+      Array<{
+        current_stars: number | string;
+        current_zone: string;
+        lineup_slot: number | null;
+        player: {
+          attacker_archetype?: string | null;
+          defender_archetype?: string | null;
+          display_name: string;
+        } | null;
+      }>
+    >();
+
+  if (error) {
+    throw error;
+  }
+
+  return buildLineupSnapshotFromPlayers(data ?? []);
+}
+
+async function getSeasonSnapshot(game: LobbyGame, viewerClub?: LobbyClub): Promise<SeasonSnapshot | null> {
   const supabase = createSupabaseServiceClient();
 
   if (!supabase || !["season", "prematch", "match", "season_end"].includes(game.phase)) {
@@ -796,11 +847,37 @@ async function getSeasonSnapshot(game: LobbyGame): Promise<SeasonSnapshot | null
   const enrichedStandings = enrichParticipantsWithCpuTier(standings ?? [], tierByCpuTeamId);
   const enrichedFixtures = enrichFixtureParticipantsWithCpuTier(normalizedFixtures, tierByCpuTeamId);
 
+  let opponent_locked_lineups: SeasonSnapshot["opponent_locked_lineups"] = [];
+  const analyticsLevel = viewerClub?.analytics_hub_level ?? 0;
+  if (viewerClub && analyticsLevel >= 2 && supabase) {
+    const currentFixtures = enrichedFixtures.filter(
+      (fixture) => fixture.matchday === currentMatchday && fixture.status !== "completed",
+    );
+    for (const fixture of currentFixtures) {
+      const isHome = fixture.home_participant.club_id === viewerClub.id;
+      const isAway = fixture.away_participant.club_id === viewerClub.id;
+      if (!isHome && !isAway) {
+        continue;
+      }
+      const opponentClubId = isHome ? fixture.away_participant.club_id : fixture.home_participant.club_id;
+      const opponentLocked = isHome ? fixture.away_lineup_locked : fixture.home_lineup_locked;
+      if (!opponentClubId || !opponentLocked) {
+        continue;
+      }
+      opponent_locked_lineups.push({
+        fixture_id: fixture.id,
+        opponent_club_id: opponentClubId,
+        lineup: await loadClubLockedLineupSnapshot(supabase, opponentClubId),
+      });
+    }
+  }
+
   return {
     current_matchday: currentMatchday,
     fixtures: enrichedFixtures,
     manager_standings: managerStandings,
     next_match_zone_boosts_by_club_id: nextMatchZoneBoostsByClubId,
+    opponent_locked_lineups,
     standings: enrichedStandings,
   };
 }
@@ -990,7 +1067,33 @@ type DeadlineAuctionRow = Omit<DeadlineAuctionSnapshot, "bids"> & {
   bids: DeadlineBidSnapshot[] | null;
 };
 
-async function getDeadlineSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promise<DeadlineSnapshot | null> {
+function redactScheduledDeadlinePlayer<T extends DraftPlayerRow>(player: T): T {
+  return {
+    ...player,
+    attacker_archetype: "beta",
+    base_stars: 0,
+    chemistry_left: false,
+    chemistry_right: false,
+    chemistry_symbol: "star",
+    defender_archetype: "beta",
+    display_name: "Verdeckt",
+    eligible_positions: [],
+    minimum_bid: 0,
+    nationality: "?",
+    position: "?",
+    potential_stars: 0,
+    region: "hidden",
+    scouting_price: 0,
+    skill_max: 0,
+    visibility: "hidden",
+  };
+}
+
+async function getDeadlineSnapshot(
+  game: LobbyGame,
+  clubs: LobbyClub[],
+  viewerClub?: LobbyClub,
+): Promise<DeadlineSnapshot | null> {
   const supabase = createSupabaseServiceClient();
 
   if (!supabase || game.phase !== "deadline_day") {
@@ -1022,14 +1125,22 @@ async function getDeadlineSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promise
     };
   }
 
-  const auctions = (data ?? []).map((auction): DeadlineAuctionSnapshot => ({
-    ...auction,
-    bids: auction.bids ?? [],
-    current_amount: Number(auction.current_amount ?? 0),
-    minimum_bid: Number(auction.minimum_bid ?? 0),
-    passed_club_ids: auction.passed_club_ids ?? [],
-    bid_order_club_ids: auction.bid_order_club_ids ?? [],
-  }));
+  const revealScheduledPlayers = canRevealDeadlineAuctionPlayers(viewerClub?.analytics_hub_level ?? 0);
+  const auctions = (data ?? []).map((auction): DeadlineAuctionSnapshot => {
+    const player =
+      auction.status === "scheduled" && !revealScheduledPlayers
+        ? redactScheduledDeadlinePlayer(auction.player)
+        : auction.player;
+    return {
+      ...auction,
+      player,
+      bids: auction.bids ?? [],
+      current_amount: Number(auction.current_amount ?? 0),
+      minimum_bid: Number(auction.minimum_bid ?? 0),
+      passed_club_ids: auction.passed_club_ids ?? [],
+      bid_order_club_ids: auction.bid_order_club_ids ?? [],
+    };
+  });
   const activeAuction = auctions.find((auction) => auction.status === "open") ?? null;
   const completedCount = auctions.filter((auction) => auction.status === "resolved" || auction.status === "passed").length;
 
@@ -1300,6 +1411,12 @@ async function getClubOverviewSnapshot(
       status_override_active: overrideActive,
     },
     ...sponsorOverview,
+    medical_heals_remaining: getMedicalHealsRemaining(
+      club.medical_center_level ?? 0,
+      club.medical_heals_used_season ?? 0,
+    ),
+    nlz_archetype_respec_available:
+      (club.youth_academy_level ?? 0) >= 2 && (club.nlz_archetype_respecs_used_season ?? 0) < 1,
   };
 }
 

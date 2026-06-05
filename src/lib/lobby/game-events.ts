@@ -58,11 +58,13 @@ function applySaveUpdated(snapshot: LobbySnapshot, event: GameEventSnapshot): Ga
     return { applied: true, needsRefetch: true, snapshot };
   }
 
+  const continentalCupEnabled = getBoolean(settings.continental_cup_enabled);
   const sponsoringEnabled = getBoolean(settings.sponsoring_enabled);
   const archetypesEnabled = getBoolean(settings.archetypes_enabled);
 
   snapshot.game.settings = {
     ...snapshot.game.settings,
+    ...(continentalCupEnabled === null ? {} : { continental_cup_enabled: continentalCupEnabled }),
     ...(sponsoringEnabled === null ? {} : { sponsoring_enabled: sponsoringEnabled }),
     ...(archetypesEnabled === null ? {} : { archetypes_enabled: archetypesEnabled }),
   };

@@ -25,7 +25,7 @@ export type PlayerMarketInput = {
   potentialCeiling?: number;
 };
 
-/** Potential-Deckel: base + bonus, mindestens aktuell und skill_max (trainierbares Maximum). */
+/** Potential-Deckel aus Karte: base + bonus, mindestens aktuell, hart gedeckelt durch skill_max. */
 export function resolvePlayerPotentialCeiling(params: {
   baseStars?: number | string | null;
   currentStars?: number | string | null;
@@ -37,13 +37,9 @@ export function resolvePlayerPotentialCeiling(params: {
   const raw = Math.max(0, Math.trunc(Number(params.potentialStars ?? 0)));
   const skillMax = Math.max(0, Math.trunc(Number(params.skillMax ?? 0)));
 
-  const fromProfile = Math.max(current, base + raw);
+  const ceiling = Math.max(current, base + raw);
 
-  if (skillMax <= 0) {
-    return fromProfile;
-  }
-
-  return Math.min(skillMax, Math.max(fromProfile, skillMax));
+  return skillMax > 0 ? Math.min(ceiling, skillMax) : ceiling;
 }
 
 export function getRemainingPotentialPoints(input: PlayerMarketInput): number {

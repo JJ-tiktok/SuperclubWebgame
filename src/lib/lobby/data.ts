@@ -29,6 +29,7 @@ import type {
   LobbyClub,
   LobbyGame,
   LobbyMember,
+  LobbyPhase,
   LobbySnapshot,
   ManagerStandingSnapshot,
   MatchNewsSnapshot,
@@ -235,21 +236,25 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
 
   const clubsWithStars = await addSquadStars(clubs ?? []);
   const ownClub = clubsWithStars.find((club) => club.clerk_user_id === userId);
-  const draft = await getDraftSnapshot(game, clubsWithStars);
-  const scouting = await getScoutingSnapshot(game, clubsWithStars);
-  const deadline = await getDeadlineSnapshot(game, clubsWithStars, ownClub);
-  const season = await getSeasonSnapshot(game, ownClub);
-  const continental = await getContinentalSnapshot(game);
-  const clubOverview = ownClub ? await getClubOverviewSnapshot(game, ownClub, clubsWithStars.length) : null;
+  const activeView = normalizeSnapshotView(options?.activeView);
+  const draft = shouldLoadDraftSnapshot(game.phase, activeView) ? await getDraftSnapshot(game, clubsWithStars) : null;
+  const scouting = shouldLoadScoutingSnapshot(game.phase, activeView) ? await getScoutingSnapshot(game, clubsWithStars) : null;
+  const deadline = shouldLoadDeadlineSnapshot(game.phase, activeView) ? await getDeadlineSnapshot(game, clubsWithStars, ownClub) : null;
+  const season = shouldLoadSeasonSnapshot(game.phase) ? await getSeasonSnapshot(game, ownClub) : null;
+  const continental = shouldLoadContinentalSnapshot(game.phase, activeView) ? await getContinentalSnapshot(game) : null;
+  const clubOverview =
+    ownClub && shouldLoadClubOverviewSnapshot(game.phase, activeView)
+      ? await getClubOverviewSnapshot(game, ownClub, clubsWithStars.length)
+      : null;
   const clubSquads =
-    ownClub && (options?.activeView === "squad" || options?.activeView === "transfer")
+    ownClub && (activeView === "squad" || activeView === "transfer")
       ? await getClubSquadsSnapshot(game, clubsWithStars)
       : null;
   const transferMarket =
-    ownClub && (options?.activeView === "squad" || options?.activeView === "transfer")
+    ownClub && (activeView === "squad" || activeView === "transfer")
       ? await getTransferMarketSnapshot(game, ownClub, clubsWithStars)
       : null;
-  const matchNews = await getMatchNewsSnapshot(game);
+  const matchNews = shouldLoadMatchNewsSnapshot(game.phase, activeView) ? await getMatchNewsSnapshot(game) : [];
 
   const snapshot: LobbySnapshot = {
     game,
@@ -267,6 +272,54 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
   };
 
   return { snapshot, currentUserId: userId };
+}
+
+function normalizeSnapshotView(value: string | undefined) {
+  return value && value.length > 0 ? value : "dashboard";
+}
+
+function shouldLoadDraftSnapshot(phase: LobbyPhase, view: string) {
+  return phase === "draft" || view === "draft";
+}
+
+function shouldLoadScoutingSnapshot(phase: LobbyPhase, view: string) {
+  return phase === "off_season" || phase === "offseason_scouting" || view === "scouting";
+}
+
+function shouldLoadDeadlineSnapshot(phase: LobbyPhase, view: string) {
+  return phase === "deadline_day" || view === "deadline";
+}
+
+function shouldLoadSeasonSnapshot(phase: LobbyPhase) {
+  return phase === "season" || phase === "prematch" || phase === "match" || phase === "season_end";
+}
+
+function shouldLoadContinentalSnapshot(phase: LobbyPhase, view: string) {
+  return phase === "champions_league" || view === "continental";
+}
+
+function shouldLoadClubOverviewSnapshot(phase: LobbyPhase, view: string) {
+  if (phase === "off_season" || phase === "offseason_training" || phase === "offseason_scouting" || phase === "offseason_investments") {
+    return true;
+  }
+
+  if (phase === "deadline_day" || phase === "season" || phase === "prematch" || phase === "match" || phase === "champions_league") {
+    return true;
+  }
+
+  if (phase === "season_end" && view === "dashboard") {
+    return true;
+  }
+
+  return ["grounds", "lineup", "squad", "training", "scouting", "transfer", "matchday", "continental"].includes(view);
+}
+
+function shouldLoadMatchNewsSnapshot(phase: LobbyPhase, view: string) {
+  if (phase === "season_end" && view === "dashboard") {
+    return true;
+  }
+
+  return view === "matchday" || view === "continental";
 }
 
 type ScoutingDrawRow = {

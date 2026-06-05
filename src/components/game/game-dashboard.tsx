@@ -174,7 +174,7 @@ import {
 } from "@/lib/lobby/scouting";
 import { getClubTheme } from "@/lib/lobby/theme";
 import { canTrainOwnedPlayer } from "@/lib/lobby/training";
-import { getClubPlayerMarketValues, resolvePlayerPotentialCeiling } from "@/lib/lobby/player-market";
+import { computePlayerMarketValues, getClubPlayerMarketValues, resolvePlayerPotentialCeiling } from "@/lib/lobby/player-market";
 import { MANAGER_TRANSFER_DEPARTURE_LIMIT } from "@/lib/lobby/transfers";
 import type {
   ClubPlayerSnapshot,
@@ -4670,8 +4670,17 @@ function getPositionRank(player: DraftPlayerRow) {
 
 function mapOwnedPlayerToCardData(owned: NonNullable<LobbySnapshot["club_overview"]>["squad"][number]): PlayerCardData {
   const card = mapDbPlayerToPlayerCardData(owned.player);
-  const currentStars = Number(owned.current_stars);
-  const market = getClubPlayerMarketValues(owned);
+  const currentStars = Math.trunc(Number(owned.current_stars));
+  const potentialCeiling = resolvePlayerPotentialCeiling({
+    baseStars: owned.player.base_stars,
+    currentStars,
+    potentialStars: owned.player.potential_stars,
+    skillMax: owned.player.skill_max,
+  });
+  const market = computePlayerMarketValues({
+    potentialCeiling,
+    stars: currentStars,
+  });
   const isNlzTalent =
     owned.player.metadata &&
     typeof owned.player.metadata === "object" &&
@@ -4688,12 +4697,7 @@ function mapOwnedPlayerToCardData(owned: NonNullable<LobbySnapshot["club_overvie
     skill: {
       ...card.skill,
       current: currentStars,
-      potential: resolvePlayerPotentialCeiling({
-        baseStars: owned.player.base_stars,
-        currentStars,
-        potentialStars: owned.player.potential_stars,
-        skillMax: owned.player.skill_max,
-      }),
+      potential: potentialCeiling,
       max: Number(owned.player.skill_max ?? card.skill.max),
     },
   };

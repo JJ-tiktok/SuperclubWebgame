@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ClubStatus } from "@/lib/game/types";
-import { syncPlayerRowMarketValues } from "@/lib/lobby/player-market";
+import { resolvePlayerPotentialCeiling, syncPlayerRowMarketValues } from "@/lib/lobby/player-market";
 import { applyStatusTierUp } from "@/lib/game/rules";
 import { getSponsorDealById } from "@/lib/lobby/sponsor-deals";
 import {
@@ -485,9 +485,12 @@ async function boostPlayerStars(supabase: ServiceClient, clubPlayerId: string, s
   await supabase.from("club_players").update({ current_stars: nextStars }).eq("id", clubPlayerId);
   if (data?.player_id) {
     await syncPlayerRowMarketValues(supabase, data.player_id, {
-      baseStars: Number(data.player?.base_stars ?? nextStars),
-      potentialStars: Number(data.player?.potential_stars ?? 0),
-      skillMax: Number(data.player?.skill_max ?? 0),
+      potentialCeiling: resolvePlayerPotentialCeiling({
+        baseStars: data.player?.base_stars,
+        currentStars: nextStars,
+        potentialStars: data.player?.potential_stars,
+        skillMax: data.player?.skill_max,
+      }),
       stars: nextStars,
     });
   }
@@ -513,9 +516,12 @@ async function boostPlayerPotential(supabase: ServiceClient, clubPlayerId: strin
   const nextStars = Math.min(Number(data.current_stars ?? 0) + stars, newMax);
   await supabase.from("club_players").update({ current_stars: nextStars }).eq("id", clubPlayerId);
   await syncPlayerRowMarketValues(supabase, data.player_id, {
-    baseStars: Number(data.player?.base_stars ?? nextStars),
-    potentialStars: Number(data.player?.potential_stars ?? 0),
-    skillMax: newMax,
+    potentialCeiling: resolvePlayerPotentialCeiling({
+      baseStars: data.player?.base_stars,
+      currentStars: nextStars,
+      potentialStars: data.player?.potential_stars,
+      skillMax: newMax,
+    }),
     stars: nextStars,
   });
 }
@@ -537,9 +543,12 @@ async function maxPlayerToSkillMax(supabase: ServiceClient, clubPlayerId: string
   await supabase.from("club_players").update({ current_stars: max }).eq("id", clubPlayerId);
   if (data?.player_id) {
     await syncPlayerRowMarketValues(supabase, data.player_id, {
-      baseStars: Number(data.player?.base_stars ?? max),
-      potentialStars: Number(data.player?.potential_stars ?? 0),
-      skillMax: max,
+      potentialCeiling: resolvePlayerPotentialCeiling({
+        baseStars: data.player?.base_stars,
+        currentStars: max,
+        potentialStars: data.player?.potential_stars,
+        skillMax: max,
+      }),
       stars: max,
     });
   }

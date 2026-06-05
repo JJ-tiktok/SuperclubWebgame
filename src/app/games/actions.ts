@@ -117,6 +117,7 @@ import {
 import {
   computePlayerMarketValues,
   getClubPlayerMarketValues,
+  resolvePlayerPotentialCeiling,
   syncPlayerRowMarketValues,
 } from "@/lib/lobby/player-market";
 import {
@@ -719,9 +720,12 @@ export async function trainPlayerAction(formData: FormData) {
 
   if (resolution.afterStars !== resolution.beforeStars) {
     await syncPlayerRowMarketValues(supabase, ownedPlayer.player_id, {
-      baseStars: Number(ownedPlayer.player.base_stars ?? resolution.afterStars),
-      potentialStars: Number(ownedPlayer.player.potential_stars ?? 0),
-      skillMax: Number(ownedPlayer.player.skill_max ?? 0),
+      potentialCeiling: resolvePlayerPotentialCeiling({
+        baseStars: ownedPlayer.player.base_stars,
+        currentStars: resolution.afterStars,
+        potentialStars: ownedPlayer.player.potential_stars,
+        skillMax: ownedPlayer.player.skill_max,
+      }),
       stars: resolution.afterStars,
     });
   }
@@ -978,11 +982,16 @@ export async function buyScoutedPlayerAction(formData: FormData) {
   }
 
   const ownDraws = draws.filter((item) => item.club_id === ownClub.id);
+  const drawBaseStars = Number(draw.player.base_stars ?? 1);
+  const drawPotentialCeiling = resolvePlayerPotentialCeiling({
+    baseStars: drawBaseStars,
+    currentStars: drawBaseStars,
+    potentialStars: draw.player.potential_stars,
+    skillMax: draw.player.skill_max,
+  });
   const baseScoutingPrice = computePlayerMarketValues({
-    baseStars: Number(draw.player.base_stars ?? 1),
-    potentialStars: Number(draw.player.potential_stars ?? 0),
-    skillMax: Number(draw.player.skill_max ?? 0),
-    stars: Number(draw.player.base_stars ?? 1),
+    potentialCeiling: drawPotentialCeiling,
+    stars: drawBaseStars,
   }).scoutingPrice;
   const scoutingPendingEffects = buyPendingEffects.filter((eff) =>
     isOffseasonPendingScopeActive(eff.scope, game.phase),
@@ -1041,9 +1050,12 @@ export async function buyScoutedPlayerAction(formData: FormData) {
   }
 
   await syncPlayerRowMarketValues(supabase, draw.player_id, {
-    baseStars: Number(draw.player.base_stars ?? newSigningStars),
-    potentialStars: Number(draw.player.potential_stars ?? 0),
-    skillMax: Number(draw.player.skill_max ?? 0),
+    potentialCeiling: resolvePlayerPotentialCeiling({
+      baseStars: draw.player.base_stars,
+      currentStars: newSigningStars,
+      potentialStars: draw.player.potential_stars,
+      skillMax: draw.player.skill_max,
+    }),
     stars: newSigningStars,
   });
 
@@ -1797,9 +1809,12 @@ export async function initializeDeadlineDayAction(formData: FormData) {
     current_bid_club_id: index === 0 ? firstClubId : null,
     game_id: gameId,
     minimum_bid: computePlayerMarketValues({
-      baseStars: Number(player.base_stars ?? 1),
-      potentialStars: Number(player.potential_stars ?? 0),
-      skillMax: Number(player.skill_max ?? 0),
+      potentialCeiling: resolvePlayerPotentialCeiling({
+        baseStars: player.base_stars,
+        currentStars: player.base_stars,
+        potentialStars: player.potential_stars,
+        skillMax: player.skill_max,
+      }),
       stars: Number(player.base_stars ?? 1),
     }).minimumBid,
     passed_club_ids: [],

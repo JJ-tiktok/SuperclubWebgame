@@ -4,7 +4,15 @@ import { ChemistryLinks } from "@/components/player-card/ChemistryLinks";
 import { MarketValues } from "@/components/player-card/MarketValues";
 import { SkillStars } from "@/components/player-card/SkillStars";
 import { cn } from "@/lib/utils";
-import { getPositionLabel, getPositionTheme, getSkillStarStates, getTotalSkillValue, type PlayerCardArchetype, type PlayerCardData } from "@/types/player-card";
+import {
+  getCardSkillRating,
+  getPositionLabel,
+  getPositionTheme,
+  getSkillStarStates,
+  getTotalSkillValue,
+  type PlayerCardArchetype,
+  type PlayerCardData,
+} from "@/types/player-card";
 
 type PlayerCardVariant = "draft" | "lineup";
 
@@ -72,7 +80,7 @@ function DraftPlayerCard({
           <div>
             <SkillStars label="Skill" size="sm" states={starStates} />
           </div>
-          <p className="text-right text-2xl font-black leading-none">{getTotalSkillValue(player)}</p>
+          <p className="text-right text-2xl font-black leading-none">{getCardSkillRating(player)}</p>
         </div>
 
         <MarketValues compact market={player.market} />

@@ -1,6 +1,6 @@
 import type { DraftPlayerRow } from "./types";
 import { ARCHETYPE_META, isAllrounderPositions, normalizeApplicablePlayerArchetype } from "@/lib/lobby/archetypes";
-import { computePlayerMarketValues } from "@/lib/lobby/player-market";
+import { computePlayerMarketValues, resolvePlayerPotentialCeiling } from "@/lib/lobby/player-market";
 import type {
   CardTier,
   ChemistrySymbol,
@@ -57,12 +57,15 @@ export function mapDbPlayerToPlayerCardData(player: DraftPlayerRow): PlayerCardD
   const position = normalizePosition(player.position);
   const playerPositions = normalizeEligiblePositions(player.eligible_positions, position);
   const currentStars = Number(player.base_stars ?? 1);
-  const potentialStars = Math.max(currentStars, currentStars + Number(player.potential_stars ?? 0));
-  const maxStars = Math.max(Number(player.skill_max ?? 5), potentialStars);
-  const market = computePlayerMarketValues({
+  const potentialCeiling = resolvePlayerPotentialCeiling({
     baseStars: currentStars,
-    potentialStars: Number(player.potential_stars ?? 0),
-    skillMax: Number(player.skill_max ?? 0),
+    currentStars,
+    potentialStars: player.potential_stars,
+    skillMax: player.skill_max,
+  });
+  const maxStars = Math.max(Number(player.skill_max ?? 5), potentialCeiling);
+  const market = computePlayerMarketValues({
+    potentialCeiling,
     stars: currentStars,
   });
   const marketTransfer = moneyToMillions(market.minimumBid);
@@ -81,7 +84,7 @@ export function mapDbPlayerToPlayerCardData(player: DraftPlayerRow): PlayerCardD
     ageGroup: ageGroups.has(player.age_group as PlayerAgeGroup) ? (player.age_group as PlayerAgeGroup) : "prime",
     skill: {
       current: currentStars,
-      potential: potentialStars,
+      potential: potentialCeiling,
       max: maxStars,
       veteranFallback: player.veteran_fallback ?? null,
     },

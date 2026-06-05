@@ -148,11 +148,11 @@ export function getPositionLabel(positions: PlayerCardPosition[]) {
 export function getSkillStarStates(player: PlayerCardData): StarState[] {
   const stars: StarState[] = [];
   const max = Math.max(0, Math.floor(player.skill.max));
-  const total = getTotalSkillValue(player);
+  const current = Math.max(0, Math.floor(player.skill.current));
   const veteranFallback = player.skill.veteranFallback ?? 0;
 
   for (let i = 1; i <= max; i += 1) {
-    if (i <= total) {
+    if (i <= current) {
       stars.push("filled");
     } else if (player.ageGroup === "veteran" && veteranFallback > 0 && i <= veteranFallback) {
       stars.push("veteran");
@@ -165,7 +165,15 @@ export function getSkillStarStates(player: PlayerCardData): StarState[] {
 }
 
 export function getTotalSkillValue(player: PlayerCardData) {
-  return Math.min(Math.max(0, Math.floor(player.skill.max)), Math.max(player.skill.current, player.skill.potential));
+  return Math.min(
+    Math.max(0, Math.floor(player.skill.max)),
+    Math.max(Math.floor(player.skill.current), Math.floor(player.skill.potential)),
+  );
+}
+
+/** Grosses Rating auf der Karte: Potential-Deckel (nicht nur aktuelle Sterne). */
+export function getCardSkillRating(player: PlayerCardData) {
+  return Math.min(Math.max(0, Math.floor(player.skill.max)), Math.floor(player.skill.potential));
 }
 
 export function calculateCardChemistryBonus(players: Array<Pick<PlayerCardData, "chemistry">>) {

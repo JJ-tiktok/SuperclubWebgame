@@ -1,4 +1,4 @@
-import { computePlayerMarketValues } from "@/lib/lobby/player-market";
+import { computePlayerMarketValues, resolvePlayerPotentialCeiling } from "@/lib/lobby/player-market";
 import type { PlayerArchetype } from "@/lib/lobby/types";
 
 const YOUTH_FIRST_NAMES = [
@@ -49,7 +49,13 @@ export function buildYouthPlayerSeed(random = Math.random) {
   const archetype = pickRandom(ARCHETYPES, random);
   const contentKey = `nlz-${Date.now()}-${Math.floor(random() * 1_000_000)}`;
 
-  const market = computePlayerMarketValues({ baseStars: 1, potentialStars: 5, skillMax: 6, stars: 1 });
+  const potentialCeiling = resolvePlayerPotentialCeiling({
+    baseStars: 1,
+    currentStars: 1,
+    potentialStars: 5,
+    skillMax: 6,
+  });
+  const market = computePlayerMarketValues({ potentialCeiling, stars: 1 });
 
   return {
     age: 17,

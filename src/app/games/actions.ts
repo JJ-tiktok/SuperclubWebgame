@@ -117,6 +117,7 @@ import {
 import {
   canAcceptTransferOffer,
   canCreateTransferOffer,
+  cancelOpenSwapTransferOffersForClubPlayer,
   normalizeTransferCashAmount,
 } from "@/lib/lobby/transfers";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
@@ -1258,6 +1259,7 @@ export async function sellClubPlayerAction(formData: FormData) {
   }
 
   const saleValue = Number(ownedPlayer.player.scouting_price ?? 0);
+  await cancelOpenSwapTransferOffersForClubPlayer(supabase, ownedPlayer.id, "cancelled");
   const { error: deleteError } = await supabase.from("club_players").delete().eq("id", ownedPlayer.id).eq("club_id", ownClub.id);
 
   if (deleteError) {
@@ -1649,7 +1651,11 @@ export async function declineTransferOfferAction(formData: FormData) {
 
   const { error } = await supabase
     .from("transfer_offers")
-    .update({ resolved_at: new Date().toISOString(), status: "declined" })
+    .update({
+      offered_player_id: offer.offered_club_player_id ? offer.offered_player_id : null,
+      resolved_at: new Date().toISOString(),
+      status: "declined",
+    })
     .eq("id", offer.id)
     .eq("status", "open");
 
@@ -1696,7 +1702,11 @@ export async function cancelTransferOfferAction(formData: FormData) {
 
   const { error } = await supabase
     .from("transfer_offers")
-    .update({ resolved_at: new Date().toISOString(), status: "cancelled" })
+    .update({
+      offered_player_id: offer.offered_club_player_id ? offer.offered_player_id : null,
+      resolved_at: new Date().toISOString(),
+      status: "cancelled",
+    })
     .eq("id", offer.id)
     .eq("status", "open");
 

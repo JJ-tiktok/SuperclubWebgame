@@ -1,3 +1,4 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { MAX_SQUAD_SIZE } from "@/lib/game/rules";
 
 export const MANAGER_TRANSFER_DEPARTURE_LIMIT = 2;
@@ -72,6 +73,51 @@ export function canAcceptTransferOffer(params: {
   }
 
   return { ok: true } as const;
+}
+
+/**
+ * Closes open swap offers that reference a club player before the row is deleted.
+ * Required because `offered_club_player_id` uses ON DELETE SET NULL while
+ * `offered_player_id` would remain set and violate `transfer_offers` checks.
+ */
+export async function cancelOpenSwapTransferOffersForClubPlayer(
+  supabase: SupabaseClient,
+  clubPlayerId: string,
+  status: "cancelled" | "expired" = "expired",
+): Promise<void> {
+  const now = new Date().toISOString();
+  const { data: swapOffers, error: swapError } = await supabase
+    .from("transfer_offers")
+    .select("id")
+    .eq("offered_club_player_id", clubPlayerId)
+    .eq("status", "open")
+    .returns<Array<{ id: string }>>();
+
+  if (swapError) {
+    throw swapError;
+  }
+
+  if (!swapOffers?.length) {
+    return;
+  }
+
+  const { error } = await supabase
+    .from("transfer_offers")
+    .update({
+      offered_club_player_id: null,
+      offered_player_id: null,
+      resolved_at: now,
+      status,
+    })
+    .in(
+      "id",
+      swapOffers.map((row) => row.id),
+    )
+    .eq("status", "open");
+
+  if (error) {
+    throw error;
+  }
 }
 
 export function getManagerTransferReasonLabel(reason: string) {

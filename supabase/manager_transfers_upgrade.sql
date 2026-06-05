@@ -74,3 +74,28 @@ begin
   end if;
 end;
 $$;
+
+-- Keep offered_player_id in sync when offered_club_player_id is cleared (e.g. ON DELETE SET NULL).
+update public.transfer_offers
+set offered_player_id = null
+where offered_club_player_id is null
+  and offered_player_id is not null;
+
+create or replace function public.normalize_transfer_offer_offered_player()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.offered_club_player_id is null then
+    new.offered_player_id := null;
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists transfer_offers_normalize_offered_player on public.transfer_offers;
+
+create trigger transfer_offers_normalize_offered_player
+before insert or update on public.transfer_offers
+for each row
+execute function public.normalize_transfer_offer_offered_player();

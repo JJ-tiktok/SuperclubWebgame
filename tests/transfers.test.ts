@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  buildTransferOfferClosePayload,
   canAcceptTransferOffer,
   canCreateTransferOffer,
   MANAGER_TRANSFER_DEPARTURE_LIMIT,
@@ -8,6 +9,15 @@ import {
 } from "@/lib/lobby/transfers";
 
 describe("manager transfer rules", () => {
+  it("clears both swap player columns when closing offers", () => {
+    const payload = buildTransferOfferClosePayload("expired", "2026-06-05T19:42:44.961Z");
+
+    assert.equal(payload.status, "expired");
+    assert.equal(payload.offered_club_player_id, null);
+    assert.equal(payload.offered_player_id, null);
+    assert.equal(payload.resolved_at, "2026-06-05T19:42:44.961Z");
+  });
+
   it("normalizes cash offers to full millions", () => {
     assert.equal(normalizeTransferCashAmount(2_900_000), 2_000_000);
     assert.equal(normalizeTransferCashAmount(-1), 0);

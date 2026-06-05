@@ -4,6 +4,18 @@ import { MAX_SQUAD_SIZE } from "@/lib/game/rules";
 export const MANAGER_TRANSFER_DEPARTURE_LIMIT = 2;
 export const TRANSFER_MONEY_STEP = 1_000_000;
 
+export type TransferOfferCloseStatus = "cancelled" | "declined" | "expired";
+
+/** Clears swap columns together so transfer_offers_check1 stays valid. */
+export function buildTransferOfferClosePayload(status: TransferOfferCloseStatus, resolvedAt = new Date().toISOString()) {
+  return {
+    offered_club_player_id: null,
+    offered_player_id: null,
+    resolved_at: resolvedAt,
+    status,
+  };
+}
+
 export function normalizeTransferCashAmount(value: number) {
   return Math.max(0, Math.trunc(Number(value) / TRANSFER_MONEY_STEP) * TRANSFER_MONEY_STEP);
 }
@@ -85,7 +97,6 @@ export async function cancelOpenSwapTransferOffersForClubPlayer(
   clubPlayerId: string,
   status: "cancelled" | "expired" = "expired",
 ): Promise<void> {
-  const now = new Date().toISOString();
   const { data: swapOffers, error: swapError } = await supabase
     .from("transfer_offers")
     .select("id")
@@ -103,12 +114,7 @@ export async function cancelOpenSwapTransferOffersForClubPlayer(
 
   const { error } = await supabase
     .from("transfer_offers")
-    .update({
-      offered_club_player_id: null,
-      offered_player_id: null,
-      resolved_at: now,
-      status,
-    })
+    .update(buildTransferOfferClosePayload(status))
     .in(
       "id",
       swapOffers.map((row) => row.id),

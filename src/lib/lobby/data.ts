@@ -837,7 +837,7 @@ async function getSeasonSnapshot(game: LobbyGame, viewerClub?: LobbyClub): Promi
   const enrichedStandings = enrichParticipantsWithCpuTier(standings ?? [], tierByCpuTeamId);
   const enrichedFixtures = enrichFixtureParticipantsWithCpuTier(normalizedFixtures, tierByCpuTeamId);
 
-  let opponent_locked_lineups: SeasonSnapshot["opponent_locked_lineups"] = [];
+  const opponent_locked_lineups: SeasonSnapshot["opponent_locked_lineups"] = [];
   const analyticsLevel = viewerClub?.analytics_hub_level ?? 0;
   if (viewerClub && analyticsLevel >= 2 && supabase) {
     const currentFixtures = enrichedFixtures.filter(

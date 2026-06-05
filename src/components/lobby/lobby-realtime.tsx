@@ -222,6 +222,12 @@ export function LobbyRealtime({
               <Badge tone={game.settings.continental_cup_enabled === false ? "neutral" : "blue"}>
                 Continental Cup {game.settings.continental_cup_enabled === false ? "aus" : "an"}
               </Badge>
+              <Badge tone={game.settings.sponsoring_enabled === false ? "neutral" : "blue"}>
+                Sponsoring {game.settings.sponsoring_enabled === false ? "aus" : "an"}
+              </Badge>
+              <Badge tone={game.settings.archetypes_enabled === false ? "neutral" : "blue"}>
+                Archetypes {game.settings.archetypes_enabled === false ? "aus" : "an"}
+              </Badge>
             </div>
             <h1 className="mt-3 text-2xl font-semibold text-zinc-50">{ownClub?.club_name ?? "Lobby"}</h1>
             <p className="mt-1 text-sm text-zinc-500">

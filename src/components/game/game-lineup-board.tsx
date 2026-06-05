@@ -106,6 +106,7 @@ const formationLayouts: Record<FormationKey, FormationSlot[]> = {
 type StaffZoneEffect = { type: string; zone?: string; stars?: number; factor?: number };
 
 export function GameLineupBoard({
+  archetypesEnabled = true,
   cards,
   gameId,
   roomCode,
@@ -113,6 +114,7 @@ export function GameLineupBoard({
   captainId = null,
   captainBoost = 0,
 }: {
+  archetypesEnabled?: boolean;
   cards: LineupCard[];
   gameId: string;
   roomCode: string;
@@ -330,7 +332,7 @@ export function GameLineupBoard({
           ))}
         </div>
 
-        <ArchetypeMatchupGuide />
+        {archetypesEnabled ? <ArchetypeMatchupGuide /> : null}
 
         <div
           className="relative h-[580px] touch-none overflow-hidden rounded-md border border-emerald-800 bg-emerald-950/70"
@@ -377,7 +379,13 @@ export function GameLineupBoard({
                         C{captainBoost > 0 ? ` +${captainBoost}` : ""}
                       </span>
                     ) : null}
-                    <LineupPlayerCard offPosPenalty={isOffPosition ? offPosPenalty : 0} player={player} selected={player.lockedDefault} variant="lineup" />
+                    <LineupPlayerCard
+                      offPosPenalty={isOffPosition ? offPosPenalty : 0}
+                      player={player}
+                      selected={player.lockedDefault}
+                      showArchetypes={archetypesEnabled}
+                      variant="lineup"
+                    />
                   </div>
                 ) : (
                   <span>{slot.label}</span>
@@ -386,7 +394,7 @@ export function GameLineupBoard({
             );
           })}
 
-          {drag ? <DraggedCard drag={drag} player={cardById.get(drag.playerId)} /> : null}
+          {drag ? <DraggedCard drag={drag} player={cardById.get(drag.playerId)} showArchetypes={archetypesEnabled} /> : null}
         </div>
 
         <div className="mt-3 grid grid-cols-4 gap-2 text-xs">
@@ -414,7 +422,7 @@ export function GameLineupBoard({
                 key={player.id}
                 onPointerDown={(event) => startBenchDrag(event, player.id)}
               >
-                <LineupPlayerCard player={player} variant="draft" />
+                <LineupPlayerCard player={player} showArchetypes={archetypesEnabled} variant="draft" />
               </div>
             ))}
           </div>
@@ -761,7 +769,7 @@ function findNearestDefenderBySide(defenderSlots: FormationSlot[], gkX: number, 
     .sort((a, b) => Math.abs(a.x - gkX) - Math.abs(b.x - gkX))[0];
 }
 
-function DraggedCard({ drag, player }: { drag: DragState; player: LineupCard | undefined }) {
+function DraggedCard({ drag, player, showArchetypes }: { drag: DragState; player: LineupCard | undefined; showArchetypes: boolean }) {
   if (!player) {
     return null;
   }
@@ -771,7 +779,7 @@ function DraggedCard({ drag, player }: { drag: DragState; player: LineupCard | u
       className="pointer-events-none absolute z-30 w-[92px] scale-105 opacity-95 shadow-2xl"
       style={{ left: `${drag.x}%`, top: `${drag.y}%`, transform: "translate(-50%, -50%)" }}
     >
-      <LineupPlayerCard player={player} variant="lineup" />
+      <LineupPlayerCard player={player} showArchetypes={showArchetypes} variant="lineup" />
     </div>
   );
 }
@@ -780,11 +788,13 @@ function LineupPlayerCard({
   offPosPenalty = 0,
   player,
   selected,
+  showArchetypes = true,
   variant,
 }: {
   offPosPenalty?: number;
   player: LineupCard;
   selected?: boolean;
+  showArchetypes?: boolean;
   variant: "draft" | "lineup";
 }) {
   const isOffPos = offPosPenalty > 0;
@@ -792,7 +802,7 @@ function LineupPlayerCard({
 
   return (
     <div className={cn("relative", player.injured ? "opacity-55 grayscale" : "")}>
-      <PlayerCard disabled={player.injured} player={player} selected={selected} variant={variant} />
+      <PlayerCard disabled={player.injured} player={player} selected={selected} showArchetypes={showArchetypes} variant={variant} />
       {player.injured ? (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-md bg-black/45">
           <span className="rounded bg-rose-500 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-white shadow-lg">

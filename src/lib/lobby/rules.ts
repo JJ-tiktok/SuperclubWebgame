@@ -9,6 +9,8 @@ export const DEFAULT_LOBBY_SETTINGS: LobbySettings = {
   max_draft_stars: 3,
   turn_timeout_seconds: 60,
   continental_cup_enabled: true,
+  sponsoring_enabled: true,
+  archetypes_enabled: true,
 };
 
 export function generateRoomCode(random = Math.random) {
@@ -95,6 +97,14 @@ export function parseLobbySettings(input: Partial<Record<string, FormDataEntryVa
     input.continental_cup_enabled,
     DEFAULT_LOBBY_SETTINGS.continental_cup_enabled ?? true,
   );
+  const sponsoringEnabled = parseBooleanSetting(
+    input.sponsoring_enabled,
+    DEFAULT_LOBBY_SETTINGS.sponsoring_enabled ?? true,
+  );
+  const archetypesEnabled = parseBooleanSetting(
+    input.archetypes_enabled,
+    DEFAULT_LOBBY_SETTINGS.archetypes_enabled ?? true,
+  );
   const cpuTeamIdsRaw = input.cpu_team_ids;
   let cpu_team_ids: string[] | undefined;
   if (typeof cpuTeamIdsRaw === "string" && cpuTeamIdsRaw.trim()) {
@@ -113,6 +123,8 @@ export function parseLobbySettings(input: Partial<Record<string, FormDataEntryVa
     max_draft_stars: Number.isFinite(maxDraftStars) ? Math.min(Math.max(Math.trunc(maxDraftStars), 1), 6) : DEFAULT_LOBBY_SETTINGS.max_draft_stars,
     turn_timeout_seconds: Number.isFinite(turnTimeout) ? Math.min(Math.max(Math.trunc(turnTimeout), 15), 180) : DEFAULT_LOBBY_SETTINGS.turn_timeout_seconds,
     continental_cup_enabled: continentalCupEnabled,
+    sponsoring_enabled: sponsoringEnabled,
+    archetypes_enabled: archetypesEnabled,
   } satisfies LobbySettings;
 
   if (cpu_team_ids && cpu_team_ids.length > 0) {

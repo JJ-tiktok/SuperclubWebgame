@@ -256,6 +256,36 @@ describe("season and matchday rules", () => {
     assert.ok(result.third.archetype_effects?.every((effect) => effect.winner === "attacker"));
   });
 
+  it("can disable archetype effects per fixture", () => {
+    const result = resolveOneThird({
+      archetypesEnabled: false,
+      away: side({
+        participantId: "away",
+        powers: { ATT: 7, DEF: 8, MID: 5 },
+        zone_players: [
+          { current_stars: 4, current_zone: "DEF", defender_archetype: "beta", display_name: "Away Top Def", id: "def-top", lineup_slot: 1 },
+          { current_stars: 2, current_zone: "DEF", defender_archetype: "alpha", display_name: "Away Low Def", id: "def-low", lineup_slot: 2 },
+        ],
+      }),
+      home: side({
+        participantId: "home",
+        powers: { ATT: 10, DEF: 8, MID: 9 },
+        zone_players: [
+          { attacker_archetype: "alpha", current_stars: 5, current_zone: "ATT", display_name: "Home Top Att", id: "att-top", lineup_slot: 1 },
+          { attacker_archetype: "gamma", current_stars: 1, current_zone: "ATT", display_name: "Home Low Att", id: "att-low", lineup_slot: 2 },
+        ],
+      }),
+      homeDice: [1, 1],
+      awayDice: [1, 1],
+      index: 2,
+      priorThirds: [{ away: { dice: [1, 1], dice_faces: 6, participant_id: "away", total: 7, zone: "MID", zone_stars: 5 }, home: { dice: [3, 3], dice_faces: 6, participant_id: "home", total: 15, zone: "MID", zone_stars: 9 }, index: 1, label: "midfield", winner_participant_id: "home" }],
+    });
+
+    assert.equal(result.third.home.zone_stars, 10);
+    assert.equal(result.third.away.zone_stars, 8);
+    assert.equal(result.third.archetype_effects?.length, 0);
+  });
+
   it("creates only a game-changer when a W10 double misses the active slot count", () => {
     const result = resolveOneThird({
       away: side({ canReceiveEvents: false, participantId: "away" }),

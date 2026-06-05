@@ -37,7 +37,9 @@ create table public.games (
     'starting_money', 120000000,
     'squad_draft_size', 16,
     'squad_max_size', 23,
-    'season_number', 1
+    'season_number', 1,
+    'sponsoring_enabled', true,
+    'archetypes_enabled', true
   ),
   host_clerk_user_id text not null,
   current_turn_club_id uuid,

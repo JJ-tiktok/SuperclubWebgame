@@ -12,30 +12,33 @@ type PlayerCardProps = {
   disabled?: boolean;
   player: PlayerCardData;
   selected?: boolean;
+  showArchetypes?: boolean;
   variant?: PlayerCardVariant;
 };
 
-export function PlayerCard({ disabled = false, player, selected = false, variant = "draft" }: PlayerCardProps) {
+export function PlayerCard({ disabled = false, player, selected = false, showArchetypes = true, variant = "draft" }: PlayerCardProps) {
   const theme = getPositionTheme(player);
   const starStates = getSkillStarStates(player);
 
   if (variant === "lineup") {
-    return <LineupPlayerCard disabled={disabled} player={player} selected={selected} starStates={starStates} theme={theme} />;
+    return <LineupPlayerCard disabled={disabled} player={player} selected={selected} showArchetypes={showArchetypes} starStates={starStates} theme={theme} />;
   }
 
-  return <DraftPlayerCard disabled={disabled} player={player} selected={selected} starStates={starStates} theme={theme} />;
+  return <DraftPlayerCard disabled={disabled} player={player} selected={selected} showArchetypes={showArchetypes} starStates={starStates} theme={theme} />;
 }
 
 function DraftPlayerCard({
   disabled,
   player,
   selected,
+  showArchetypes,
   starStates,
   theme,
 }: {
   disabled: boolean;
   player: PlayerCardData;
   selected: boolean;
+  showArchetypes: boolean;
   starStates: ReturnType<typeof getSkillStarStates>;
   theme: ReturnType<typeof getPositionTheme>;
 }) {
@@ -61,7 +64,7 @@ function DraftPlayerCard({
           </div>
           <div className="flex shrink-0 flex-col items-end gap-1">
             <CardBadge position={player.position} positions={player.positions} />
-            <ArchetypeBadges player={player} />
+            <ArchetypeBadges player={player} show={showArchetypes} />
           </div>
         </div>
 
@@ -82,12 +85,14 @@ function LineupPlayerCard({
   disabled,
   player,
   selected,
+  showArchetypes,
   starStates,
   theme,
 }: {
   disabled: boolean;
   player: PlayerCardData;
   selected: boolean;
+  showArchetypes: boolean;
   starStates: ReturnType<typeof getSkillStarStates>;
   theme: ReturnType<typeof getPositionTheme>;
 }) {
@@ -109,7 +114,7 @@ function LineupPlayerCard({
         <span>{getPositionLabel(player.positions)}</span>
         <span>{getTotalSkillValue(player)}</span>
       </div>
-      <ArchetypeBadges compact player={player} />
+      <ArchetypeBadges compact player={player} show={showArchetypes} />
       <div className="relative z-10 min-w-0">
         <p className="truncate text-[11px] font-black leading-tight">{player.name}</p>
         <SkillStars className="mx-auto mt-1 max-w-[58px]" label="Skill" size="xs" states={starStates} wrap />
@@ -118,7 +123,9 @@ function LineupPlayerCard({
   );
 }
 
-function ArchetypeBadges({ compact = false, player }: { compact?: boolean; player: PlayerCardData }) {
+function ArchetypeBadges({ compact = false, player, show }: { compact?: boolean; player: PlayerCardData; show: boolean }) {
+  if (!show) return null;
+
   const items = [player.archetypes?.attack, player.archetypes?.defense].filter(Boolean) as PlayerCardArchetype[];
 
   if (items.length === 0) return null;

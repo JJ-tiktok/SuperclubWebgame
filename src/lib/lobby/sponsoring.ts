@@ -59,6 +59,14 @@ export function isSponsorSigningPhase(phase: string) {
   return phase === "off_season";
 }
 
+export function isSponsoringEnabled(settings?: unknown) {
+  const value =
+    settings && typeof settings === "object"
+      ? (settings as { sponsoring_enabled?: unknown }).sponsoring_enabled
+      : undefined;
+  return value !== false;
+}
+
 export function normalizeSponsorProgress(raw: unknown): SponsorProgress {
   if (!raw || typeof raw !== "object") return {};
   return raw as SponsorProgress;

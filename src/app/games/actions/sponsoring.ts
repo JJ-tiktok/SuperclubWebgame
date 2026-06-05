@@ -7,7 +7,7 @@ import { createSupabaseServiceClient } from "@/lib/supabase/server";
 import type { LobbyClub, LobbyGame } from "@/lib/lobby/types";
 import type { SupabaseServiceClient } from "@/app/games/actions/_shared";
 import { resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
-import { canSignSponsorDeal } from "@/lib/lobby/sponsoring";
+import { canSignSponsorDeal, isSponsoringEnabled } from "@/lib/lobby/sponsoring";
 import {
   applySponsorReward,
   loadClubSponsorContracts,
@@ -51,6 +51,9 @@ export async function signSponsorDealAction(formData: FormData) {
   }
 
   const { game, ownClub } = await getGameClubContext(supabase, gameId, userId);
+  if (!isSponsoringEnabled(game.settings)) {
+    redirect(`/games/${roomCode}?view=grounds&sponsor_error=${encodeURIComponent("Sponsoring ist in dieser Lobby ausgeschaltet")}`);
+  }
   const contracts = await loadClubSponsorContracts(supabase, ownClub.id);
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
   const clubStatus = resolveEffectiveClubStatus(ownClub, seasonNumber);
@@ -93,6 +96,9 @@ export async function pickSponsorRewardPlayerAction(formData: FormData) {
   }
 
   const { game, ownClub } = await getGameClubContext(supabase, gameId, userId);
+  if (!isSponsoringEnabled(game.settings)) {
+    redirect(`/games/${roomCode}?view=grounds&sponsor_error=${encodeURIComponent("Sponsoring ist in dieser Lobby ausgeschaltet")}`);
+  }
   const playerIds = formData.getAll("club_player_id").map(String).filter(Boolean);
 
   const { data: contract, error } = await supabase

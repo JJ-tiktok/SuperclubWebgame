@@ -51,6 +51,7 @@ import { isClubStatusOverrideActive, resolveEffectiveClubStatus } from "@/lib/lo
 import {
   buildClubSponsorOverview,
   EMPTY_SPONSOR_OVERVIEW,
+  isSponsoringEnabled,
   normalizeSponsorProgress,
   type SponsorContractRow,
 } from "@/lib/lobby/sponsoring";
@@ -1249,7 +1250,9 @@ async function getClubOverviewSnapshot(
           ...row,
           progress: normalizeSponsorProgress(row.progress),
         }));
-  const sponsorOverview = sponsorContracts.length || !isUndefinedTableError(sponsorContractsError)
+  const sponsorOverview = !isSponsoringEnabled(game.settings)
+    ? { ...EMPTY_SPONSOR_OVERVIEW, sponsor_prestige_tier: effectiveStatus, sponsor_prestige_label: SPONSOR_PRESTIGE_LABELS[effectiveStatus] }
+    : sponsorContracts.length || !isUndefinedTableError(sponsorContractsError)
     ? buildClubSponsorOverview(sponsorContracts, game.phase, effectiveStatus)
     : { ...EMPTY_SPONSOR_OVERVIEW, sponsor_prestige_tier: effectiveStatus, sponsor_prestige_label: SPONSOR_PRESTIGE_LABELS[effectiveStatus] };
 

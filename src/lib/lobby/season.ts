@@ -3,7 +3,7 @@ import {
   type PartialResult,
   type ZoneModifier,
 } from "@/lib/game/game-changer-effects";
-import { compareArchetypes, type ArchetypeDuelWinner, type PlayerArchetype } from "@/lib/lobby/archetypes";
+import { areArchetypesEnabled, compareArchetypes, type ArchetypeDuelWinner, type PlayerArchetype } from "@/lib/lobby/archetypes";
 import type { LobbySettings } from "@/lib/lobby/types";
 
 export type SeasonMode = "double_round_robin" | "five_match";
@@ -158,6 +158,7 @@ export function getMatchPoints(winnerSide: "away" | "draw" | "home", mode: Match
 }
 
 export function resolveFixture(params: {
+  archetypesEnabled?: boolean;
   away: FixtureSideInput;
   diceRolls?: DicePair[];
   home: FixtureSideInput;
@@ -189,6 +190,7 @@ export function resolveFixture(params: {
       awayDice: diceRolls[rollIndex++],
       homeDice: diceRolls[rollIndex++],
       priorThirds: thirds,
+      archetypesEnabled: params.archetypesEnabled,
       zoneModifiers: modifiers,
     });
     thirds.push(third);
@@ -249,6 +251,7 @@ export function getThirdZones(
 }
 
 export function resolveOneThird(params: {
+  archetypesEnabled?: boolean;
   index: 1 | 2 | 3;
   home: FixtureSideInput;
   away: FixtureSideInput;
@@ -288,12 +291,13 @@ export function resolveOneThird(params: {
 
   const homeIsAttacking = homeZone === "ATT" && awayZone === "DEF";
   const awayIsAttacking = awayZone === "ATT" && homeZone === "DEF";
-  const archetypeResult =
-    homeIsAttacking
-      ? getArchetypeZoneResultForSides(home, away, "home")
-      : awayIsAttacking
-        ? getArchetypeZoneResultForSides(away, home, "away")
-        : { awayDelta: 0, effects: [], homeDelta: 0 };
+  const archetypeResult = areArchetypesEnabled({ archetypes_enabled: params.archetypesEnabled })
+    ? homeIsAttacking
+        ? getArchetypeZoneResultForSides(home, away, "home")
+        : awayIsAttacking
+          ? getArchetypeZoneResultForSides(away, home, "away")
+          : { awayDelta: 0, effects: [], homeDelta: 0 }
+    : { awayDelta: 0, effects: [], homeDelta: 0 };
 
   const homePower = Math.max(0, home.powers[homeZone] + getModifierDelta("home", homeZone) + archetypeResult.homeDelta);
   const awayPower = Math.max(0, away.powers[awayZone] + getModifierDelta("away", awayZone) + archetypeResult.awayDelta);

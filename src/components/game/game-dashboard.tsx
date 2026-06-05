@@ -43,6 +43,7 @@ import {
   setPhaseDoneAction,
   setReadyFromDashboardAction,
   startGameFromDashboardAction,
+  updateGameSettingsAction,
 } from "@/app/games/actions/lobby";
 import { makeDraftPickAction } from "@/app/games/actions/draft";
 import {
@@ -567,6 +568,12 @@ function GameHeader({
             <Badge>{snapshot.game.phase.toUpperCase()}</Badge>
             <Badge>{phaseDoneCount}/{phaseDoneTotal} fertig</Badge>
             <Badge>Save v{snapshot.game.save_version ?? 1}</Badge>
+            <Badge tone={snapshot.game.settings.sponsoring_enabled === false ? "neutral" : "blue"}>
+              Sponsoring {snapshot.game.settings.sponsoring_enabled === false ? "aus" : "an"}
+            </Badge>
+            <Badge tone={snapshot.game.settings.archetypes_enabled === false ? "neutral" : "blue"}>
+              Archetypes {snapshot.game.settings.archetypes_enabled === false ? "aus" : "an"}
+            </Badge>
             <ActiveEffectsChip
               effects={snapshot.club_overview?.pending_effects ?? []}
               roomCode={snapshot.game.room_code}
@@ -880,7 +887,7 @@ function DraftView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
 
               return (
                 <div className={cn("rounded-lg border border-zinc-800 bg-zinc-900/45 p-2", picked ? "opacity-55" : "")} key={player.id}>
-                  <PlayerCard disabled={picked} player={card} variant="draft" />
+                  <PlayerCard disabled={picked} player={card} showArchetypes={snapshot.game.settings.archetypes_enabled !== false} variant="draft" />
                   <form action={makeDraftPickAction} className="mt-2">
                     <input name="game_id" type="hidden" value={snapshot.game.id} />
                     <input name="room_code" type="hidden" value={snapshot.game.room_code} />
@@ -1101,7 +1108,7 @@ function TrainingView({
 
                 return (
                   <div className={cn("rounded-lg border border-zinc-800 bg-zinc-900/45 p-2", trainedClubPlayerIds.has(owned.id) ? "ring-1 ring-lime-300/40" : "")} key={owned.id}>
-                    <PlayerCard disabled={owned.injured} player={card} variant="draft" />
+                    <PlayerCard disabled={owned.injured} player={card} showArchetypes={snapshot.game.settings.archetypes_enabled !== false} variant="draft" />
                     <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-zinc-400">
                       <SmallInfo label="Aktuell" value={`${currentStars} Sterne`} />
                       <SmallInfo label="Maximum" value={`${skillMax} Sterne`} />
@@ -1443,7 +1450,7 @@ function ScoutingDrawsPanel({
                       <div className="mb-2">
                         <Badge tone={draw.status === "bought" ? "green" : draw.status === "passed" ? "red" : "blue"}>{draw.status}</Badge>
                       </div>
-                      <PlayerCard disabled={draw.status !== "drawn"} player={card} variant="draft" />
+                      <PlayerCard disabled={draw.status !== "drawn"} player={card} showArchetypes={snapshot.game.settings.archetypes_enabled !== false} variant="draft" />
                       {isOwn && draw.status === "drawn" ? (
                         <div className="mt-2 grid grid-cols-2 gap-2">
                           <form action={buyScoutedPlayerAction}>
@@ -1569,7 +1576,7 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
 
               return (
                 <div className="grid gap-3 rounded-lg border border-zinc-800 bg-zinc-900/55 p-3 sm:grid-cols-[132px_minmax(0,1fr)]" key={owned.id}>
-                  <PlayerCard disabled={owned.injured} player={card} variant="draft" />
+                  <PlayerCard disabled={owned.injured} player={card} showArchetypes={snapshot.game.settings.archetypes_enabled !== false} variant="draft" />
                   <div className="flex min-w-0 flex-col justify-between gap-3">
                     <div>
                       <div className="flex items-start justify-between gap-3">
@@ -1816,7 +1823,7 @@ function DeadlineView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub:
             </PanelHeader>
             <div className="grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
               <div className="max-w-[220px]">
-                <PlayerCard player={mapDbPlayerToPlayerCardData(activeAuction.player)} variant="draft" />
+                <PlayerCard player={mapDbPlayerToPlayerCardData(activeAuction.player)} showArchetypes={snapshot.game.settings.archetypes_enabled !== false} variant="draft" />
               </div>
               <div className="space-y-3">
                 <div className="grid gap-2 sm:grid-cols-2">
@@ -2013,6 +2020,7 @@ function LineupView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; sna
       />
 
       <GameLineupBoard
+        archetypesEnabled={snapshot.game.settings.archetypes_enabled !== false}
         cards={lineupCards}
         gameId={snapshot.game.id}
         roomCode={snapshot.game.room_code}
@@ -2053,7 +2061,21 @@ function ClubOverviewView({
     <div className="space-y-4">
       {focus === "grounds" ? <ClubFinancePanel ownClub={ownClub} overview={overview} snapshot={snapshot} /> : null}
       {focus === "grounds" ? <FacilityUpgradePanel ownClub={ownClub} overview={overview} snapshot={snapshot} /> : null}
-      {focus === "grounds" ? <SponsorPanel ownClub={ownClub} overview={overview} snapshot={snapshot} /> : null}
+      {focus === "grounds" ? (
+        snapshot.game.settings.sponsoring_enabled === false ? (
+          <Panel className="border-zinc-800 bg-zinc-950/85">
+            <PanelHeader>
+              <div>
+                <PanelTitle>Sponsoring</PanelTitle>
+                <PanelDescription>Sponsoring ist in den Lobby-Einstellungen fuer diesen Spielstand ausgeschaltet.</PanelDescription>
+              </div>
+              <Banknote size={18} className="text-zinc-500" aria-hidden />
+            </PanelHeader>
+          </Panel>
+        ) : (
+          <SponsorPanel ownClub={ownClub} overview={overview} snapshot={snapshot} />
+        )
+      ) : null}
       {focus === "grounds" && overview.open_staff_offer ? (
         <StaffMarketView offer={overview.open_staff_offer} ownClub={ownClub} snapshot={snapshot} />
       ) : null}
@@ -2610,7 +2632,7 @@ function OtherClubSquadPanel({
 
             return (
               <div className="rounded-lg border border-zinc-800 bg-zinc-900/45 p-2" key={owned.id}>
-                <PlayerCard disabled={owned.injured} player={card} variant="draft" />
+                <PlayerCard disabled={owned.injured} player={card} showArchetypes={snapshot?.game.settings.archetypes_enabled !== false} variant="draft" />
                 <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-zinc-400">
                   <SmallInfo label="Status" value={owned.injured ? "Verletzt" : owned.current_zone === "bench" ? "Nicht aufgestellt" : "Aufgestellt"} />
                   <SmallInfo label="Zone" value={owned.current_zone} />
@@ -2797,7 +2819,7 @@ function SquadPanel({
 
             return (
               <div className="rounded-lg border border-zinc-800 bg-zinc-900/45 p-2" key={owned.id}>
-                <PlayerCard disabled={owned.injured} player={card} variant="draft" />
+                <PlayerCard disabled={owned.injured} player={card} showArchetypes={snapshot?.game.settings.archetypes_enabled !== false} variant="draft" />
                 <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-zinc-400">
                   <SmallInfo label="Status" value={owned.current_zone === "bench" ? "Nicht aufgestellt" : "Aufgestellt"} />
                   <SmallInfo label="Zone" value={owned.current_zone} />
@@ -4053,6 +4075,8 @@ function SettingsView({
   snapshot: LobbySnapshot;
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const sponsoringEnabled = snapshot.game.settings.sponsoring_enabled !== false;
+  const archetypesEnabled = snapshot.game.settings.archetypes_enabled !== false;
 
   return (
     <div className="space-y-4">
@@ -4078,6 +4102,43 @@ function SettingsView({
             <p className="mt-2 text-lg font-semibold text-zinc-50">v{snapshot.game.save_version ?? 1}</p>
           </div>
         </div>
+      </Panel>
+
+      <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+        <PanelHeader>
+          <div>
+            <PanelTitle>Spielregeln</PanelTitle>
+            <PanelDescription>Diese Optionen gelten direkt fuer den laufenden Spielstand.</PanelDescription>
+          </div>
+          <Settings size={18} className="text-[var(--club-color)]" aria-hidden />
+        </PanelHeader>
+        <form action={updateGameSettingsAction} className="grid gap-3 md:grid-cols-[1fr_1fr_auto] md:items-end">
+          <input name="game_id" type="hidden" value={snapshot.game.id} />
+          <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+          <input name="sponsoring_enabled" type="hidden" value="0" />
+          <input name="archetypes_enabled" type="hidden" value="0" />
+          <FeatureToggle
+            defaultChecked={sponsoringEnabled}
+            disabled={!isHost}
+            label="Sponsoring"
+            name="sponsoring_enabled"
+            text="Sponsorenvertraege, Sponsoren-Ziele und Sponsoren-Effekte."
+          />
+          <FeatureToggle
+            defaultChecked={archetypesEnabled}
+            disabled={!isHost}
+            label="Archetypes"
+            name="archetypes_enabled"
+            text="Archetype-Duelle im Angriffsdrittel und passende Anzeigen."
+          />
+          {isHost ? (
+            <Button className="h-11" type="submit">
+              Speichern
+            </Button>
+          ) : (
+            <Badge tone="neutral">Nur Host</Badge>
+          )}
+        </form>
       </Panel>
 
       {isHost ? (
@@ -4114,6 +4175,37 @@ function SettingsView({
         </Panel>
       ) : null}
     </div>
+  );
+}
+
+function FeatureToggle({
+  defaultChecked,
+  disabled,
+  label,
+  name,
+  text,
+}: {
+  defaultChecked: boolean;
+  disabled?: boolean;
+  label: string;
+  name: string;
+  text: string;
+}) {
+  return (
+    <label className={cn("flex min-h-20 cursor-pointer items-start gap-3 rounded-md border border-zinc-800 bg-zinc-900/70 p-3", disabled ? "cursor-default opacity-70" : "")}>
+      <input
+        className="mt-1 h-4 w-4 rounded border-zinc-600 bg-zinc-900 text-lime-400 focus:ring-lime-300"
+        defaultChecked={defaultChecked}
+        disabled={disabled}
+        name={name}
+        type="checkbox"
+        value="1"
+      />
+      <span>
+        <span className="block text-sm font-semibold text-zinc-100">{label}</span>
+        <span className="mt-1 block text-xs text-zinc-500">{defaultChecked ? "Aktiv" : "Ausgeschaltet"} - {text}</span>
+      </span>
+    </label>
   );
 }
 

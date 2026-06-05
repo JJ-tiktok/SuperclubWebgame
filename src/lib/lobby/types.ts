@@ -26,6 +26,10 @@ export type LobbySettings = {
   cpu_team_ids?: string[];
   /** Continental Cup after even seasons from season 2 onward (default: enabled). */
   continental_cup_enabled?: boolean;
+  /** Sponsor contracts and sponsor-triggered effects (default: enabled). */
+  sponsoring_enabled?: boolean;
+  /** Archetype match effects and archetype UI helpers (default: enabled). */
+  archetypes_enabled?: boolean;
 };
 
 export type ClubTemplate = {

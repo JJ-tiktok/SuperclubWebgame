@@ -72,3 +72,11 @@ export function compareArchetypes(
 
   return "defender";
 }
+
+export function areArchetypesEnabled(settings?: unknown) {
+  const value =
+    settings && typeof settings === "object"
+      ? (settings as { archetypes_enabled?: unknown }).archetypes_enabled
+      : undefined;
+  return value !== false;
+}

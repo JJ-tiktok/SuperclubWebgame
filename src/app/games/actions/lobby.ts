@@ -17,6 +17,7 @@ export {
   setReadyFromDashboardAction,
   startGameFromDashboardAction,
   deleteGameAction,
+  updateGameSettingsAction,
   setPhaseDoneAction,
   advancePhaseAction,
 } from "@/app/games/actions";

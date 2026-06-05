@@ -5,6 +5,7 @@ import {
   createInitialProgress,
   getActiveSponsorContract,
   getAvailableSponsorDeals,
+  isSponsoringEnabled,
   isStadiumUpgradeBlockedBySponsor,
   type SponsorContractRow,
 } from "@/lib/lobby/sponsoring";
@@ -24,6 +25,12 @@ function contract(partial: Partial<SponsorContractRow> & Pick<SponsorContractRow
 }
 
 describe("Sponsoring sign rules", () => {
+  it("defaults the sponsorship feature flag to enabled", () => {
+    assert.equal(isSponsoringEnabled(undefined), true);
+    assert.equal(isSponsoringEnabled({ sponsoring_enabled: true }), true);
+    assert.equal(isSponsoringEnabled({ sponsoring_enabled: false }), false);
+  });
+
   it("allows signing only in off_season", () => {
     const result = canSignSponsorDeal({
       phase: "season",

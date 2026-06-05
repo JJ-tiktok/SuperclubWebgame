@@ -15,7 +15,7 @@ import {
   type ContinentalRound,
 } from "@/lib/lobby/continental-cup";
 import { calculateLineupPower, type CaptainBoost } from "@/lib/lobby/lineup-power";
-import { normalizeApplicablePlayerArchetype } from "@/lib/lobby/archetypes";
+import { areArchetypesEnabled, normalizeApplicablePlayerArchetype } from "@/lib/lobby/archetypes";
 import { getMatchPointsMode, resolveFixture, type FixtureSideInput } from "@/lib/lobby/season";
 import type { LobbyGame } from "@/lib/lobby/types";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
@@ -467,6 +467,7 @@ async function resolveContinentalFixtureServer(
   ]);
 
   const resolution = resolveFixture({
+    archetypesEnabled: areArchetypesEnabled(game.settings),
     away: awaySide,
     home: homeSide,
     matchPointsMode: getMatchPointsMode(game.settings),

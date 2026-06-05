@@ -118,6 +118,7 @@ import {
   computePlayerMarketValues,
   getClubPlayerMarketValues,
   resolvePlayerPotentialCeiling,
+  syncOwnedPlayerRowMarketValues,
   syncPlayerRowMarketValues,
 } from "@/lib/lobby/player-market";
 import {
@@ -2477,6 +2478,15 @@ async function insertNlzTalentForClub(supabase: SupabaseServiceClient, gameId: s
   if (clubPlayerError) {
     throw clubPlayerError;
   }
+
+  await syncOwnedPlayerRowMarketValues(supabase, player.id, {
+    current_stars: seed.base_stars,
+    player: {
+      base_stars: seed.base_stars,
+      potential_stars: seed.potential_stars,
+      skill_max: seed.skill_max,
+    },
+  });
 }
 
 export async function advancePhaseAction(formData: FormData) {

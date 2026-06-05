@@ -165,15 +165,15 @@ export function getSkillStarStates(player: PlayerCardData): StarState[] {
 }
 
 export function getTotalSkillValue(player: PlayerCardData) {
-  return Math.min(
-    Math.max(0, Math.floor(player.skill.max)),
-    Math.max(Math.floor(player.skill.current), Math.floor(player.skill.potential)),
-  );
+  const max = Math.max(0, Math.floor(player.skill.max));
+  const current = Math.max(0, Math.floor(player.skill.current));
+
+  return Math.min(max, current);
 }
 
-/** Grosses Rating auf der Karte: Potential-Deckel (nicht nur aktuelle Sterne). */
+/** Grosses Rating auf der Karte: aktuelle Sterne (wie gefuellte Skill-Sterne). */
 export function getCardSkillRating(player: PlayerCardData) {
-  return Math.min(Math.max(0, Math.floor(player.skill.max)), Math.floor(player.skill.potential));
+  return getTotalSkillValue(player);
 }
 
 export function calculateCardChemistryBonus(players: Array<Pick<PlayerCardData, "chemistry">>) {

@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { refreshOffseasonScoutingSnapshot } from "@/lib/lobby/scouting";
+import { cancelOpenSwapTransferOffersForClubPlayer } from "@/lib/lobby/transfers";
 import { applyClubStatusDelta, normalizeClubStatus, resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
 import { resolvePendingEffectSeasonNumber } from "@/lib/lobby/offseason-pending-effects";
 import type { GameChangerCategory } from "@/lib/lobby/types";
@@ -368,6 +369,9 @@ export async function applyImmediateEffect(
       }
       if (removed.length === 0) return { applied: false };
       const ids = removed.map((r) => r.id);
+      for (const id of ids) {
+        await cancelOpenSwapTransferOffersForClubPlayer(supabase, id, "expired");
+      }
       await supabase.from("club_players").delete().in("id", ids);
       return { applied: true, detail: `Entlassen: ${removed.map((r) => r.name).join(", ")} (${removedStars} Sterne)` };
     }

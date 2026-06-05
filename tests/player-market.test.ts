@@ -54,13 +54,13 @@ describe("player market values", () => {
     );
   });
 
-  it("counts remaining potential up to skill_max", () => {
+  it("adds one remaining point when potential bonus allows growth", () => {
     assert.deepEqual(
       getClubPlayerMarketValues({
         current_stars: 4,
         player: {
           base_stars: 4,
-          potential_stars: 0,
+          potential_stars: 1,
           skill_max: 5,
         },
       }),
@@ -82,8 +82,8 @@ describe("player market values", () => {
         },
       }),
       {
-        minimumBid: 34_000_000,
-        scoutingPrice: 17_000_000,
+        minimumBid: 32_000_000,
+        scoutingPrice: 16_000_000,
       },
     );
   });

@@ -42,6 +42,16 @@ function pickRandom<T>(items: readonly T[], random = Math.random): T {
   return items[Math.floor(random() * items.length)]!;
 }
 
+/** Gleichverteilung wie Draft-Pool: keine, links, rechts oder beide Chemistry-Seiten. */
+export function rollYouthPlayerChemistry(random = Math.random) {
+  const roll = Math.floor(random() * 4);
+
+  return {
+    chemistry_left: roll === 1 || roll === 3,
+    chemistry_right: roll === 2 || roll === 3,
+  };
+}
+
 export function buildYouthPlayerSeed(random = Math.random) {
   const first = pickRandom(YOUTH_FIRST_NAMES, random);
   const last = pickRandom(YOUTH_LAST_NAMES, random);
@@ -56,14 +66,15 @@ export function buildYouthPlayerSeed(random = Math.random) {
     skillMax: 6,
   });
   const market = computePlayerMarketValues({ potentialCeiling, stars: 1 });
+  const chemistry = rollYouthPlayerChemistry(random);
 
   return {
     age: 17,
     age_group: "talent" as const,
     attacker_archetype: position === "ATT" || position === "MID" ? archetype : "beta",
     base_stars: 1,
-    chemistry_left: false,
-    chemistry_right: false,
+    chemistry_left: chemistry.chemistry_left,
+    chemistry_right: chemistry.chemistry_right,
     chemistry_symbol: "star" as const,
     content_key: contentKey,
     defender_archetype: position === "DEF" || position === "GK" ? archetype : "beta",

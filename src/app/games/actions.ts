@@ -123,6 +123,7 @@ import {
 import {
   canAcceptTransferOffer,
   canCreateTransferOffer,
+  buildTransferOfferClosePayload,
   cancelOpenSwapTransferOffersForClubPlayer,
   normalizeTransferCashAmount,
 } from "@/lib/lobby/transfers";
@@ -1691,11 +1692,7 @@ export async function declineTransferOfferAction(formData: FormData) {
 
   const { error } = await supabase
     .from("transfer_offers")
-    .update({
-      offered_player_id: offer.offered_club_player_id ? offer.offered_player_id : null,
-      resolved_at: new Date().toISOString(),
-      status: "declined",
-    })
+    .update(buildTransferOfferClosePayload("declined"))
     .eq("id", offer.id)
     .eq("status", "open");
 
@@ -1742,11 +1739,7 @@ export async function cancelTransferOfferAction(formData: FormData) {
 
   const { error } = await supabase
     .from("transfer_offers")
-    .update({
-      offered_player_id: offer.offered_club_player_id ? offer.offered_player_id : null,
-      resolved_at: new Date().toISOString(),
-      status: "cancelled",
-    })
+    .update(buildTransferOfferClosePayload("cancelled"))
     .eq("id", offer.id)
     .eq("status", "open");
 
@@ -5359,7 +5352,7 @@ async function isClubTransferBlocked(supabase: SupabaseServiceClient, clubId: st
 async function expireTransferOffer(supabase: SupabaseServiceClient, offerId: string) {
   const { error } = await supabase
     .from("transfer_offers")
-    .update({ resolved_at: new Date().toISOString(), status: "expired" })
+    .update(buildTransferOfferClosePayload("expired"))
     .eq("id", offerId)
     .eq("status", "open");
 
@@ -5405,7 +5398,7 @@ async function expireCompetingTransferOffers(
 
   const { error: updateError } = await supabase
     .from("transfer_offers")
-    .update({ resolved_at: new Date().toISOString(), status: "expired" })
+    .update(buildTransferOfferClosePayload("expired"))
     .in("id", competingIds)
     .eq("status", "open");
 
@@ -5417,7 +5410,7 @@ async function expireCompetingTransferOffers(
 async function expireOpenTransferOffers(supabase: SupabaseServiceClient, gameId: string, seasonNumber: number) {
   const { error } = await supabase
     .from("transfer_offers")
-    .update({ resolved_at: new Date().toISOString(), status: "expired" })
+    .update(buildTransferOfferClosePayload("expired"))
     .eq("game_id", gameId)
     .eq("season_number", seasonNumber)
     .eq("status", "open");

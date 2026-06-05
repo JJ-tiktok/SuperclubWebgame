@@ -293,6 +293,23 @@ create unique index transfer_offers_open_offered_player_unique
   on public.transfer_offers (offered_club_player_id)
   where offered_club_player_id is not null and status = 'open';
 
+create or replace function public.normalize_transfer_offer_offered_player()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.offered_club_player_id is null then
+    new.offered_player_id := null;
+  end if;
+  return new;
+end;
+$$;
+
+create trigger transfer_offers_normalize_offered_player
+before insert or update on public.transfer_offers
+for each row
+execute function public.normalize_transfer_offer_offered_player();
+
 create table public.game_changer_cards (
   id uuid primary key default gen_random_uuid(),
   content_key text not null unique,

@@ -174,7 +174,7 @@ import {
 } from "@/lib/lobby/scouting";
 import { getClubTheme } from "@/lib/lobby/theme";
 import { canTrainOwnedPlayer } from "@/lib/lobby/training";
-import { computePlayerMarketValues, getClubPlayerMarketValues, resolvePlayerPotentialCeiling } from "@/lib/lobby/player-market";
+import { getClubPlayerMarketValues, resolvePlayerPotentialCeiling } from "@/lib/lobby/player-market";
 import { MANAGER_TRANSFER_DEPARTURE_LIMIT } from "@/lib/lobby/transfers";
 import type {
   ClubPlayerSnapshot,
@@ -4677,10 +4677,7 @@ function mapOwnedPlayerToCardData(owned: NonNullable<LobbySnapshot["club_overvie
     potentialStars: owned.player.potential_stars,
     skillMax: owned.player.skill_max,
   });
-  const market = computePlayerMarketValues({
-    potentialCeiling,
-    stars: currentStars,
-  });
+  const market = getClubPlayerMarketValues(owned);
   const isNlzTalent =
     owned.player.metadata &&
     typeof owned.player.metadata === "object" &&

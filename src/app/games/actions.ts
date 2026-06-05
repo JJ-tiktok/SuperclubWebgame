@@ -1322,7 +1322,7 @@ export async function createTransferOfferAction(formData: FormData) {
     getGameClubContext(supabase, gameId, userId),
     supabase
       .from("club_players")
-      .select("id, club_id, player_id, club:clubs!inner(id, game_id, clerk_user_id)")
+      .select("id, club_id, player_id, club:clubs!club_players_club_id_fkey!inner(id, game_id, clerk_user_id)")
       .eq("id", targetClubPlayerId)
       .single<{
         club: { game_id: string; id: string; clerk_user_id: string };

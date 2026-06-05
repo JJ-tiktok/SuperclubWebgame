@@ -17,7 +17,7 @@ export type FixtureLineupSnapshot = {
   away: LineupSnapshotSide;
 };
 
-type ClubPlayerRow = {
+export type LineupSnapshotClubPlayerRow = {
   current_stars: number | string;
   current_zone: string;
   lineup_slot: number | null;
@@ -28,7 +28,7 @@ type ClubPlayerRow = {
   } | null;
 };
 
-export function buildLineupSnapshotFromPlayers(players: ClubPlayerRow[]): LineupSnapshotSide {
+export function buildLineupSnapshotFromPlayers(players: LineupSnapshotClubPlayerRow[]): LineupSnapshotSide {
   const starters = players
     .filter((row) => row.current_zone !== "bench")
     .sort((left, right) => Number(left.lineup_slot ?? 999) - Number(right.lineup_slot ?? 999))

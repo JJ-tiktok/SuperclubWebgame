@@ -4,6 +4,7 @@ import { DRAFT_PLAYER_SELECT } from "./draft";
 import { buildNextMatchZoneBoostsByClubId } from "@/lib/game/game-changer-effects";
 import {
   buildLineupSnapshotFromPlayers,
+  type LineupSnapshotClubPlayerRow,
   type LineupSnapshotSide,
 } from "@/lib/lobby/lineup-snapshot";
 import {
@@ -740,18 +741,7 @@ async function loadClubLockedLineupSnapshot(
     .eq("club_id", clubId)
     .neq("current_zone", "bench")
     .order("lineup_slot", { ascending: true })
-    .returns<
-      Array<{
-        current_stars: number | string;
-        current_zone: string;
-        lineup_slot: number | null;
-        player: {
-          attacker_archetype?: string | null;
-          defender_archetype?: string | null;
-          display_name: string;
-        } | null;
-      }>
-    >();
+    .returns<LineupSnapshotClubPlayerRow[]>();
 
   if (error) {
     throw error;

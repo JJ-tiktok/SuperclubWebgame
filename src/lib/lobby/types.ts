@@ -603,8 +603,8 @@ export type OpponentLockedLineupSnapshot = {
       display_name: string;
       zone: string;
       stars: number;
-      attacker_archetype?: string | null;
-      defender_archetype?: string | null;
+      attacker_archetype?: PlayerArchetype | null;
+      defender_archetype?: PlayerArchetype | null;
     }>;
   };
 };

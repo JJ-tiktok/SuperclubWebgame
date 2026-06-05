@@ -13,7 +13,7 @@ import {
   getNextDeadlineBidClubId,
 } from "@/lib/lobby/deadline";
 import { DRAFT_PLAYER_SELECT } from "@/lib/lobby/draft";
-import { areArchetypesEnabled, normalizeApplicablePlayerArchetype } from "@/lib/lobby/archetypes";
+import { areArchetypesEnabled, normalizeApplicablePlayerArchetype, normalizePlayerArchetype } from "@/lib/lobby/archetypes";
 import { createDraftRound, getSquadCounts, allDraftSquadsComplete } from "@/lib/lobby/draft-server";
 import { getActiveCpuTeams, pickCpuTeamsForSeason } from "@/lib/lobby/cpu-teams";
 import { canRecruitStaff, canUpgradeFacility, type UpgradeAction } from "@/lib/lobby/investments";
@@ -28,7 +28,7 @@ import {
   resolveClubInvestmentStatus,
   type EndgameFacilityAction,
 } from "@/lib/lobby/endgame-facilities";
-import { buildLineupSnapshotFromPlayers } from "@/lib/lobby/lineup-snapshot";
+import { buildLineupSnapshotFromPlayers, type LineupSnapshotClubPlayerRow } from "@/lib/lobby/lineup-snapshot";
 import { buildYouthPlayerSeed, isNlzOriginPlayer } from "@/lib/lobby/youth-generator";
 import { calculateLineupPower, type CaptainBoost } from "@/lib/lobby/lineup-power";
 import {
@@ -120,7 +120,14 @@ import {
 } from "@/lib/lobby/transfers";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
 import { emitGameEvent } from "@/lib/lobby/emit-game-event";
-import type { DraftPickSnapshot, DraftPlayerRow, LobbyClub, LobbyGame, LobbyPhase, ScoutingDrawSnapshot } from "@/lib/lobby/types";
+import type {
+  DraftPickSnapshot,
+  DraftPlayerRow,
+  LobbyClub,
+  LobbyGame,
+  LobbyPhase,
+  ScoutingDrawSnapshot,
+} from "@/lib/lobby/types";
 
 export async function setReadyFromDashboardAction(formData: FormData) {
   const { userId } = await auth();
@@ -2616,21 +2623,21 @@ function isUpgradeAction(value: string): value is UpgradeAction {
 
 function getClubFacilityLevel(
   club: {
-    scouting_level: number;
-    stadium_level: number;
-    training_level: number;
+    scouting_level?: number | null;
+    stadium_level?: number | null;
+    training_level?: number | null;
   },
   action: UpgradeAction,
 ) {
   if (action === "scouting") {
-    return club.scouting_level;
+    return club.scouting_level ?? 1;
   }
 
   if (action === "stadium") {
-    return club.stadium_level;
+    return club.stadium_level ?? 1;
   }
 
-  return club.training_level;
+  return club.training_level ?? 1;
 }
 
 async function getNextSaveVersion(supabase: NonNullable<ReturnType<typeof createSupabaseServiceClient>>, gameId: string) {
@@ -2885,17 +2892,6 @@ async function getHumanFixtureSide(supabase: SupabaseServiceClient, fixture: Fix
 
   return null;
 }
-
-type LineupSnapshotClubPlayerRow = {
-  current_stars: number | string;
-  current_zone: string;
-  lineup_slot: number | null;
-  player: {
-    attacker_archetype?: string | null;
-    defender_archetype?: string | null;
-    display_name: string;
-  } | null;
-};
 
 async function loadClubLineupSnapshotPlayers(supabase: SupabaseServiceClient, clubId: string | null | undefined) {
   if (!clubId) {
@@ -6075,7 +6071,7 @@ export async function respecPlayerArchetypeAction(formData: FormData) {
     redirect(`/games/${roomCode}?view=squad`);
   }
 
-  const normalizedArchetype = normalizeApplicablePlayerArchetype(archetype);
+  const normalizedArchetype = normalizePlayerArchetype(archetype);
   if (!normalizedArchetype) {
     redirect(`/games/${roomCode}?view=squad`);
   }

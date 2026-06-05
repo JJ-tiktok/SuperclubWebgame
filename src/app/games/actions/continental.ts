@@ -16,7 +16,7 @@ import {
 } from "@/lib/lobby/continental-cup";
 import { calculateLineupPower, type CaptainBoost } from "@/lib/lobby/lineup-power";
 import { areArchetypesEnabled, normalizeApplicablePlayerArchetype } from "@/lib/lobby/archetypes";
-import { buildLineupSnapshotFromPlayers } from "@/lib/lobby/lineup-snapshot";
+import { buildLineupSnapshotFromPlayers, type LineupSnapshotClubPlayerRow } from "@/lib/lobby/lineup-snapshot";
 import { getMatchPointsMode, resolveFixture, type FixtureSideInput } from "@/lib/lobby/season";
 import type { LobbyGame } from "@/lib/lobby/types";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
@@ -483,6 +483,7 @@ async function resolveContinentalFixtureServer(
 
   const loserId = winnerParticipantId === home.id ? away.id : home.id;
 
+  const emptyLineupPlayers = Promise.resolve({ data: [] as LineupSnapshotClubPlayerRow[] });
   const [homePlayers, awayPlayers] = await Promise.all([
     home.club_id
       ? supabase
@@ -491,7 +492,8 @@ async function resolveContinentalFixtureServer(
           .eq("club_id", home.club_id)
           .neq("current_zone", "bench")
           .order("lineup_slot", { ascending: true })
-      : Promise.resolve({ data: [] as [] }),
+          .returns<LineupSnapshotClubPlayerRow[]>()
+      : emptyLineupPlayers,
     away.club_id
       ? supabase
           .from("club_players")
@@ -499,7 +501,8 @@ async function resolveContinentalFixtureServer(
           .eq("club_id", away.club_id)
           .neq("current_zone", "bench")
           .order("lineup_slot", { ascending: true })
-      : Promise.resolve({ data: [] as [] }),
+          .returns<LineupSnapshotClubPlayerRow[]>()
+      : emptyLineupPlayers,
   ]);
 
   const lineupSnapshot = {

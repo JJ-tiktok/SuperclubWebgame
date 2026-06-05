@@ -1,5 +1,5 @@
 import type { DraftPlayerRow } from "./types";
-import { ARCHETYPE_META, normalizeApplicablePlayerArchetype } from "@/lib/lobby/archetypes";
+import { ARCHETYPE_META, isAllrounderPositions, normalizeApplicablePlayerArchetype } from "@/lib/lobby/archetypes";
 import type {
   CardTier,
   ChemistrySymbol,
@@ -11,7 +11,32 @@ import type {
 export const DRAFT_PLAYER_SELECT =
   "id, content_key, display_name, position, eligible_positions, attacker_archetype, defender_archetype, role, nationality, age, age_group, base_stars, potential_stars, skill_max, veteran_fallback, chemistry_left, chemistry_right, chemistry_symbol, scouting_price, minimum_bid, region, metadata, visibility";
 
+export type DraftOverviewPositionKey = "GK" | "DEF" | "MID" | "ATT" | "UTIL";
+
+export const DRAFT_OVERVIEW_POSITIONS: Array<{ key: DraftOverviewPositionKey; label: string }> = [
+  { key: "GK", label: "GK" },
+  { key: "DEF", label: "DEF" },
+  { key: "MID", label: "MID" },
+  { key: "ATT", label: "ATT" },
+  { key: "UTIL", label: "UTIL" },
+];
+
 const positions = new Set<PlayerCardPosition>(["GK", "DEF", "MID", "ATT"]);
+
+export function getDraftOverviewPositionKey(
+  player: Pick<DraftPlayerRow, "position" | "eligible_positions">,
+): DraftOverviewPositionKey {
+  if (isAllrounderPositions(player.position, player.eligible_positions)) {
+    return "UTIL";
+  }
+
+  const position = normalizePosition(player.position);
+  return position;
+}
+
+export function createEmptyDraftOverviewPositionCounts(): Record<DraftOverviewPositionKey, number> {
+  return { ATT: 0, DEF: 0, GK: 0, MID: 0, UTIL: 0 };
+}
 const ageGroups = new Set<PlayerAgeGroup>(["talent", "prime", "veteran"]);
 const chemistrySymbols = new Set<ChemistrySymbol>(["star", "dot", "link"]);
 

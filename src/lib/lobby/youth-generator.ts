@@ -1,3 +1,4 @@
+import { computePlayerMarketValues } from "@/lib/lobby/player-market";
 import type { PlayerArchetype } from "@/lib/lobby/types";
 
 const YOUTH_FIRST_NAMES = [
@@ -48,6 +49,8 @@ export function buildYouthPlayerSeed(random = Math.random) {
   const archetype = pickRandom(ARCHETYPES, random);
   const contentKey = `nlz-${Date.now()}-${Math.floor(random() * 1_000_000)}`;
 
+  const market = computePlayerMarketValues({ potentialStars: 5, stars: 1 });
+
   return {
     age: 17,
     age_group: "talent" as const,
@@ -61,12 +64,12 @@ export function buildYouthPlayerSeed(random = Math.random) {
     display_name: `${first} ${last}`,
     eligible_positions: [position],
     metadata: { nlz_origin: true },
-    minimum_bid: 5_000_000,
+    minimum_bid: market.minimumBid,
     nationality: "NLZ",
     position,
     potential_stars: 5,
     region: "academy",
-    scouting_price: 0,
+    scouting_price: market.scoutingPrice,
     skill_max: 6,
     visibility: "private" as const,
   };

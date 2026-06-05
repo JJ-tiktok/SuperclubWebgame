@@ -1,5 +1,6 @@
 import type { DraftPlayerRow } from "./types";
 import { ARCHETYPE_META, isAllrounderPositions, normalizeApplicablePlayerArchetype } from "@/lib/lobby/archetypes";
+import { computePlayerMarketValues } from "@/lib/lobby/player-market";
 import type {
   CardTier,
   ChemistrySymbol,
@@ -58,8 +59,12 @@ export function mapDbPlayerToPlayerCardData(player: DraftPlayerRow): PlayerCardD
   const currentStars = Number(player.base_stars ?? 1);
   const potentialStars = Math.max(currentStars, currentStars + Number(player.potential_stars ?? 0));
   const maxStars = Math.max(Number(player.skill_max ?? 5), potentialStars);
-  const marketTransfer = moneyToMillions(player.minimum_bid ?? 0);
-  const marketScouting = moneyToMillions(player.scouting_price ?? 0);
+  const market = computePlayerMarketValues({
+    potentialStars: Number(player.potential_stars ?? 0),
+    stars: currentStars,
+  });
+  const marketTransfer = moneyToMillions(market.minimumBid);
+  const marketScouting = moneyToMillions(market.scoutingPrice);
   const attackerArchetype = normalizeApplicablePlayerArchetype(player.attacker_archetype, position, playerPositions);
   const defenderArchetype = normalizeApplicablePlayerArchetype(player.defender_archetype, position, playerPositions);
 

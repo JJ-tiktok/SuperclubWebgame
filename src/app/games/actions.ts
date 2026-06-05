@@ -114,6 +114,7 @@ import {
   resolveTrainingAttempt,
   type TrainingEventMetadata,
 } from "@/lib/lobby/training";
+import { getClubPlayerMarketValues, syncPlayerRowMarketValues } from "@/lib/lobby/player-market";
 import {
   canAcceptTransferOffer,
   canCreateTransferOffer,
@@ -557,7 +558,7 @@ export async function trainPlayerAction(formData: FormData) {
       .select(
         `id, club_id, player_id, current_stars, injured,
         club:clubs!club_players_club_id_fkey(id, game_id, clerk_user_id, training_level, offseason_training_capacity, youth_academy_level),
-        player:players(id, skill_max, potential_stars, metadata)`,
+        player:players(id, skill_max, potential_stars, metadata, base_stars)`,
       )
       .eq("id", clubPlayerId)
       .single<{
@@ -576,6 +577,7 @@ export async function trainPlayerAction(formData: FormData) {
         };
         player: {
           id: string;
+          base_stars?: number | string | null;
           skill_max: number | string | null;
           potential_stars?: number | string | null;
           metadata?: Record<string, unknown> | null;
@@ -709,6 +711,15 @@ export async function trainPlayerAction(formData: FormData) {
 
   if (updatePlayerError) {
     throw updatePlayerError;
+  }
+
+  if (resolution.afterStars !== resolution.beforeStars) {
+    await syncPlayerRowMarketValues(
+      supabase,
+      ownedPlayer.player_id,
+      resolution.afterStars,
+      Number(ownedPlayer.player.potential_stars ?? 0),
+    );
   }
 
   const { error: insertTransactionError } = await supabase.from("transactions").insert({
@@ -1020,6 +1031,13 @@ export async function buyScoutedPlayerAction(formData: FormData) {
     throw insertClubPlayerError;
   }
 
+  await syncPlayerRowMarketValues(
+    supabase,
+    draw.player_id,
+    newSigningStars,
+    Number(draw.player.potential_stars ?? 0),
+  );
+
   const { error: clubError } = await supabase
     .from("clubs")
     .update({ money: Number(ownClub.money) - price })
@@ -1221,13 +1239,14 @@ export async function sellClubPlayerAction(formData: FormData) {
     getGameClubContext(supabase, gameId, userId),
     supabase
       .from("club_players")
-      .select("id, club_id, player_id, player:players(id, scouting_price)")
+      .select("id, club_id, current_stars, player_id, player:players(id, potential_stars)")
       .eq("id", clubPlayerId)
       .single<{
-        id: string;
         club_id: string;
+        current_stars: number | string;
+        id: string;
+        player: { id: string; potential_stars?: number | string | null };
         player_id: string;
-        player: { id: string; scouting_price: number | string | null };
       }>(),
   ]);
 
@@ -1258,7 +1277,7 @@ export async function sellClubPlayerAction(formData: FormData) {
     redirect(`/games/${roomCode}?view=${returnView}`);
   }
 
-  const saleValue = Number(ownedPlayer.player.scouting_price ?? 0);
+  const saleValue = getClubPlayerMarketValues(ownedPlayer).scoutingPrice;
   await cancelOpenSwapTransferOffersForClubPlayer(supabase, ownedPlayer.id, "cancelled");
   const { error: deleteError } = await supabase.from("club_players").delete().eq("id", ownedPlayer.id).eq("club_id", ownClub.id);
 

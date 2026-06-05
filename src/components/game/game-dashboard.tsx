@@ -174,6 +174,7 @@ import {
 } from "@/lib/lobby/scouting";
 import { getClubTheme } from "@/lib/lobby/theme";
 import { canTrainOwnedPlayer } from "@/lib/lobby/training";
+import { getClubPlayerMarketValues } from "@/lib/lobby/player-market";
 import { MANAGER_TRANSFER_DEPARTURE_LIMIT } from "@/lib/lobby/transfers";
 import type {
   ClubPlayerSnapshot,
@@ -1805,6 +1806,7 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
               })
               .map((owned) => {
               const card = mapOwnedPlayerToCardData(owned);
+              const market = getClubPlayerMarketValues(owned);
               const positionLabel = getPlayerPositionLabel(owned.player);
               const currentStars = Number(owned.current_stars);
               const maxStars = Number(owned.player.skill_max ?? card.skill.max);
@@ -1824,8 +1826,8 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
                       <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-zinc-400">
                         <SmallInfo label="Staerke" value={`${formatStars(currentStars)} / ${formatStars(maxStars)}`} />
                         <SmallInfo label="Zone" value={owned.current_zone} />
-                        <SmallInfo label="Transfer Value" value={formatMoney(Number(owned.player.minimum_bid ?? 0))} />
-                        <SmallInfo label="Scouting Value" value={formatMoney(Number(owned.player.scouting_price ?? 0))} />
+                        <SmallInfo label="Transfer Value" value={formatMoney(market.minimumBid)} />
+                        <SmallInfo label="Scouting Value" value={formatMoney(market.scoutingPrice)} />
                       </div>
                     </div>
                     <form action={sellClubPlayerAction}>
@@ -3063,7 +3065,7 @@ function OtherClubSquadPanel({
                   <SmallInfo label="Status" value={owned.injured ? "Verletzt" : owned.current_zone === "bench" ? "Nicht aufgestellt" : "Aufgestellt"} />
                   <SmallInfo label="Zone" value={owned.current_zone} />
                   <SmallInfo label="Staerke" value={formatStars(Number(owned.current_stars))} />
-                  <SmallInfo label="Marktwert" value={formatMoney(Number(owned.player.minimum_bid ?? 0))} />
+                  <SmallInfo label="Marktwert" value={formatMoney(getClubPlayerMarketValues(owned).minimumBid)} />
                 </div>
                 <Button
                   className="mt-2 h-8 w-full text-xs"
@@ -3109,7 +3111,7 @@ function TransferOfferModal({
   snapshot: LobbySnapshot;
   target: ClubPlayerSnapshot;
 }) {
-  const defaultCashMillions = Math.max(1, Math.round(Number(target.player.minimum_bid ?? 0) / 1_000_000));
+  const defaultCashMillions = Math.max(1, Math.round(getClubPlayerMarketValues(target).minimumBid / 1_000_000));
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 px-4 py-6">
@@ -4632,6 +4634,7 @@ function getPositionRank(player: DraftPlayerRow) {
 function mapOwnedPlayerToCardData(owned: NonNullable<LobbySnapshot["club_overview"]>["squad"][number]): PlayerCardData {
   const card = mapDbPlayerToPlayerCardData(owned.player);
   const currentStars = Number(owned.current_stars);
+  const market = getClubPlayerMarketValues(owned);
   const isNlzTalent =
     owned.player.metadata &&
     typeof owned.player.metadata === "object" &&
@@ -4640,6 +4643,11 @@ function mapOwnedPlayerToCardData(owned: NonNullable<LobbySnapshot["club_overvie
   return {
     ...card,
     cardStyle: isNlzTalent ? { ...card.cardStyle, theme: "purple" } : card.cardStyle,
+    market: {
+      currency: "M",
+      scoutingFee: market.scoutingPrice / 1_000_000,
+      transferFee: market.minimumBid / 1_000_000,
+    },
     skill: {
       ...card.skill,
       current: currentStars,

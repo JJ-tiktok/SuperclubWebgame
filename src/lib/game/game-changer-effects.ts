@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { refreshOffseasonScoutingSnapshot } from "@/lib/lobby/scouting";
+import { syncPlayerRowMarketValues } from "@/lib/lobby/player-market";
 import { cancelOpenSwapTransferOffersForClubPlayer } from "@/lib/lobby/transfers";
 import { applyClubStatusDelta, normalizeClubStatus, resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
 import { resolvePendingEffectSeasonNumber } from "@/lib/lobby/offseason-pending-effects";
@@ -341,13 +342,19 @@ export async function applyImmediateEffect(
       if (!clubPlayerId) return { applied: false };
       const { data: cp } = await supabase
         .from("club_players")
-        .select("id, current_stars, player:players(display_name)")
+        .select("id, current_stars, player_id, player:players(display_name, potential_stars)")
         .eq("id", clubPlayerId)
         .eq("club_id", clubId)
-        .maybeSingle<{ id: string; current_stars: number | string; player: { display_name: string } | null }>();
+        .maybeSingle<{
+          id: string;
+          current_stars: number | string;
+          player: { display_name: string; potential_stars?: number | string | null } | null;
+          player_id: string;
+        }>();
       if (!cp) return { applied: false };
       const newStars = Math.max(0, Number(cp.current_stars) - Math.max(1, Math.trunc(effect.stars)));
       await supabase.from("club_players").update({ current_stars: newStars }).eq("id", cp.id);
+      await syncPlayerRowMarketValues(supabase, cp.player_id, newStars, Number(cp.player?.potential_stars ?? 0));
       return { applied: true, detail: `${cp.player?.display_name ?? "Spieler"}: -${effect.stars} Stern` };
     }
 

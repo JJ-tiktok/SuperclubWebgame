@@ -2992,7 +2992,7 @@ function OtherClubSquadPanel({
         <Metric detail={`${selectedSquad.injured_count} verletzt`} icon={Sparkles} label="Kadersterne gesamt" value={formatStars(selectedSquad.squad_stars)} />
         <Metric detail="Durchschnitt pro Spieler" icon={Sparkles} label="Sterne/Spieler" value={selectedSquad.player_count > 0 ? formatStars(selectedSquad.squad_stars / selectedSquad.player_count) : "-"} />
       </div>
-      {selectedSquad.squad.length > 0 ? <SquadPositionBreakdown squad={selectedSquad.squad} /> : null}
+      {selectedSquad.squad.length > 0 ? <SquadPositionBreakdown className="mt-3" squad={selectedSquad.squad} /> : null}
       {archetypesEnabled ? (
         <SquadArchetypeOverview
           className="mt-3"
@@ -3191,7 +3191,7 @@ function SquadPanel({
           value={playerCount > 0 ? formatStars(totalStars / playerCount) : "–"}
         />
       </div>
-      {overview.squad.length > 0 ? <SquadPositionBreakdown squad={overview.squad} /> : null}
+      {overview.squad.length > 0 ? <SquadPositionBreakdown className="mt-3" squad={overview.squad} /> : null}
       {archetypesEnabled ? (
         <SquadArchetypeOverview className="mt-3" clubName={title} showMatchupGuide={false} squad={overview.squad} />
       ) : null}

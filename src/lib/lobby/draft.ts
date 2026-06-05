@@ -37,6 +37,18 @@ export function getDraftOverviewPositionKey(
 export function createEmptyDraftOverviewPositionCounts(): Record<DraftOverviewPositionKey, number> {
   return { ATT: 0, DEF: 0, GK: 0, MID: 0, UTIL: 0 };
 }
+
+export function countSquadByOverviewPosition(
+  players: Array<Pick<DraftPlayerRow, "position" | "eligible_positions">>,
+): Record<DraftOverviewPositionKey, number> {
+  const counts = createEmptyDraftOverviewPositionCounts();
+
+  for (const player of players) {
+    counts[getDraftOverviewPositionKey(player)] += 1;
+  }
+
+  return counts;
+}
 const ageGroups = new Set<PlayerAgeGroup>(["talent", "prime", "veteran"]);
 const chemistrySymbols = new Set<ChemistrySymbol>(["star", "dot", "link"]);
 

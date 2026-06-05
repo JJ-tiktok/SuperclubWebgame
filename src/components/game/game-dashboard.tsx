@@ -124,6 +124,7 @@ import {
   resolveClubInvestmentStatus,
   type EndgameFacilityAction,
 } from "@/lib/lobby/endgame-facilities";
+import { ArchetypeMatchupGuide } from "@/components/game/shared/archetype-matchup-guide";
 import { FixtureSideCard } from "@/components/game/shared/fixture-side-card";
 import { MatchResultDetail, parseFixtureResult, type FixtureThird } from "@/components/game/shared/match-result-detail";
 import { Metric, SmallInfo } from "@/components/game/shared/metric";
@@ -1020,6 +1021,7 @@ function DraftView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
 
   const currentTurnClub = snapshot.clubs.find((club) => club.id === draft.current_club_id);
   const pickedPlayerIds = new Set(draft.picks.map((pick) => pick.playerId));
+  const archetypesEnabled = snapshot.game.settings.archetypes_enabled !== false;
   const isMyTurn = Boolean(ownClub && draft.current_club_id === ownClub.id && snapshot.game.current_turn_club_id === ownClub.id);
   const ownSquadCount = ownClub ? draft.squad_counts[ownClub.id] ?? 0 : 0;
   const playerNames = new Map(draft.board_players.map((player) => [player.id, player.display_name]));
@@ -1082,6 +1084,7 @@ function DraftView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
             </div>
             <ClipboardList size={18} className="text-[var(--club-color)]" aria-hidden />
           </PanelHeader>
+          {archetypesEnabled ? <ArchetypeMatchupGuide className="mb-4" /> : null}
           <div className="grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))] gap-3">
             {draft.board_players.map((player) => {
               const card = mapDbPlayerToPlayerCardData(player);
@@ -1090,7 +1093,7 @@ function DraftView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
 
               return (
                 <div className={cn("rounded-lg border border-zinc-800 bg-zinc-900/45 p-2", picked ? "opacity-55" : "")} key={player.id}>
-                  <PlayerCard disabled={picked} player={card} showArchetypes={snapshot.game.settings.archetypes_enabled !== false} variant="draft" />
+                  <PlayerCard disabled={picked} player={card} showArchetypes={archetypesEnabled} variant="draft" />
                   <form action={makeDraftPickAction} className="mt-2">
                     <input name="game_id" type="hidden" value={snapshot.game.id} />
                     <input name="room_code" type="hidden" value={snapshot.game.room_code} />

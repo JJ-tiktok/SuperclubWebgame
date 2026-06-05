@@ -116,7 +116,7 @@ describe("player market values", () => {
     );
   });
 
-  it("prefers synced database market values on player cards", () => {
+  it("ignores stale synced database prices for owned players", () => {
     const market = getClubPlayerMarketValues({
       current_stars: 3,
       player: {
@@ -129,10 +129,32 @@ describe("player market values", () => {
     });
 
     assert.deepEqual(market, {
+      minimumBid: 32_000_000,
+      scoutingPrice: 16_000_000,
+    });
+    assert.deepEqual(readSyncedPlayerMarketValues({ minimum_bid: 42_000_000, scouting_price: 21_000_000 }), {
       minimumBid: 42_000_000,
       scoutingPrice: 21_000_000,
     });
-    assert.deepEqual(readSyncedPlayerMarketValues({ minimum_bid: 42_000_000, scouting_price: 21_000_000 }), market);
+  });
+
+  it("values NLZ academy talents from current stars, not stored draft prices", () => {
+    assert.deepEqual(
+      getClubPlayerMarketValues({
+        current_stars: 1,
+        player: {
+          base_stars: 1,
+          minimum_bid: 60_000_000,
+          potential_stars: 5,
+          scouting_price: 30_000_000,
+          skill_max: 6,
+        },
+      }),
+      {
+        minimumBid: 20_000_000,
+        scoutingPrice: 10_000_000,
+      },
+    );
   });
 
   it("uses owned current stars instead of static player prices", () => {

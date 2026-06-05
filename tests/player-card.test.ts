@@ -6,8 +6,10 @@ import { mapDbPlayerToPlayerCardData } from "@/lib/lobby/draft";
 import type { DraftPlayerRow } from "@/lib/lobby/types";
 import {
   formatMarketValue,
+  getCardSkillRating,
   getPositionGroup,
   getSkillStarStates,
+  getTotalSkillValue,
   MINIMUM_FORMATION_COUNTS,
   type PlayerCardData,
   type PlayerCardPosition,
@@ -23,6 +25,23 @@ describe("Player card rendering data", () => {
   it("calculates potential and disabled stars for talents", () => {
     assert.deepEqual(getSkillStarStates(players[0]), ["filled", "filled", "empty", "empty", "empty"]);
     assert.deepEqual(getSkillStarStates(players[1]), ["filled", "filled", "filled", "empty", "empty"]);
+  });
+
+  it("shows current strength on cards, not the potential ceiling", () => {
+    const academyTalent: PlayerCardData = {
+      ...players[0],
+      ageGroup: "talent",
+      skill: {
+        current: 1,
+        max: 6,
+        potential: 6,
+        veteranFallback: null,
+      },
+    };
+
+    assert.equal(getCardSkillRating(academyTalent), 1);
+    assert.equal(getTotalSkillValue(academyTalent), 1);
+    assert.deepEqual(getSkillStarStates(academyTalent), ["filled", "empty", "empty", "empty", "empty", "empty"]);
   });
 
   it("renders veteran fallback stars after current skill", () => {

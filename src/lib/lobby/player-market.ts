@@ -122,7 +122,7 @@ export function getClubPlayerMarketValues(owned: {
     skill_max?: number | string | null;
   };
 }) {
-  return readSyncedPlayerMarketValues(owned.player) ?? computeOwnedPlayerMarketValues(owned);
+  return computeOwnedPlayerMarketValues(owned);
 }
 
 export function toPlayerMarketColumns(market: { minimumBid: number; scoutingPrice: number }) {

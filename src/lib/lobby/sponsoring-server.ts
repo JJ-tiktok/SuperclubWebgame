@@ -487,9 +487,13 @@ async function boostPlayerStars(supabase: ServiceClient, clubPlayerId: string, s
 async function boostPlayerPotential(supabase: ServiceClient, clubPlayerId: string, stars: number) {
   const { data } = await supabase
     .from("club_players")
-    .select("current_stars, player_id, player:players(skill_max)")
+    .select("current_stars, player_id, player:players(skill_max, potential_stars)")
     .eq("id", clubPlayerId)
-    .single<{ current_stars: number | string; player_id: string; player: { skill_max: number | string | null } | null }>();
+    .single<{
+      current_stars: number | string;
+      player: { potential_stars?: number | string | null; skill_max: number | string | null } | null;
+      player_id: string;
+    }>();
   if (!data) return;
   const newMax = Number(data.player?.skill_max ?? 0) + stars;
   await supabase.from("players").update({ skill_max: newMax }).eq("id", data.player_id);

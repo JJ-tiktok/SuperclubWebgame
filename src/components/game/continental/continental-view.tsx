@@ -5,6 +5,7 @@ import { initializeContinentalCupAction } from "@/app/games/actions/continental"
 import { Button } from "@/components/ui/button";
 import { Panel, PanelDescription, PanelHeader, PanelTitle } from "@/components/ui/panel";
 import type { LobbyClub, LobbySnapshot } from "@/lib/lobby/types";
+import { ViewGuidePanel } from "@/components/game/shared/view-guide-panel";
 import { ContinentalBracket } from "./continental-bracket";
 import { ContinentalManagersStatus } from "./continental-managers-status";
 import { ContinentalMatchHero } from "./continental-match-hero";
@@ -23,6 +24,8 @@ export function ContinentalView({
 
   if (!continental) {
     return (
+      <div className="space-y-4">
+        <ViewGuidePanel roomCode={snapshot.game.room_code} view="continental" />
       <Panel className="border-[var(--club-border)] bg-zinc-950/85">
         <PanelHeader>
           <div>
@@ -34,11 +37,14 @@ export function ContinentalView({
           <Trophy size={18} className="text-[var(--club-color)]" aria-hidden />
         </PanelHeader>
       </Panel>
+      </div>
     );
   }
 
   if (continental.setup_error) {
     return (
+      <div className="space-y-4">
+        <ViewGuidePanel roomCode={snapshot.game.room_code} view="continental" />
       <Panel className="border-amber-700 bg-amber-950/30">
         <PanelHeader>
           <div>
@@ -57,6 +63,7 @@ export function ContinentalView({
           </form>
         ) : null}
       </Panel>
+      </div>
     );
   }
 
@@ -66,6 +73,7 @@ export function ContinentalView({
 
   return (
     <div className="space-y-5">
+      <ViewGuidePanel roomCode={snapshot.game.room_code} view="continental" />
       <ContinentalStatusBanner
         continental={continental}
         isHost={isHost}
@@ -74,7 +82,9 @@ export function ContinentalView({
         snapshot={snapshot}
       />
 
-      <ContinentalMatchHero continental={continental} isHost={isHost} ownClub={ownClub} snapshot={snapshot} />
+      <div id="match">
+        <ContinentalMatchHero continental={continental} isHost={isHost} ownClub={ownClub} snapshot={snapshot} />
+      </div>
 
       <ContinentalManagersStatus continental={continental} ownClub={ownClub} />
 

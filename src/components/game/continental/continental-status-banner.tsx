@@ -43,6 +43,7 @@ export function ContinentalStatusBanner({
         "border-[var(--club-border)] bg-zinc-950/85",
         isActive && "shadow-[0_0_20px_rgba(16,185,129,0.12)]",
       )}
+      id="status"
     >
       <PanelHeader>
         <div className="flex items-start gap-4">

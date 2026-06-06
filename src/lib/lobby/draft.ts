@@ -3,6 +3,7 @@ import { ARCHETYPE_META, isAllrounderPositions, normalizeApplicablePlayerArchety
 import {
   computeCatalogPlayerMarketValues,
   resolvePlayerPotentialCeiling,
+  resolvePlayerSkillDisplayMax,
   toCardMarketDisplay,
 } from "@/lib/lobby/player-market";
 import type {
@@ -67,7 +68,12 @@ export function mapDbPlayerToPlayerCardData(player: DraftPlayerRow): PlayerCardD
     potentialStars: player.potential_stars,
     skillMax: player.skill_max,
   });
-  const maxStars = Math.max(Number(player.skill_max ?? 5), potentialCeiling);
+  const maxStars = resolvePlayerSkillDisplayMax({
+    baseStars: currentStars,
+    currentStars,
+    potentialStars: player.potential_stars,
+    skillMax: player.skill_max,
+  });
   const market = toCardMarketDisplay(computeCatalogPlayerMarketValues(player));
   const attackerArchetype = normalizeApplicablePlayerArchetype(player.attacker_archetype, position, playerPositions);
   const defenderArchetype = normalizeApplicablePlayerArchetype(player.defender_archetype, position, playerPositions);

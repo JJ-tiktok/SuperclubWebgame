@@ -207,7 +207,15 @@ function getSnapshotPollMs(phase: string) {
     return configured;
   }
 
-  if (phase === "draft" || phase === "deadline_day" || phase === "offseason_scouting") {
+  if (
+    phase === "draft" ||
+    phase === "deadline_day" ||
+    phase === "offseason_scouting" ||
+    phase === "season" ||
+    phase === "prematch" ||
+    phase === "match" ||
+    phase === "champions_league"
+  ) {
     return MIN_SNAPSHOT_POLL_MS;
   }
 

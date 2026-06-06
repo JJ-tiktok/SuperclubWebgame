@@ -199,4 +199,38 @@ describe("player market values", () => {
       },
     );
   });
+
+  it("values skill_max training headroom when base potential is exhausted", () => {
+    assert.deepEqual(
+      getClubPlayerMarketValues({
+        current_stars: 1,
+        player: {
+          base_stars: 1,
+          potential_stars: 0,
+          skill_max: 3,
+        },
+      }),
+      {
+        minimumBid: 14_000_000,
+        scoutingPrice: 7_000_000,
+      },
+    );
+  });
+
+  it("extends owned market values toward skill_max below the training cap", () => {
+    assert.deepEqual(
+      getClubPlayerMarketValues({
+        current_stars: 3,
+        player: {
+          base_stars: 3,
+          potential_stars: 0,
+          skill_max: 4,
+        },
+      }),
+      {
+        minimumBid: 32_000_000,
+        scoutingPrice: 16_000_000,
+      },
+    );
+  });
 });

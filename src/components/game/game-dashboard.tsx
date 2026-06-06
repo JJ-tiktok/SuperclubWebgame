@@ -180,11 +180,14 @@ import {
 import { getClubTheme } from "@/lib/lobby/theme";
 import { canTrainOwnedPlayer } from "@/lib/lobby/training";
 import {
-  computeOwnedPlayerMarketValues,
-  getClubPlayerMarketValues,
-  resolvePlayerPotentialCeiling,
-  toCardMarketDisplay,
-} from "@/lib/lobby/player-market";
+  getCardScoutingMoney,
+  getCardTransferMoney,
+  getCatalogMinimumBidFromPlayer,
+  getOwnedCardTransferMillions,
+  mapCatalogPlayerToCardData,
+  mapOwnedPlayerToCardData,
+  mapOwnedPlayerToLineupCardData,
+} from "@/lib/lobby/player-card-mapper";
 import {
   CLUB_PLAYER_CUSTOM_NAME_MAX_LENGTH,
   getClubPlayerDisplayName,
@@ -1847,11 +1850,10 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
               })
               .map((owned) => {
               const card = mapOwnedPlayerToCardData(owned);
-              const market = getClubPlayerMarketValues(owned);
               const positionLabel = getPlayerPositionLabel(owned.player);
               const currentStars = Number(owned.current_stars);
               const maxStars = Number(owned.player.skill_max ?? card.skill.max);
-              const salePayout = squadOverCapacity ? 0 : market.scoutingPrice;
+              const salePayout = squadOverCapacity ? 0 : getCardScoutingMoney(card.market);
 
               return (
                 <div className="grid gap-3 rounded-lg border border-zinc-800 bg-zinc-900/55 p-3 sm:grid-cols-[132px_minmax(0,1fr)]" key={owned.id}>
@@ -1868,10 +1870,10 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
                       <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-zinc-400">
                         <SmallInfo label="Staerke" value={`${formatStars(currentStars)} / ${formatStars(maxStars)}`} />
                         <SmallInfo label="Zone" value={owned.current_zone} />
-                        <SmallInfo label="Transfer Value" value={formatMoney(market.minimumBid)} />
+                        <SmallInfo label="Transfer Value" value={formatMoney(getCardTransferMoney(card.market))} />
                         <SmallInfo
                           label={squadOverCapacity ? "Entlassung" : "Scouting Value"}
-                          value={squadOverCapacity ? formatMoney(0) : formatMoney(market.scoutingPrice)}
+                          value={squadOverCapacity ? formatMoney(0) : formatMoney(getCardScoutingMoney(card.market))}
                         />
                       </div>
                     </div>
@@ -2209,6 +2211,7 @@ function DeadlineView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub:
   const highestBidClub = snapshot.clubs.find((club) => club.id === activeAuction?.winning_club_id);
   const isMyTurn = Boolean(ownClub && activeAuction?.current_bid_club_id === ownClub.id);
   const ownSquadSize = snapshot.club_overview?.squad.length ?? 0;
+  const displayMinimumBid = activeAuction ? getCatalogMinimumBidFromPlayer(activeAuction.player) : 0;
   const nextBid = activeAuction ? getMinimumNextBid(activeAuction.current_amount, activeAuction.minimum_bid) : 0;
   const defaultBidMillions = Math.ceil(nextBid / DEADLINE_BID_STEP);
   const softTimerStarted = activeAuction?.turn_started_at ? formatSavedAt(activeAuction.turn_started_at) : "noch nicht gestartet";
@@ -2295,7 +2298,7 @@ function DeadlineView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub:
               <div>
                 <PanelTitle>Aktive Auktion #{activeAuction.auction_index + 1}</PanelTitle>
                 <PanelDescription>
-                  Mindestpreis {formatMoney(activeAuction.minimum_bid)}
+                  Mindestpreis {formatMoney(displayMinimumBid)}
                   {highestBidClub ? ` - Hoechstgebot ${formatMoney(activeAuction.current_amount)} von ${highestBidClub.club_name}` : ""}
                 </PanelDescription>
               </div>
@@ -2303,13 +2306,13 @@ function DeadlineView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub:
             </PanelHeader>
             <div className="grid gap-4 lg:grid-cols-[220px_minmax(0,1fr)]">
               <div className="max-w-[220px]">
-                <PlayerCard player={mapDbPlayerToPlayerCardData(activeAuction.player)} showArchetypes={snapshot.game.settings.archetypes_enabled !== false} variant="draft" />
+                <PlayerCard player={mapCatalogPlayerToCardData(activeAuction.player)} showArchetypes={snapshot.game.settings.archetypes_enabled !== false} variant="draft" />
               </div>
               <div className="space-y-3">
                 <div className="grid gap-2 sm:grid-cols-2">
                   <SmallInfo label="Spieler" value={activeAuction.player.display_name} />
                   <SmallInfo label="Position" value={getPlayerPositionLabel(activeAuction.player)} />
-                  <SmallInfo label="Mindestpreis" value={formatMoney(activeAuction.minimum_bid)} />
+                  <SmallInfo label="Mindestpreis" value={formatMoney(displayMinimumBid)} />
                   <SmallInfo label="Aktuelles Gebot" value={activeAuction.current_amount > 0 ? formatMoney(activeAuction.current_amount) : "Noch kein Gebot"} />
                 </div>
                 {isMyTurn ? (
@@ -2430,7 +2433,7 @@ function DeadlineAuctionList({ deadline, snapshot }: { deadline: NonNullable<Lob
                   ) : (
                     <>
                       <p className="truncate text-sm font-semibold text-zinc-50">#{auction.auction_index + 1} {auction.player.display_name}</p>
-                      <p className="mt-1 text-xs text-zinc-500">Min. {formatMoney(auction.minimum_bid)}</p>
+                      <p className="mt-1 text-xs text-zinc-500">Min. {formatMoney(getCatalogMinimumBidFromPlayer(auction.player))}</p>
                     </>
                   )}
                 </div>
@@ -2439,7 +2442,7 @@ function DeadlineAuctionList({ deadline, snapshot }: { deadline: NonNullable<Lob
               {!hidden ? (
                 <>
                   <div className="mt-3 max-w-[180px]">
-                    <PlayerCard player={mapDbPlayerToPlayerCardData(auction.player)} showArchetypes={snapshot.game.settings.archetypes_enabled !== false} variant="draft" />
+                    <PlayerCard player={mapCatalogPlayerToCardData(auction.player)} showArchetypes={snapshot.game.settings.archetypes_enabled !== false} variant="draft" />
                   </div>
                   <p className="mt-3 text-xs text-zinc-400">
                     {auction.winning_club_id
@@ -3283,7 +3286,7 @@ function OtherClubSquadPanel({
                   <SmallInfo label="Status" value={owned.injured ? "Verletzt" : owned.current_zone === "bench" ? "Nicht aufgestellt" : "Aufgestellt"} />
                   <SmallInfo label="Zone" value={owned.current_zone} />
                   <SmallInfo label="Staerke" value={formatStars(Number(owned.current_stars))} />
-                  <SmallInfo label="Marktwert" value={formatMoney(getClubPlayerMarketValues(owned).minimumBid)} />
+                  <SmallInfo label="Marktwert" value={formatMoney(getCardTransferMoney(card.market))} />
                 </div>
                 <Button
                   className="mt-2 h-8 w-full text-xs"
@@ -3331,7 +3334,7 @@ function TransferOfferModal({
 }) {
   const [offeredPlayerId, setOfferedPlayerId] = useState("none");
   const archetypesEnabled = snapshot.game.settings.archetypes_enabled !== false;
-  const defaultCashMillions = Math.max(1, Math.round(getClubPlayerMarketValues(target).minimumBid / 1_000_000));
+  const defaultCashMillions = getOwnedCardTransferMillions(mapOwnedPlayerToCardData(target));
   const selectedOfferPlayer =
     offeredPlayerId === "none" ? null : (offerPlayers.find((ownPlayer) => ownPlayer.id === offeredPlayerId) ?? null);
 
@@ -4973,50 +4976,6 @@ function getPositionRank(player: DraftPlayerRow) {
   };
 
   return Math.min(...positions.map((position) => order[position] ?? 9));
-}
-
-function mapOwnedPlayerToCardData(owned: NonNullable<LobbySnapshot["club_overview"]>["squad"][number]): PlayerCardData {
-  const card = mapDbPlayerToPlayerCardData(owned.player);
-  const currentStars = Math.max(0, Math.trunc(Number(owned.current_stars)));
-  const potentialCeiling = resolvePlayerPotentialCeiling({
-    baseStars: owned.player.base_stars,
-    currentStars,
-    potentialStars: owned.player.potential_stars,
-    skillMax: owned.player.skill_max,
-  });
-  const skillMax = Math.max(Number(owned.player.skill_max ?? 5), potentialCeiling);
-  const market = toCardMarketDisplay(computeOwnedPlayerMarketValues(owned));
-  const isNlzTalent =
-    owned.player.metadata &&
-    typeof owned.player.metadata === "object" &&
-    (owned.player.metadata as Record<string, unknown>).nlz_origin === true;
-
-  return {
-    ...card,
-    cardStyle: isNlzTalent ? { ...card.cardStyle, theme: "purple" } : card.cardStyle,
-    name: getClubPlayerDisplayName(owned),
-    market,
-    skill: {
-      ...card.skill,
-      current: currentStars,
-      potential: potentialCeiling,
-      max: skillMax,
-    },
-  };
-}
-
-function mapOwnedPlayerToLineupCardData(owned: NonNullable<LobbySnapshot["club_overview"]>["squad"][number]): PlayerCardData & {
-  injured?: boolean;
-  sourceZone?: string;
-  lineupSlot?: number | null;
-} {
-  return {
-    ...mapOwnedPlayerToCardData(owned),
-    id: owned.id,
-    injured: owned.injured,
-    lineupSlot: owned.lineup_slot,
-    sourceZone: owned.current_zone,
-  };
 }
 
 function getPlayerPositionLabel(player: DraftPlayerRow) {

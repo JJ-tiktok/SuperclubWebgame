@@ -2,13 +2,18 @@
 
 import { Handshake, Trophy } from "lucide-react";
 import { useSearchParams } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { pickSponsorRewardPlayerAction, signSponsorDealAction } from "@/app/games/actions/offseason";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelDescription, PanelHeader, PanelTitle } from "@/components/ui/panel";
+import type { ClubStatus } from "@/lib/game/types";
 import { cn } from "@/lib/utils";
-import { isSponsorSigningPhase } from "@/lib/lobby/sponsoring";
+import {
+  getAccessiblePrestigeTiers,
+  isSponsorSigningPhase,
+  SPONSOR_PRESTIGE_LABELS,
+} from "@/lib/lobby/sponsoring";
 import type { ClubOverviewSnapshot, LobbyClub, LobbySnapshot } from "@/lib/lobby/types";
 
 function sponsorStatusLabel(status: string) {
@@ -54,10 +59,27 @@ export function SponsorPanel({
   const [confirmDealId, setConfirmDealId] = useState<string | null>(null);
 
   const activeContract = overview.sponsor_contract;
+  const prestigeTier = overview.sponsor_prestige_tier as ClubStatus;
   const prestigeLabel = overview.sponsor_prestige_label;
-  const currentTierConsumed = overview.sponsor_history.some(
-    (entry) => entry.prestige_tier === overview.sponsor_prestige_tier,
-  );
+  const accessibleTiers = useMemo(() => getAccessiblePrestigeTiers(prestigeTier), [prestigeTier]);
+  const [selectedTier, setSelectedTier] = useState<ClubStatus>(prestigeTier);
+
+  useEffect(() => {
+    setSelectedTier(prestigeTier);
+  }, [prestigeTier]);
+
+  const consumedTierSet = useMemo(() => {
+    const tiers = new Set<string>(overview.sponsor_history.map((entry) => entry.prestige_tier));
+    if (activeContract) {
+      tiers.add(activeContract.prestige_tier);
+    }
+    return tiers;
+  }, [activeContract, overview.sponsor_history]);
+
+  const selectedTierDeals = overview.available_sponsor_deals.filter((deal) => deal.prestige_tier === selectedTier);
+  const selectedTierConsumed = consumedTierSet.has(selectedTier);
+  const selectedTierLabel = SPONSOR_PRESTIGE_LABELS[selectedTier] ?? selectedTier;
+  const isCurrentTier = selectedTier === prestigeTier;
 
   return (
     <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="sponsoring">
@@ -65,8 +87,8 @@ export function SponsorPanel({
         <div>
           <PanelTitle>Sponsoring</PanelTitle>
           <PanelDescription>
-            Deals für deine aktuelle Prestige-Stufe ({prestigeLabel}) — nur in der Off-Season abschliessbar. Pro Stufe ein
-            Versuch, maximal ein aktiver Vertrag.
+            Deals nach Prestige-Stufe — auch niedrigere Stufen nachholen, solange noch nicht verbraucht. Aktuell:{" "}
+            {prestigeLabel}. Nur in der Off-Season abschliessbar, maximal ein aktiver Vertrag.
           </PanelDescription>
         </div>
         <Handshake size={18} className="text-[var(--club-color)]" aria-hidden />
@@ -117,11 +139,48 @@ export function SponsorPanel({
         </div>
       ) : null}
 
-      {!activeContract && overview.available_sponsor_deals.length > 0 ? (
+      {!activeContract && accessibleTiers.length > 0 ? (
+        <div className="mb-4 flex gap-2 overflow-x-auto pb-1">
+          {accessibleTiers.map((tier) => {
+            const tierLabel = SPONSOR_PRESTIGE_LABELS[tier] ?? tier;
+            const tierConsumed = consumedTierSet.has(tier);
+            const tierActive = selectedTier === tier;
+            const tierDealCount = overview.available_sponsor_deals.filter((deal) => deal.prestige_tier === tier).length;
+
+            return (
+              <button
+                className={cn(
+                  "inline-flex shrink-0 items-center gap-2 rounded-md border px-3 py-2 text-sm font-medium transition",
+                  tierActive
+                    ? "border-[var(--club-border)] bg-[var(--club-soft)] text-zinc-50"
+                    : "border-zinc-800 bg-zinc-900/70 text-zinc-300 hover:bg-zinc-900",
+                  tierConsumed && !tierActive ? "opacity-60" : "",
+                )}
+                key={tier}
+                onClick={() => {
+                  setSelectedTier(tier);
+                  setConfirmDealId(null);
+                }}
+                type="button"
+              >
+                <span>{tierLabel}</span>
+                {tier === prestigeTier ? <Badge tone="blue">aktuell</Badge> : null}
+                {tierConsumed ? <Badge tone="neutral">verbraucht</Badge> : null}
+                {!tierConsumed && tierDealCount > 0 ? <Badge>{tierDealCount}</Badge> : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+
+      {!activeContract && selectedTierDeals.length > 0 ? (
         <div className="space-y-4">
-          <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{prestigeLabel}</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+            {selectedTierLabel}
+            {isCurrentTier ? " · deine aktuelle Stufe" : " · niedrigere Stufe"}
+          </p>
           <div className="grid gap-3 md:grid-cols-2">
-            {overview.available_sponsor_deals.map((deal) => {
+            {selectedTierDeals.map((deal) => {
               const isConfirming = confirmDealId === deal.id;
               return (
                 <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-4" key={deal.id}>
@@ -166,21 +225,16 @@ export function SponsorPanel({
         </div>
       ) : null}
 
-      {!activeContract && overview.available_sponsor_deals.length === 0 && !currentTierConsumed && overview.sponsor_history.length === 0 ? (
-        <p className="text-sm text-zinc-500">Noch keine Sponsoring-Deals für {prestigeLabel} verfügbar.</p>
+      {!activeContract && selectedTierDeals.length === 0 && !selectedTierConsumed ? (
+        <p className="text-sm text-zinc-500">Noch keine Sponsoring-Deals für {selectedTierLabel} verfügbar.</p>
       ) : null}
 
-      {!activeContract && overview.available_sponsor_deals.length === 0 && currentTierConsumed ? (
+      {!activeContract && selectedTierDeals.length === 0 && selectedTierConsumed ? (
         <p className="text-sm text-zinc-500">
-          Die Prestige-Stufe {prestigeLabel} wurde bereits verbraucht. Höhere Deals werden frei, sobald du in der
-          Managerwertung aufsteigst.
-        </p>
-      ) : null}
-
-      {!activeContract && overview.available_sponsor_deals.length === 0 && !currentTierConsumed && overview.sponsor_history.length > 0 ? (
-        <p className="text-sm text-zinc-500">
-          Für {prestigeLabel} stehen aktuell keine Deals bereit. Bei höherer Prestige-Stufe in der Tabelle werden neue
-          Sponsoren freigeschaltet.
+          Die Prestige-Stufe {selectedTierLabel} wurde bereits verbraucht.
+          {isCurrentTier
+            ? " Höhere Deals werden frei, sobald du in der Managerwertung aufsteigst."
+            : " Wähle eine andere Stufe im Tab oben."}
         </p>
       ) : null}
 

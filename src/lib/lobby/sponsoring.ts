@@ -95,6 +95,34 @@ export function getActiveSponsorContract(contracts: SponsorContractRow[]): Spons
   return contracts.find((c) => c.status === "active" || c.status === "awaiting_reward_pick") ?? null;
 }
 
+export const SPONSOR_PRESTIGE_ORDER: ClubStatus[] = [
+  "newly_promoted",
+  "established",
+  "mid_table",
+  "title_contender",
+];
+
+export function getPrestigeTierRank(tier: ClubStatus): number {
+  return SPONSOR_PRESTIGE_ORDER.indexOf(tier);
+}
+
+export function isPrestigeTierAccessible(tier: ClubStatus, clubStatus: ClubStatus): boolean {
+  const tierRank = getPrestigeTierRank(tier);
+  const clubRank = getPrestigeTierRank(clubStatus);
+  if (tierRank < 0 || clubRank < 0) {
+    return false;
+  }
+  return tierRank <= clubRank;
+}
+
+export function getAccessiblePrestigeTiers(clubStatus: ClubStatus): ClubStatus[] {
+  const clubRank = getPrestigeTierRank(clubStatus);
+  if (clubRank < 0) {
+    return [];
+  }
+  return SPONSOR_PRESTIGE_ORDER.filter((_, index) => index <= clubRank);
+}
+
 export function getAvailableSponsorDeals(
   contracts: SponsorContractRow[],
   clubStatus: ClubStatus,
@@ -103,8 +131,22 @@ export function getAvailableSponsorDeals(
   const active = getActiveSponsorContract(contracts);
   if (active) return [];
   return SPONSOR_DEALS.filter(
-    (deal) => deal.prestige_tier === clubStatus && !consumedTiers.has(deal.prestige_tier),
+    (deal) =>
+      isPrestigeTierAccessible(deal.prestige_tier, clubStatus) && !consumedTiers.has(deal.prestige_tier),
   );
+}
+
+export function getAvailableSponsorDealsForTier(
+  contracts: SponsorContractRow[],
+  tier: ClubStatus,
+  clubStatus: ClubStatus,
+): SponsorDealDefinition[] {
+  const consumedTiers = getConsumedPrestigeTiers(contracts);
+  const active = getActiveSponsorContract(contracts);
+  if (active || consumedTiers.has(tier) || !isPrestigeTierAccessible(tier, clubStatus)) {
+    return [];
+  }
+  return SPONSOR_DEALS.filter((deal) => deal.prestige_tier === tier).sort((a, b) => a.sort_order - b.sort_order);
 }
 
 export function isStadiumUpgradeBlockedBySponsor(contracts: SponsorContractRow[]): boolean {
@@ -140,10 +182,10 @@ export function canSignSponsorDeal(input: CanSignSponsorDealInput): CanSignSpons
   if (consumedTiers.has(deal.prestige_tier)) {
     return { ok: false, reason: `Prestige-Stufe ${SPONSOR_PRESTIGE_LABELS[deal.prestige_tier]} bereits verbraucht` };
   }
-  if (deal.prestige_tier !== input.clubStatus) {
+  if (!isPrestigeTierAccessible(deal.prestige_tier, input.clubStatus)) {
     return {
       ok: false,
-      reason: `Deal nur für deine aktuelle Prestige-Stufe (${SPONSOR_PRESTIGE_LABELS[input.clubStatus]}) verfügbar`,
+      reason: `Deal erst ab Prestige-Stufe ${SPONSOR_PRESTIGE_LABELS[deal.prestige_tier]} verfügbar`,
     };
   }
   return { ok: true, deal };
@@ -491,4 +533,4 @@ const EMPTY_SPONSOR_OVERVIEW: Pick<
   sponsor_prestige_label: SPONSOR_PRESTIGE_LABELS.newly_promoted,
 };
 
-export { EMPTY_SPONSOR_OVERVIEW };
+export { EMPTY_SPONSOR_OVERVIEW, SPONSOR_PRESTIGE_LABELS };

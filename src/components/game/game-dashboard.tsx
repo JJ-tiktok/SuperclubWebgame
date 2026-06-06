@@ -40,7 +40,7 @@ import {
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import type { CSSProperties, ReactNode } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import {
   advancePhaseAction,
   deleteGameAction,
@@ -138,7 +138,8 @@ import { GameChangerPopup } from "@/components/game/game-changer-popup";
 import { GameEventsDock } from "@/components/game/game-events-dock";
 import { GameLineupBoard } from "@/components/game/game-lineup-board";
 import { GameRealtimeBridge } from "@/components/game/game-realtime-bridge";
-import { hydrateGameStore, useGameStore } from "@/components/game/game-store";
+import { hydrateGameStoreIfNewer, useGameStore } from "@/components/game/game-store";
+import { pickFresherSnapshot } from "@/components/game/snapshot-freshness";
 import { CaptainPanel } from "@/components/game/captain-panel";
 import { ClubBadge } from "@/components/game/club-badge";
 import { AfterMatchCards, MatchCardsPanel } from "@/components/game/match-cards-panel";
@@ -231,11 +232,11 @@ const phaseMenu: Array<{ id: GameView; label: string; icon: typeof Home; phases:
 export function GameDashboard(props: GameDashboardProps) {
   const storeSnapshot = useGameStore((state) => state.snapshot);
 
-  useEffect(() => {
-    hydrateGameStore(props.snapshot);
+  useLayoutEffect(() => {
+    hydrateGameStoreIfNewer(props.snapshot);
   }, [props.snapshot]);
 
-  const snapshot = storeSnapshot?.game.id === props.snapshot.game.id ? storeSnapshot : props.snapshot;
+  const snapshot = pickFresherSnapshot(props.snapshot, storeSnapshot);
 
   return <GameDashboardContent {...props} snapshot={snapshot} />;
 }

@@ -53,7 +53,7 @@ export function GameRealtimeBridge({
     let recoveryTimer: ReturnType<typeof setTimeout> | null = null;
     const gameId = snapshot.game.id;
     const roomCode = snapshot.game.room_code;
-    const snapshotPollMs = getConfiguredSnapshotPollMs();
+    const snapshotPollMs = getSnapshotPollMs(snapshot.game.phase);
     let lastLiveActivityAt = Date.now();
     const eventChannel = client.channel(`game:${gameId}`, {
       config: {
@@ -121,6 +121,19 @@ export function GameRealtimeBridge({
             }
           },
         )
+        .on(
+          "postgres_changes",
+          {
+            event: "*",
+            filter: `game_id=eq.${gameId}`,
+            schema: "public",
+            table: "draft_rounds",
+          },
+          () => {
+            lastLiveActivityAt = Date.now();
+            scheduleRecover("draft_rounds");
+          },
+        )
         .on("presence", { event: "sync" }, () => {
           lastLiveActivityAt = Date.now();
           setGamePresence(normalizePresenceState(eventChannel.presenceState()));
@@ -186,6 +199,19 @@ function getConfiguredSnapshotPollMs() {
   }
 
   return Math.max(MIN_SNAPSHOT_POLL_MS, Math.trunc(value));
+}
+
+function getSnapshotPollMs(phase: string) {
+  const configured = getConfiguredSnapshotPollMs();
+  if (configured > 0) {
+    return configured;
+  }
+
+  if (phase === "draft" || phase === "deadline_day" || phase === "offseason_scouting") {
+    return MIN_SNAPSHOT_POLL_MS;
+  }
+
+  return 0;
 }
 
 function normalizeGameEvent(value: unknown): GameEventSnapshot | null {

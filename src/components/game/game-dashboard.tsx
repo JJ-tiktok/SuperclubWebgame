@@ -179,7 +179,12 @@ import {
 } from "@/lib/lobby/scouting";
 import { getClubTheme } from "@/lib/lobby/theme";
 import { canTrainOwnedPlayer } from "@/lib/lobby/training";
-import { getClubPlayerMarketValues, resolvePlayerPotentialCeiling } from "@/lib/lobby/player-market";
+import {
+  computeOwnedPlayerMarketValues,
+  getClubPlayerMarketValues,
+  resolvePlayerPotentialCeiling,
+  toCardMarketDisplay,
+} from "@/lib/lobby/player-market";
 import {
   CLUB_PLAYER_CUSTOM_NAME_MAX_LENGTH,
   getClubPlayerDisplayName,
@@ -4972,14 +4977,15 @@ function getPositionRank(player: DraftPlayerRow) {
 
 function mapOwnedPlayerToCardData(owned: NonNullable<LobbySnapshot["club_overview"]>["squad"][number]): PlayerCardData {
   const card = mapDbPlayerToPlayerCardData(owned.player);
-  const currentStars = Math.trunc(Number(owned.current_stars));
+  const currentStars = Math.max(0, Math.trunc(Number(owned.current_stars)));
   const potentialCeiling = resolvePlayerPotentialCeiling({
     baseStars: owned.player.base_stars,
     currentStars,
     potentialStars: owned.player.potential_stars,
     skillMax: owned.player.skill_max,
   });
-  const market = getClubPlayerMarketValues(owned);
+  const skillMax = Math.max(Number(owned.player.skill_max ?? 5), potentialCeiling);
+  const market = toCardMarketDisplay(computeOwnedPlayerMarketValues(owned));
   const isNlzTalent =
     owned.player.metadata &&
     typeof owned.player.metadata === "object" &&
@@ -4989,16 +4995,12 @@ function mapOwnedPlayerToCardData(owned: NonNullable<LobbySnapshot["club_overvie
     ...card,
     cardStyle: isNlzTalent ? { ...card.cardStyle, theme: "purple" } : card.cardStyle,
     name: getClubPlayerDisplayName(owned),
-    market: {
-      currency: "M",
-      scoutingFee: market.scoutingPrice / 1_000_000,
-      transferFee: market.minimumBid / 1_000_000,
-    },
+    market,
     skill: {
       ...card.skill,
       current: currentStars,
       potential: potentialCeiling,
-      max: Number(owned.player.skill_max ?? card.skill.max),
+      max: skillMax,
     },
   };
 }

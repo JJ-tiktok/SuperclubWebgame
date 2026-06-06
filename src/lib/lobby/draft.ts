@@ -1,9 +1,9 @@
 import type { DraftPlayerRow } from "./types";
 import { ARCHETYPE_META, isAllrounderPositions, normalizeApplicablePlayerArchetype } from "@/lib/lobby/archetypes";
 import {
-  computePlayerMarketValues,
-  readSyncedPlayerMarketValues,
+  computeCatalogPlayerMarketValues,
   resolvePlayerPotentialCeiling,
+  toCardMarketDisplay,
 } from "@/lib/lobby/player-market";
 import type {
   CardTier,
@@ -60,7 +60,7 @@ const chemistrySymbols = new Set<ChemistrySymbol>(["star", "dot", "link"]);
 export function mapDbPlayerToPlayerCardData(player: DraftPlayerRow): PlayerCardData {
   const position = normalizePosition(player.position);
   const playerPositions = normalizeEligiblePositions(player.eligible_positions, position);
-  const currentStars = Number(player.base_stars ?? 1);
+  const currentStars = Math.max(0, Math.trunc(Number(player.base_stars ?? 1)));
   const potentialCeiling = resolvePlayerPotentialCeiling({
     baseStars: currentStars,
     currentStars,
@@ -68,14 +68,7 @@ export function mapDbPlayerToPlayerCardData(player: DraftPlayerRow): PlayerCardD
     skillMax: player.skill_max,
   });
   const maxStars = Math.max(Number(player.skill_max ?? 5), potentialCeiling);
-  const market =
-    readSyncedPlayerMarketValues(player) ??
-    computePlayerMarketValues({
-      potentialCeiling,
-      stars: currentStars,
-    });
-  const marketTransfer = moneyToMillions(market.minimumBid);
-  const marketScouting = moneyToMillions(market.scoutingPrice);
+  const market = toCardMarketDisplay(computeCatalogPlayerMarketValues(player));
   const attackerArchetype = normalizeApplicablePlayerArchetype(player.attacker_archetype, position, playerPositions);
   const defenderArchetype = normalizeApplicablePlayerArchetype(player.defender_archetype, position, playerPositions);
 
@@ -119,11 +112,7 @@ export function mapDbPlayerToPlayerCardData(player: DraftPlayerRow): PlayerCardD
           }
         : null,
     },
-    market: {
-      transferFee: marketTransfer,
-      scoutingFee: marketScouting,
-      currency: "M",
-    },
+    market,
     cardStyle: {
       tier: getDefaultCardTier(player.age_group),
     },
@@ -151,16 +140,6 @@ function normalizeEligiblePositions(eligiblePositions: string[] | null | undefin
   );
 
   return normalized.length > 0 ? normalized : [fallback];
-}
-
-function moneyToMillions(value: number | string) {
-  const numeric = Number(value);
-
-  if (!Number.isFinite(numeric) || numeric <= 0) {
-    return 0;
-  }
-
-  return numeric >= 100000 ? numeric / 1000000 : numeric;
 }
 
 function getDefaultCardTier(ageGroup: string | null | undefined): CardTier {

@@ -90,6 +90,34 @@ export function readSyncedPlayerMarketValues(player: {
   return { minimumBid, scoutingPrice };
 }
 
+/** Marktwerte fuer Katalog-/Draft-Spieler (base_stars, noch nicht im Verein). */
+export function computeCatalogPlayerMarketValues(player: {
+  base_stars?: number | string | null;
+  potential_stars?: number | string | null;
+  skill_max?: number | string | null;
+}) {
+  const currentStars = Math.max(0, Math.trunc(Number(player.base_stars ?? 0)));
+  const potentialCeiling = resolvePlayerPotentialCeiling({
+    baseStars: currentStars,
+    currentStars,
+    potentialStars: player.potential_stars,
+    skillMax: player.skill_max,
+  });
+
+  return computePlayerMarketValues({
+    potentialCeiling,
+    stars: currentStars,
+  });
+}
+
+export function toCardMarketDisplay(market: { minimumBid: number; scoutingPrice: number }) {
+  return {
+    currency: "M" as const,
+    scoutingFee: market.scoutingPrice / MILLION,
+    transferFee: market.minimumBid / MILLION,
+  };
+}
+
 export function computeOwnedPlayerMarketValues(owned: {
   current_stars: number | string;
   player: {

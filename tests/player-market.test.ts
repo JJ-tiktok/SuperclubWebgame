@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  computeCatalogPlayerMarketValues,
   computePlayerMarketValues,
   getClubPlayerMarketValues,
   getRemainingPotentialPoints,
@@ -169,5 +170,33 @@ describe("player market values", () => {
 
     assert.equal(market.minimumBid, 52_000_000);
     assert.equal(market.scoutingPrice, 26_000_000);
+  });
+
+  it("computes catalog market values from base stars, not stored prices", () => {
+    assert.deepEqual(
+      computeCatalogPlayerMarketValues({
+        base_stars: 1,
+        minimum_bid: 30_000_000,
+        potential_stars: 0,
+        scouting_price: 15_000_000,
+        skill_max: 5,
+      }),
+      {
+        minimumBid: 10_000_000,
+        scoutingPrice: 5_000_000,
+      },
+    );
+
+    assert.deepEqual(
+      computeCatalogPlayerMarketValues({
+        base_stars: 2,
+        potential_stars: 1,
+        skill_max: 5,
+      }),
+      {
+        minimumBid: 22_000_000,
+        scoutingPrice: 11_000_000,
+      },
+    );
   });
 });

@@ -67,6 +67,11 @@ import {
   type SponsorContractRow,
 } from "@/lib/lobby/sponsoring";
 import { SPONSOR_PRESTIGE_LABELS } from "@/lib/lobby/sponsor-deals";
+import {
+  getClubOverviewLoadProfileForView as getClubOverviewLoadProfile,
+  shouldLoadClubOverviewForView as shouldLoadClubOverviewSnapshot,
+  shouldLoadScoutingForView as shouldLoadScoutingSnapshot,
+} from "@/lib/lobby/snapshot-load-policy";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
 import { getTransferOfferCreatorClubId, getTransferOfferResponderClubId } from "@/lib/lobby/transfers";
 import { getClubPlayerDisplayName } from "@/lib/lobby/player-names";
@@ -345,10 +350,6 @@ function shouldLoadDraftSnapshot(phase: LobbyPhase, view: string) {
   return phase === "draft" || view === "draft";
 }
 
-function shouldLoadScoutingSnapshot(phase: LobbyPhase, view: string) {
-  return view === "scouting" || (view === "dashboard" && (phase === "off_season" || phase === "offseason_scouting"));
-}
-
 function shouldLoadDeadlineSnapshot(phase: LobbyPhase, view: string) {
   return phase === "deadline_day" || view === "deadline";
 }
@@ -367,28 +368,6 @@ function shouldLoadSeasonSnapshot(phase: LobbyPhase, view: string) {
 
 function shouldLoadContinentalSnapshot(phase: LobbyPhase, view: string) {
   return phase === "champions_league" || view === "continental";
-}
-
-function shouldLoadClubOverviewSnapshot(phase: LobbyPhase, view: string) {
-  if (phase === "season_end" && view === "dashboard") {
-    return true;
-  }
-
-  if (isOffseasonDashboardView(phase, view)) {
-    return true;
-  }
-
-  return ["grounds", "lineup", "squad", "training", "scouting", "transfer", "deadline", "matchday", "continental"].includes(view);
-}
-
-function isOffseasonDashboardView(phase: LobbyPhase, view: string) {
-  return view === "dashboard" && (
-    phase === "off_season" ||
-    phase === "offseason_finance" ||
-    phase === "offseason_training" ||
-    phase === "offseason_scouting" ||
-    phase === "offseason_investments"
-  );
 }
 
 function shouldLoadMatchNewsSnapshot(phase: LobbyPhase, view: string) {
@@ -1273,41 +1252,6 @@ function redactScheduledDeadlinePlayer<T extends DraftPlayerRow>(player: T): T {
 
 function emptyQueryResult<T>(data: T): Promise<{ data: T; error: null }> {
   return Promise.resolve({ data, error: null });
-}
-
-type ClubOverviewLoadProfile = {
-  loadGameChangers: boolean;
-  loadInvestments: boolean;
-  loadOpenStaffOffer: boolean;
-  loadPendingEffects: boolean;
-  loadSalesTransactions: boolean;
-  loadSponsorContracts: boolean;
-  loadSquad: boolean;
-  loadStaff: boolean;
-  loadTrainingTransactions: boolean;
-};
-
-function getClubOverviewLoadProfile(phase: LobbyPhase, view: string): ClubOverviewLoadProfile {
-  const offseasonDashboard = isOffseasonDashboardView(phase, view);
-  const loadSquad = ["lineup", "squad", "training", "scouting", "transfer", "deadline", "matchday", "continental"].includes(view);
-  const loadStaff =
-    offseasonDashboard ||
-    ["grounds", "lineup", "squad", "training", "matchday", "continental"].includes(view);
-  const loadPendingEffects =
-    offseasonDashboard ||
-    ["grounds", "lineup", "training", "scouting", "transfer", "matchday", "continental"].includes(view);
-
-  return {
-    loadGameChangers: ["grounds", "matchday", "continental"].includes(view),
-    loadInvestments: offseasonDashboard || view === "grounds",
-    loadOpenStaffOffer: view === "grounds",
-    loadPendingEffects,
-    loadSalesTransactions: view === "transfer",
-    loadSponsorContracts: offseasonDashboard || view === "grounds",
-    loadSquad,
-    loadStaff,
-    loadTrainingTransactions: offseasonDashboard || view === "training",
-  };
 }
 
 async function getDeadlineSnapshot(

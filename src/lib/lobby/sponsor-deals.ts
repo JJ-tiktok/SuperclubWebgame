@@ -132,7 +132,7 @@ export const SPONSOR_DEALS: SponsorDealDefinition[] = [
     objective_config: {},
     duration_seasons: 3,
     reward_type: "stadium_rebuild",
-    reward_config: { stadium_level: 2, status_delta: 1, status_seasons: 1 },
+    reward_config: { stadium_level: 3, status_delta: 1, status_seasons: 1 },
     sort_order: 6,
   },
   {
@@ -184,7 +184,7 @@ export const SPONSOR_DEALS: SponsorDealDefinition[] = [
     objective_config: {},
     duration_seasons: 1,
     reward_type: "money",
-    reward_config: { amount: 50_000_000 },
+    reward_config: { amount: 30_000_000 },
     sort_order: 4,
   },
   {

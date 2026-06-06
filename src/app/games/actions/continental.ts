@@ -4,22 +4,30 @@ import { auth } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import {
+  assignContinentalCpuSlots,
   buildNextRoundFixtures,
-  buildRound32Fixtures,
-  CONTINENTAL_PRIZE_AMOUNT,
+  buildSeededRound32Fixtures,
+  classifyQualifiedHumans,
+  CONTINENTAL_LINEUPS_BY_TIER,
+  CONTINENTAL_PRIZE_WINNER,
+  getEliminationPrizeHeadline,
   getNextContinentalRound,
+  getPrizeForEliminationRound,
   isContinentalFinalRound,
+  isContinentalQualified,
   pickRandomLineupIndex,
   requiredContinentalCpuCount,
   shuffleParticipants,
+  type ContinentalCpuTier,
   type ContinentalRound,
 } from "@/lib/lobby/continental-cup";
+import { resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
 import { calculateLineupPower, type CaptainBoost } from "@/lib/lobby/lineup-power";
 import { areArchetypesEnabled, normalizeApplicablePlayerArchetype } from "@/lib/lobby/archetypes";
 import { buildLineupSnapshotFromPlayers, type LineupSnapshotClubPlayerRow } from "@/lib/lobby/lineup-snapshot";
 import { getClubPlayerDisplayNameFromRow } from "@/lib/lobby/player-names";
 import { getMatchPointsMode, resolveFixture, type FixtureSideInput } from "@/lib/lobby/season";
-import type { LobbyGame } from "@/lib/lobby/types";
+import type { LobbyGame, SeasonStandingSnapshot } from "@/lib/lobby/types";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
 import type { SupabaseServiceClient } from "@/app/games/actions/_shared";
 
@@ -32,6 +40,7 @@ type ContinentalParticipantRow = {
   display_name: string;
   bracket_seed: number;
   eliminated_round: number | null;
+  cpu_strength_tier: ContinentalCpuTier | null;
 };
 
 type ContinentalFixtureRow = {
@@ -43,21 +52,16 @@ type ContinentalFixtureRow = {
   away_participant_id: string;
   home_continental_cpu_lineup_id: string | null;
   away_continental_cpu_lineup_id: string | null;
+  home_cpu_formation_index: number | null;
+  away_cpu_formation_index: number | null;
   home_lineup_locked: boolean;
   away_lineup_locked: boolean;
   status: "scheduled" | "completed";
   winner_participant_id: string | null;
 };
 
-type ContinentalLineupRow = {
-  id: string;
-  att_stars: number | string;
-  def_stars: number | string;
-  mid_stars: number | string;
-};
-
 const FIXTURE_SELECT =
-  "id, tournament_id, round, match_index, home_participant_id, away_participant_id, home_continental_cpu_lineup_id, away_continental_cpu_lineup_id, home_lineup_locked, away_lineup_locked, home_locked_def, home_locked_mid, home_locked_att, away_locked_def, away_locked_mid, away_locked_att, status, match_state, winner_participant_id";
+  "id, tournament_id, round, match_index, home_participant_id, away_participant_id, home_continental_cpu_lineup_id, away_continental_cpu_lineup_id, home_cpu_formation_index, away_cpu_formation_index, home_lineup_locked, away_lineup_locked, home_locked_def, home_locked_mid, home_locked_att, away_locked_def, away_locked_mid, away_locked_att, status, match_state, winner_participant_id";
 
 async function touchGameSave(supabase: SupabaseServiceClient, gameId: string, userId: string) {
   await supabase
@@ -141,39 +145,51 @@ async function computeClubLockedPower(supabase: SupabaseServiceClient, clubId: s
   return { DEF: powers.DEF.total, MID: powers.MID.total, ATT: powers.ATT.total };
 }
 
-async function getContinentalLineupsByTeamId(supabase: SupabaseServiceClient, teamIds: string[]) {
-  const map = new Map<string, ContinentalLineupRow[]>();
-  if (teamIds.length === 0) return map;
-  const { data, error } = await supabase
-    .from("continental_cpu_lineups")
-    .select("id, continental_cpu_team_id, def_stars, mid_stars, att_stars, sort_order")
-    .in("continental_cpu_team_id", teamIds)
-    .order("sort_order", { ascending: true });
-  if (error) throw error;
-  for (const row of data ?? []) {
-    const teamId = row.continental_cpu_team_id as string;
-    const list = map.get(teamId) ?? [];
-    list.push({
-      id: row.id as string,
-      def_stars: row.def_stars as number | string,
-      mid_stars: row.mid_stars as number | string,
-      att_stars: row.att_stars as number | string,
-    });
-    map.set(teamId, list);
+async function loadSeasonStandingsForContinental(
+  supabase: SupabaseServiceClient,
+  gameId: string,
+  seasonNumber: number,
+): Promise<SeasonStandingSnapshot[]> {
+  const { data: standings, error: standingsError } = await supabase
+    .from("season_standings")
+    .select(
+      `participant_id, season_number, played, wins, draws, losses, match_points, third_points_for, third_points_against,
+      fixture_points_for, fixture_points_against, rank,
+      participant:season_participants(id, game_id, season_number, kind, club_id, cpu_team_id, display_name)`,
+    )
+    .eq("game_id", gameId)
+    .eq("season_number", seasonNumber)
+    .order("rank", { ascending: true })
+    .returns<SeasonStandingSnapshot[]>();
+
+  if (standingsError) {
+    throw standingsError;
   }
-  return map;
+
+  return standings ?? [];
 }
 
-function pickCpuLineupId(lineups: ContinentalLineupRow[]) {
-  if (lineups.length === 0) return null;
-  return lineups[pickRandomLineupIndex(lineups.length)]?.id ?? null;
+export async function hasContinentalQualifiers(
+  supabase: SupabaseServiceClient,
+  gameId: string,
+  seasonNumber: number,
+) {
+  const { data: clubs, error } = await supabase
+    .from("clubs")
+    .select("id, status, status_override, status_override_until_season")
+    .eq("game_id", gameId);
+  if (error) throw error;
+
+  return (clubs ?? []).some((club) =>
+    isContinentalQualified(resolveEffectiveClubStatus(club, seasonNumber)),
+  );
 }
 
 export async function ensureContinentalTournament(
   supabase: SupabaseServiceClient,
   gameId: string,
   seasonNumber: number,
-) {
+): Promise<string | null> {
   const { data: existing } = await supabase
     .from("continental_tournaments")
     .select("id")
@@ -184,17 +200,31 @@ export async function ensureContinentalTournament(
     return existing.id;
   }
 
-  const { data: clubs, error: clubsError } = await supabase
-    .from("clubs")
-    .select("id, club_name, created_at")
-    .eq("game_id", gameId)
-    .order("created_at", { ascending: true });
+  const qualified = await hasContinentalQualifiers(supabase, gameId, seasonNumber);
+  if (!qualified) {
+    return null;
+  }
+
+  const [{ data: clubs, error: clubsError }, standings] = await Promise.all([
+    supabase
+      .from("clubs")
+      .select("id, club_name, created_at, status, status_override, status_override_until_season")
+      .eq("game_id", gameId)
+      .order("created_at", { ascending: true }),
+    loadSeasonStandingsForContinental(supabase, gameId, seasonNumber),
+  ]);
   if (clubsError) throw clubsError;
 
-  const humanCount = clubs?.length ?? 0;
-  const cpuNeeded = requiredContinentalCpuCount(humanCount);
-  if (humanCount + cpuNeeded !== 32) {
-    throw new Error(`Continental Cup benoetigt 32 Teams, aber ${humanCount} Menschen + ${cpuNeeded} CPU ergibt nicht 32.`);
+  const qualifiedClubs = (clubs ?? [])
+    .filter((club) => isContinentalQualified(resolveEffectiveClubStatus(club, seasonNumber)))
+    .map((club) => ({ club_id: club.id as string, display_name: club.club_name as string }));
+
+  const qualifiedHumans = classifyQualifiedHumans(qualifiedClubs, standings);
+  const cpuNeeded = requiredContinentalCpuCount(qualifiedHumans.length);
+  if (qualifiedHumans.length + cpuNeeded !== 32) {
+    throw new Error(
+      `Continental Cup benoetigt 32 Teams, aber ${qualifiedHumans.length} Qualifikanten + ${cpuNeeded} CPU ergibt nicht 32.`,
+    );
   }
 
   const { data: cpuPool, error: cpuError } = await supabase
@@ -211,7 +241,10 @@ export async function ensureContinentalTournament(
     );
   }
 
-  const cpuCatalog = shuffleParticipants(cpuPool ?? []).slice(0, cpuNeeded);
+  const cpuSlots = assignContinentalCpuSlots(
+    qualifiedHumans,
+    (cpuPool ?? []).map((cpu) => ({ id: cpu.id as string, display_name: cpu.display_name as string })),
+  );
 
   const { data: tournament, error: tournamentError } = await supabase
     .from("continental_tournaments")
@@ -220,7 +253,7 @@ export async function ensureContinentalTournament(
       season_number: seasonNumber,
       status: "in_progress",
       bracket_size: 32,
-      prize_amount: CONTINENTAL_PRIZE_AMOUNT,
+      prize_amount: CONTINENTAL_PRIZE_WINNER,
       current_round: 32,
     })
     .select("id")
@@ -229,56 +262,77 @@ export async function ensureContinentalTournament(
 
   const tournamentId = tournament.id;
   const participantRows = [
-    ...(clubs ?? []).map((club, index) => ({
+    ...qualifiedHumans.map((human) => ({
       tournament_id: tournamentId,
       kind: "human" as const,
-      club_id: club.id,
+      club_id: human.club_id,
       continental_cpu_team_id: null,
-      display_name: club.club_name,
-      bracket_seed: index + 1,
+      display_name: human.display_name,
+      bracket_seed: human.human_league_rank,
+      cpu_strength_tier: null,
     })),
-    ...(cpuCatalog ?? []).map((cpu, index) => ({
+    ...cpuSlots.map((cpu, index) => ({
       tournament_id: tournamentId,
       kind: "cpu" as const,
       club_id: null,
-      continental_cpu_team_id: cpu.id,
+      continental_cpu_team_id: cpu.catalog_team_id,
       display_name: cpu.display_name,
-      bracket_seed: humanCount + index + 1,
+      bracket_seed: qualifiedHumans.length + index + 1,
+      cpu_strength_tier: cpu.tier,
     })),
   ];
 
   const { data: participants, error: participantsError } = await supabase
     .from("continental_participants")
     .insert(participantRows)
-    .select("id, kind, club_id, continental_cpu_team_id")
-    .returns<Array<{ id: string; kind: string; club_id: string | null; continental_cpu_team_id: string | null }>>();
+    .select("id, kind, club_id, continental_cpu_team_id, cpu_strength_tier")
+    .returns<
+      Array<{
+        id: string;
+        kind: string;
+        club_id: string | null;
+        continental_cpu_team_id: string | null;
+        cpu_strength_tier: ContinentalCpuTier | null;
+      }>
+    >();
   if (participantsError) throw participantsError;
 
-  const cpuTeamIds = [...new Set((participants ?? []).flatMap((p) => (p.continental_cpu_team_id ? [p.continental_cpu_team_id] : [])))];
-  const lineupsByTeam = await getContinentalLineupsByTeamId(supabase, cpuTeamIds);
+  const humanParticipantIds = new Map<string, string>();
+  const cpuParticipants: Array<{ participant_id: string; tier: ContinentalCpuTier }> = [];
+  for (const participant of participants ?? []) {
+    if (participant.kind === "human" && participant.club_id) {
+      humanParticipantIds.set(participant.club_id, participant.id);
+    }
+    if (participant.kind === "cpu" && participant.cpu_strength_tier) {
+      cpuParticipants.push({
+        participant_id: participant.id,
+        tier: participant.cpu_strength_tier,
+      });
+    }
+  }
 
-  const shuffledIds = shuffleParticipants((participants ?? []).map((p) => p.id));
-  const roundPairs = buildRound32Fixtures(shuffledIds);
+  const roundPairs = buildSeededRound32Fixtures({
+    humanParticipantIds,
+    cpuParticipants,
+    qualifiedHumans,
+  });
 
+  const participantById = new Map((participants ?? []).map((participant) => [participant.id, participant]));
   const fixtureRows = roundPairs.map((pair) => {
-    const home = participants?.find((p) => p.id === pair.home_participant_id);
-    const away = participants?.find((p) => p.id === pair.away_participant_id);
-    const homeCpuLineup =
-      home?.kind === "cpu" && home.continental_cpu_team_id
-        ? pickCpuLineupId(lineupsByTeam.get(home.continental_cpu_team_id) ?? [])
-        : null;
-    const awayCpuLineup =
-      away?.kind === "cpu" && away.continental_cpu_team_id
-        ? pickCpuLineupId(lineupsByTeam.get(away.continental_cpu_team_id) ?? [])
-        : null;
+    const home = participantById.get(pair.home_participant_id);
+    const away = participantById.get(pair.away_participant_id);
+    const homeFormation = home?.kind === "cpu" ? pickRandomLineupIndex(3) : null;
+    const awayFormation = away?.kind === "cpu" ? pickRandomLineupIndex(3) : null;
     return {
       tournament_id: tournamentId,
       round: pair.round,
       match_index: pair.match_index,
       home_participant_id: pair.home_participant_id,
       away_participant_id: pair.away_participant_id,
-      home_continental_cpu_lineup_id: homeCpuLineup,
-      away_continental_cpu_lineup_id: awayCpuLineup,
+      home_continental_cpu_lineup_id: null,
+      away_continental_cpu_lineup_id: null,
+      home_cpu_formation_index: homeFormation,
+      away_cpu_formation_index: awayFormation,
       home_lineup_locked: home?.kind === "cpu",
       away_lineup_locked: away?.kind === "cpu",
     };
@@ -296,41 +350,53 @@ async function getContinentalParticipants(
 ): Promise<Map<string, ContinentalParticipantRow>> {
   const { data, error } = await supabase
     .from("continental_participants")
-    .select("id, tournament_id, kind, club_id, continental_cpu_team_id, display_name, bracket_seed, eliminated_round")
+    .select(
+      "id, tournament_id, kind, club_id, continental_cpu_team_id, display_name, bracket_seed, eliminated_round, cpu_strength_tier",
+    )
     .eq("tournament_id", tournamentId);
   if (error) throw error;
   return new Map((data ?? []).map((p) => [p.id as string, p as ContinentalParticipantRow]));
 }
 
+function getCpuPowersFromParticipant(participant: ContinentalParticipantRow, formationIndex: number | null) {
+  if (!participant.cpu_strength_tier) {
+    throw new Error("Continental CPU participant without strength tier.");
+  }
+  const lineups = CONTINENTAL_LINEUPS_BY_TIER[participant.cpu_strength_tier];
+  const lineup = lineups[formationIndex ?? 0] ?? lineups[0];
+  if (!lineup) {
+    throw new Error(`Missing continental lineup for tier ${participant.cpu_strength_tier}.`);
+  }
+  return {
+    ATT: lineup.att,
+    DEF: lineup.def,
+    MID: lineup.mid,
+    display_name: lineup.display_name,
+  };
+}
+
 async function buildContinentalFixtureSide(
-  supabase: SupabaseServiceClient,
   participant: ContinentalParticipantRow,
-  cpuLineupId: string | null,
+  formationIndex: number | null,
+  supabase?: SupabaseServiceClient,
 ): Promise<FixtureSideInput> {
   if (participant.kind === "cpu") {
-    const { data, error } = await supabase
-      .from("continental_cpu_lineups")
-      .select("id, def_stars, mid_stars, att_stars")
-      .eq("id", cpuLineupId ?? "")
-      .maybeSingle<ContinentalLineupRow>();
-    if (error || !data) {
-      throw error ?? new Error("Continental CPU lineup missing.");
-    }
+    const powers = getCpuPowersFromParticipant(participant, formationIndex);
     return {
       canReceiveEvents: false,
       clubId: null,
       lineup: { ATT: [], DEF: [], GK: [], MID: [] },
       participantId: participant.id,
       powers: {
-        ATT: Number(data.att_stars),
-        DEF: Number(data.def_stars),
-        MID: Number(data.mid_stars),
+        ATT: powers.ATT,
+        DEF: powers.DEF,
+        MID: powers.MID,
       },
       zone_players: [],
     };
   }
 
-  if (!participant.club_id) {
+  if (!participant.club_id || !supabase) {
     throw new Error("Human continental participant without club.");
   }
 
@@ -413,6 +479,49 @@ async function buildContinentalFixtureSide(
   };
 }
 
+async function payContinentalEliminationPrize(
+  supabase: SupabaseServiceClient,
+  input: {
+    clubId: string;
+    eliminatedRound: number;
+    gameId: string;
+    seasonNumber: number;
+  },
+) {
+  const prizeAmount = getPrizeForEliminationRound(input.eliminatedRound);
+  if (prizeAmount <= 0) {
+    return;
+  }
+
+  const { data: club } = await supabase.from("clubs").select("money").eq("id", input.clubId).single<{ money: number }>();
+  await supabase
+    .from("clubs")
+    .update({ money: Number(club?.money ?? 0) + prizeAmount })
+    .eq("id", input.clubId);
+  await supabase.from("transactions").insert({
+    game_id: input.gameId,
+    club_id: input.clubId,
+    amount: prizeAmount,
+    reason: "continental_cup_prize",
+    metadata: {
+      eliminated_round: input.eliminatedRound,
+      milestone: input.eliminatedRound === 4 ? "semifinal" : "finalist",
+      season_number: input.seasonNumber,
+    },
+  });
+
+  const headline = getEliminationPrizeHeadline(input.eliminatedRound);
+  if (headline) {
+    await supabase.from("match_news").insert({
+      game_id: input.gameId,
+      club_id: input.clubId,
+      category: "good_news",
+      headline,
+      detail: `+${Math.round(prizeAmount / 1_000_000)}M Praemie`,
+    });
+  }
+}
+
 async function finalizeContinentalTournament(
   supabase: SupabaseServiceClient,
   tournament: { id: string; game_id: string; season_number: number; prize_amount: number },
@@ -426,14 +535,14 @@ async function finalizeContinentalTournament(
     const { data: club } = await supabase.from("clubs").select("money").eq("id", winnerClubId).single<{ money: number }>();
     await supabase
       .from("clubs")
-      .update({ money: Number(club?.money ?? 0) + Number(tournament.prize_amount ?? CONTINENTAL_PRIZE_AMOUNT) })
+      .update({ money: Number(club?.money ?? 0) + CONTINENTAL_PRIZE_WINNER })
       .eq("id", winnerClubId);
     await supabase.from("transactions").insert({
       game_id: tournament.game_id,
       club_id: winnerClubId,
-      amount: Number(tournament.prize_amount ?? CONTINENTAL_PRIZE_AMOUNT),
+      amount: CONTINENTAL_PRIZE_WINNER,
       reason: "continental_cup_prize",
-      metadata: { season_number: tournament.season_number },
+      metadata: { milestone: "winner", season_number: tournament.season_number },
     });
   }
   await supabase
@@ -445,17 +554,14 @@ async function finalizeContinentalTournament(
     club_id: winnerClubId,
     category: "good_news",
     headline: "Continental Cup gewonnen!",
-    detail: `+${Math.round(Number(tournament.prize_amount ?? CONTINENTAL_PRIZE_AMOUNT) / 1_000_000)}M Praemie`,
+    detail: `+${Math.round(CONTINENTAL_PRIZE_WINNER / 1_000_000)}M Praemie`,
   });
   await touchGameSave(supabase, tournament.game_id, userId);
 }
 
 async function resolveContinentalFixtureServer(
   supabase: SupabaseServiceClient,
-  fixture: ContinentalFixtureRow & {
-    home_continental_cpu_lineup_id?: string | null;
-    away_continental_cpu_lineup_id?: string | null;
-  },
+  fixture: ContinentalFixtureRow,
   participants: Map<string, ContinentalParticipantRow>,
   game: LobbyGame,
   userId: string,
@@ -467,8 +573,8 @@ async function resolveContinentalFixtureServer(
   }
 
   const [homeSide, awaySide] = await Promise.all([
-    buildContinentalFixtureSide(supabase, home, fixture.home_continental_cpu_lineup_id ?? null),
-    buildContinentalFixtureSide(supabase, away, fixture.away_continental_cpu_lineup_id ?? null),
+    buildContinentalFixtureSide(home, fixture.home_cpu_formation_index, supabase),
+    buildContinentalFixtureSide(away, fixture.away_cpu_formation_index, supabase),
   ]);
 
   const resolution = resolveFixture({
@@ -486,6 +592,7 @@ async function resolveContinentalFixtureServer(
         : homeSide.participantId;
 
   const loserId = winnerParticipantId === home.id ? away.id : home.id;
+  const loser = participants.get(loserId);
 
   const emptyLineupPlayers = Promise.resolve({ data: [] as LineupSnapshotClubPlayerRow[] });
   const [homePlayers, awayPlayers] = await Promise.all([
@@ -547,6 +654,15 @@ async function resolveContinentalFixtureServer(
       prize_amount: number;
     }>();
 
+  if (loser?.kind === "human" && loser.club_id && tournament) {
+    await payContinentalEliminationPrize(supabase, {
+      clubId: loser.club_id,
+      eliminatedRound: fixture.round,
+      gameId: tournament.game_id,
+      seasonNumber: tournament.season_number,
+    });
+  }
+
   if (tournament && isContinentalFinalRound(fixture.round)) {
     await finalizeContinentalTournament(supabase, tournament, winnerParticipantId, participants, userId);
     return;
@@ -585,7 +701,10 @@ export async function isContinentalTournamentComplete(supabase: SupabaseServiceC
     .eq("game_id", gameId)
     .eq("season_number", seasonNumber)
     .maybeSingle<{ status: string }>();
-  return data?.status === "completed";
+  if (!data) {
+    return true;
+  }
+  return data.status === "completed";
 }
 
 export async function initializeContinentalCupAction(formData: FormData) {
@@ -667,9 +786,9 @@ export async function resolveContinentalFixtureAction(formData: FormData) {
 
   const { data: fixture, error } = await supabase
     .from("continental_fixtures")
-    .select(`${FIXTURE_SELECT}, tournament_id, home_continental_cpu_lineup_id, away_continental_cpu_lineup_id`)
+    .select(`${FIXTURE_SELECT}, tournament_id`)
     .eq("id", fixtureId)
-    .maybeSingle<ContinentalFixtureRow & { tournament_id: string; home_continental_cpu_lineup_id: string | null; away_continental_cpu_lineup_id: string | null }>();
+    .maybeSingle<ContinentalFixtureRow & { tournament_id: string }>();
   if (error || !fixture || fixture.status === "completed") {
     redirect(`/games/${roomCode}?view=continental`);
   }
@@ -765,9 +884,6 @@ export async function advanceContinentalRoundAction(formData: FormData) {
   }
 
   const participants = await getContinentalParticipants(supabase, tournament.id);
-  const cpuTeamIds = [...new Set([...participants.values()].flatMap((p) => (p.continental_cpu_team_id ? [p.continental_cpu_team_id] : [])))];
-  const lineupsByTeam = await getContinentalLineupsByTeamId(supabase, cpuTeamIds);
-
   const nextPairs = buildNextRoundFixtures(currentRound, winners);
   const fixtureRows = nextPairs.map((pair) => {
     const home = participants.get(pair.home_participant_id);
@@ -778,14 +894,10 @@ export async function advanceContinentalRoundAction(formData: FormData) {
       match_index: pair.match_index,
       home_participant_id: pair.home_participant_id,
       away_participant_id: pair.away_participant_id,
-      home_continental_cpu_lineup_id:
-        home?.kind === "cpu" && home.continental_cpu_team_id
-          ? pickCpuLineupId(lineupsByTeam.get(home.continental_cpu_team_id) ?? [])
-          : null,
-      away_continental_cpu_lineup_id:
-        away?.kind === "cpu" && away.continental_cpu_team_id
-          ? pickCpuLineupId(lineupsByTeam.get(away.continental_cpu_team_id) ?? [])
-          : null,
+      home_continental_cpu_lineup_id: null,
+      away_continental_cpu_lineup_id: null,
+      home_cpu_formation_index: home?.kind === "cpu" ? pickRandomLineupIndex(3) : null,
+      away_cpu_formation_index: away?.kind === "cpu" ? pickRandomLineupIndex(3) : null,
       home_lineup_locked: home?.kind === "cpu",
       away_lineup_locked: away?.kind === "cpu",
     };

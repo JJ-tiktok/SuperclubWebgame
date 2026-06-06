@@ -3,8 +3,8 @@
 import type { ReactNode } from "react";
 import { Trophy } from "lucide-react";
 import { Panel, PanelDescription, PanelHeader, PanelTitle } from "@/components/ui/panel";
-import { getContinentalRoundLabel } from "@/lib/lobby/continental-cup";
-import type { ContinentalTournamentSnapshot, LobbyClub } from "@/lib/lobby/types";
+import { CONTINENTAL_CPU_TIER_LABEL, getContinentalRoundLabel } from "@/lib/lobby/continental-cup";
+import type { ContinentalParticipantSnapshot, ContinentalTournamentSnapshot, LobbyClub } from "@/lib/lobby/types";
 import { cn } from "@/lib/utils";
 import { buildSymmetricBracket, fixtureInvolvesClub, type BracketSlot } from "./continental-bracket-utils";
 
@@ -54,12 +54,14 @@ function BracketMatchCard({
           isOwn={home.club_id === ownClubId}
           isWinner={homeWon}
           name={home.display_name}
+          participant={home}
           score={isCompleted ? fixture.home_score : null}
         />
         <BracketTeamRow
           isOwn={away.club_id === ownClubId}
           isWinner={awayWon}
           name={away.display_name}
+          participant={away}
           score={isCompleted ? fixture.away_score : null}
         />
       </div>
@@ -69,15 +71,22 @@ function BracketMatchCard({
 
 function BracketTeamRow({
   name,
+  participant,
   score,
   isOwn,
   isWinner,
 }: {
   name: string;
+  participant: ContinentalParticipantSnapshot;
   score: number | null | undefined;
   isOwn: boolean;
   isWinner: boolean;
 }) {
+  const tierLabel =
+    participant.kind === "cpu" && participant.cpu_strength_tier
+      ? CONTINENTAL_CPU_TIER_LABEL[participant.cpu_strength_tier]
+      : null;
+
   return (
     <div
       className={cn(
@@ -87,8 +96,9 @@ function BracketTeamRow({
         isOwn && !isWinner && score == null && "text-[var(--club-color)]",
       )}
     >
-      <span className="truncate" title={name}>
+      <span className="min-w-0 truncate" title={tierLabel ? `${name} (${tierLabel})` : name}>
         {name}
+        {tierLabel ? <span className="ml-1 text-[9px] font-normal normal-case text-zinc-500">({tierLabel})</span> : null}
       </span>
       <span className="shrink-0 font-bold">{score != null ? score : ""}</span>
     </div>

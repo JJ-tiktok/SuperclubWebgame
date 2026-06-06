@@ -1,3 +1,5 @@
+import { isContinentalQualified, shouldRunContinentalCup } from "@/lib/lobby/continental-cup";
+import { normalizeClubStatus } from "@/lib/lobby/club-status";
 import { getNextLobbyPhase } from "@/lib/lobby/phases";
 import type {
   ClubFinanceSnapshot,
@@ -19,17 +21,23 @@ type BuildSeasonEndSummaryInput = {
 
 export type SeasonEndSummaryModel = {
   completedFixtureCount: number;
+  continentalCupSkipped: boolean;
   finance: ClubFinanceSnapshot | null;
   goesToContinentalCup: boolean;
   hasSeasonData: boolean;
   highlightNews: MatchNewsSnapshot[];
   leagueWinner: SeasonStandingSnapshot | null;
   nextPhase: ReturnType<typeof getNextLobbyPhase>;
+  ownClubQualified: boolean;
   ownStanding: ManagerStandingSnapshot | null;
   setupError?: string;
   topManagers: ManagerStandingSnapshot[];
   totalFixtureCount: number;
 };
+
+function hasAnyContinentalQualifier(standings: ManagerStandingSnapshot[]) {
+  return standings.some((standing) => isContinentalQualified(normalizeClubStatus(standing.status)));
+}
 
 export function buildSeasonEndSummaryModel({
   finance,
@@ -38,17 +46,21 @@ export function buildSeasonEndSummaryModel({
   season,
   settings,
 }: BuildSeasonEndSummaryInput): SeasonEndSummaryModel {
+  const seasonNumber = Number(settings.seasonNumber ?? 1);
+  const cupScheduled = shouldRunContinentalCup(seasonNumber, settings);
   const nextPhase = getNextLobbyPhase("season_end", settings);
 
   if (!season || season.manager_standings.length === 0) {
     return {
       completedFixtureCount: 0,
+      continentalCupSkipped: false,
       finance: finance ?? null,
       goesToContinentalCup: nextPhase === "champions_league",
       hasSeasonData: false,
       highlightNews: [],
       leagueWinner: null,
       nextPhase,
+      ownClubQualified: false,
       ownStanding: null,
       setupError: season?.setup_error,
       topManagers: [],
@@ -62,15 +74,21 @@ export function buildSeasonEndSummaryModel({
     : null;
   const leagueWinner = [...season.standings].sort((a, b) => a.rank - b.rank)[0] ?? null;
   const completedFixtureCount = season.fixtures.filter((fixture) => fixture.status === "completed").length;
+  const hasQualifier = hasAnyContinentalQualifier(season.manager_standings);
+  const ownClubQualified = ownStanding
+    ? isContinentalQualified(normalizeClubStatus(ownStanding.status))
+    : false;
 
   return {
     completedFixtureCount,
+    continentalCupSkipped: cupScheduled && !hasQualifier,
     finance: finance ?? null,
-    goesToContinentalCup: nextPhase === "champions_league",
+    goesToContinentalCup: cupScheduled && hasQualifier,
     hasSeasonData: true,
     highlightNews: getSeasonHighlightNews(matchNews, season, ownClub?.id),
     leagueWinner,
-    nextPhase,
+    nextPhase: cupScheduled && !hasQualifier ? "off_season" : nextPhase,
+    ownClubQualified,
     ownStanding,
     setupError: season.setup_error,
     topManagers,

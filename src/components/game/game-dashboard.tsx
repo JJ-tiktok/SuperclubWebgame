@@ -780,10 +780,18 @@ function SeasonEndSummary({
     season: snapshot.season,
     settings: snapshot.game.settings,
   });
-  const nextStepTitle = summary.goesToContinentalCup ? "Naechster Schritt: Continental Cup" : "Naechster Schritt: Neue Off-Season";
+  const nextStepTitle = summary.goesToContinentalCup
+    ? "Naechster Schritt: Continental Cup"
+    : summary.continentalCupSkipped
+      ? "Naechster Schritt: Off-Season (Cup entfaellt)"
+      : "Naechster Schritt: Neue Off-Season";
   const nextStepText = summary.goesToContinentalCup
-    ? "Nach der Bestaetigung wechselt der Host in den Continental Cup. Danach startet die naechste Off-Season."
-    : `Nach der Bestaetigung startet Saison ${seasonNumber + 1} mit der Finanzphase der neuen Off-Season.`;
+    ? summary.ownClubQualified
+      ? "Du bist fuer den Continental Cup qualifiziert. Nach der Bestaetigung wechselt der Host ins Turnier."
+      : "Kein qualifizierter Club von dir — der Continental Cup laeuft mit den anderen Teilnehmern und CPU-Teams."
+    : summary.continentalCupSkipped
+      ? "In dieser geraden Saison hat kein Club mindestens Mittleren Tabellenplatz erreicht. Der Cup wird uebersprungen."
+      : `Nach der Bestaetigung startet Saison ${seasonNumber + 1} mit der Finanzphase der neuen Off-Season.`;
 
   if (!summary.hasSeasonData) {
     return (
@@ -808,8 +816,12 @@ function SeasonEndSummary({
         <div>
           <div className="flex flex-wrap items-center gap-2">
             <PanelTitle>Saison abgeschlossen</PanelTitle>
-            <Badge tone={summary.goesToContinentalCup ? "blue" : "green"}>
-              {summary.goesToContinentalCup ? "Continental Cup folgt" : "Off-Season folgt"}
+            <Badge tone={summary.goesToContinentalCup ? "blue" : summary.continentalCupSkipped ? "neutral" : "green"}>
+              {summary.goesToContinentalCup
+                ? "Continental Cup folgt"
+                : summary.continentalCupSkipped
+                  ? "Cup entfaellt"
+                  : "Off-Season folgt"}
             </Badge>
           </div>
           <PanelDescription>Saison {seasonNumber} ist ausgewertet. Markiere dich als Fertig, danach kann der Host fortsetzen.</PanelDescription>

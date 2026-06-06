@@ -1,15 +1,28 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  assignContinentalCpuSlots,
+  buildCpuOnlyTierPool,
   buildNextRoundFixtures,
   buildRound32Fixtures,
+  buildSeededRound32Fixtures,
+  classifyQualifiedHumans,
   CONTINENTAL_BRACKET_SIZE,
+  CONTINENTAL_LINEUPS_BY_TIER,
+  CONTINENTAL_PRIZE_FINALIST,
+  CONTINENTAL_PRIZE_SEMIFINAL,
+  CONTINENTAL_PRIZE_WINNER,
+  getContinentalLineupStars,
+  getHumanLeagueRank,
   getNextContinentalRound,
+  getPrizeForEliminationRound,
   isContinentalFinalRound,
+  isContinentalQualified,
   requiredContinentalCpuCount,
   shouldRunContinentalCup,
   shuffleParticipants,
 } from "@/lib/lobby/continental-cup";
+import type { SeasonStandingSnapshot } from "@/lib/lobby/types";
 import { getNextLobbyPhase, getSettingsForNextPhase, shouldAdvanceSeason } from "@/lib/lobby/phases";
 
 describe("Continental Cup", () => {
@@ -62,7 +75,205 @@ describe("Continental Cup", () => {
     assert.equal(next.length, 1);
     assert.equal(next[0]?.round, 2);
   });
+
+  it("checks continental qualification by club status", () => {
+    assert.equal(isContinentalQualified("mid_table"), true);
+    assert.equal(isContinentalQualified("title_contender"), true);
+    assert.equal(isContinentalQualified("established"), false);
+    assert.equal(isContinentalQualified("newly_promoted"), false);
+  });
+
+  it("ranks human clubs only in the league table", () => {
+    const standings: SeasonStandingSnapshot[] = [
+      {
+        draws: 0,
+        fixture_points_against: 0,
+        fixture_points_for: 0,
+        losses: 0,
+        match_points: 12,
+        participant: {
+          display_name: "CPU 1",
+          game_id: "g1",
+          id: "cpu-1",
+          kind: "cpu",
+          season_number: 2,
+        },
+        participant_id: "cpu-1",
+        played: 5,
+        rank: 1,
+        season_number: 2,
+        third_points_against: 0,
+        third_points_for: 0,
+        wins: 4,
+      },
+      {
+        draws: 0,
+        fixture_points_against: 0,
+        fixture_points_for: 0,
+        losses: 1,
+        match_points: 9,
+        participant: {
+          club_id: "human-a",
+          display_name: "Human A",
+          game_id: "g1",
+          id: "human-a",
+          kind: "human",
+          season_number: 2,
+        },
+        participant_id: "human-a",
+        played: 5,
+        rank: 2,
+        season_number: 2,
+        third_points_against: 0,
+        third_points_for: 0,
+        wins: 3,
+      },
+      {
+        draws: 0,
+        fixture_points_against: 0,
+        fixture_points_for: 0,
+        losses: 2,
+        match_points: 6,
+        participant: {
+          club_id: "human-b",
+          display_name: "Human B",
+          game_id: "g1",
+          id: "human-b",
+          kind: "human",
+          season_number: 2,
+        },
+        participant_id: "human-b",
+        played: 5,
+        rank: 3,
+        season_number: 2,
+        third_points_against: 0,
+        third_points_for: 0,
+        wins: 2,
+      },
+    ];
+
+    assert.equal(getHumanLeagueRank(standings, "human-a"), 1);
+    assert.equal(getHumanLeagueRank(standings, "human-b"), 2);
+  });
+
+  it("assigns underdog opponents to top-2 human league ranks", () => {
+    const standings: SeasonStandingSnapshot[] = [
+      leagueStanding(1, "human-top", "human-top"),
+      leagueStanding(2, "human-second", "human-second"),
+      leagueStanding(3, "human-third", "human-third"),
+    ];
+
+    const qualified = classifyQualifiedHumans(
+      [
+        { club_id: "human-top", display_name: "Top" },
+        { club_id: "human-second", display_name: "Second" },
+        { club_id: "human-third", display_name: "Third" },
+      ],
+      standings,
+    );
+
+    assert.deepEqual(
+      qualified.map((entry) => [entry.club_id, entry.opponent_tier]),
+      [
+        ["human-top", "underdog"],
+        ["human-second", "underdog"],
+        ["human-third", "schwer"],
+      ],
+    );
+  });
+
+  it("builds CPU-only pool with 1-2 underdogs and hard tiers", () => {
+    const tiers = buildCpuOnlyTierPool(28, () => 0.1);
+    assert.equal(tiers.length, 28);
+    const underdogs = tiers.filter((tier) => tier === "underdog").length;
+    assert.ok(underdogs === 1 || underdogs === 2);
+    assert.equal(
+      tiers.filter((tier) => tier !== "underdog").length,
+      28 - underdogs,
+    );
+  });
+
+  it("seeds round 32 with human tier opponents and cpu-only matches", () => {
+    const qualifiedHumans = classifyQualifiedHumans(
+      [
+        { club_id: "human-top", display_name: "Top" },
+        { club_id: "human-second", display_name: "Second" },
+      ],
+      [leagueStanding(1, "human-top", "human-top"), leagueStanding(2, "human-second", "human-second")],
+    );
+    const cpuCatalog = Array.from({ length: 30 }, (_, index) => ({
+      id: `cpu-${index}`,
+      display_name: `CPU ${index}`,
+    }));
+    const cpuSlots = assignContinentalCpuSlots(qualifiedHumans, cpuCatalog, () => 0.25);
+
+    const humanParticipantIds = new Map([
+      ["human-top", "p-human-top"],
+      ["human-second", "p-human-second"],
+    ]);
+    const cpuParticipants = cpuSlots.map((slot, index) => ({
+      participant_id: `p-cpu-${index}`,
+      tier: slot.tier,
+    }));
+
+    const fixtures = buildSeededRound32Fixtures({
+      humanParticipantIds,
+      cpuParticipants,
+      qualifiedHumans,
+      random: () => 0.5,
+    });
+
+    assert.equal(fixtures.length, 16);
+    const humanFixture = fixtures.find(
+      (fixture) => fixture.home_participant_id === "p-human-top" || fixture.away_participant_id === "p-human-top",
+    );
+    assert.ok(humanFixture);
+    const opponentId =
+      humanFixture!.home_participant_id === "p-human-top"
+        ? humanFixture!.away_participant_id
+        : humanFixture!.home_participant_id;
+    const opponent = cpuParticipants.find((cpu) => cpu.participant_id === opponentId);
+    assert.equal(opponent?.tier, "underdog");
+  });
+
+  it("exposes tier lineup stars", () => {
+    const eliteOffensive = getContinentalLineupStars("elite", 2);
+    assert.deepEqual(eliteOffensive, { def: 26, mid: 28, att: 30, display_name: "Offensiv" });
+    assert.equal(CONTINENTAL_LINEUPS_BY_TIER.underdog[0]?.def, 15);
+  });
+
+  it("maps elimination prizes", () => {
+    assert.equal(getPrizeForEliminationRound(8), 0);
+    assert.equal(getPrizeForEliminationRound(4), CONTINENTAL_PRIZE_SEMIFINAL);
+    assert.equal(getPrizeForEliminationRound(2), CONTINENTAL_PRIZE_FINALIST);
+    assert.equal(CONTINENTAL_PRIZE_WINNER, 100_000_000);
+  });
 });
+
+function leagueStanding(rank: number, clubId: string, displayName: string): SeasonStandingSnapshot {
+  return {
+    draws: 0,
+    fixture_points_against: 0,
+    fixture_points_for: 0,
+    losses: 0,
+    match_points: 12,
+    participant: {
+      club_id: clubId,
+      display_name: displayName,
+      game_id: "g1",
+      id: clubId,
+      kind: "human",
+      season_number: 2,
+    },
+    participant_id: clubId,
+    played: 5,
+    rank,
+    season_number: 2,
+    third_points_against: 0,
+    third_points_for: 0,
+    wins: 4,
+  };
+}
 
 describe("Continental Cup phase flow", () => {
   const baseSettings = {

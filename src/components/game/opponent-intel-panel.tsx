@@ -93,7 +93,7 @@ export function OpponentIntelPanel({
   }
 
   return (
-    <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+    <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="intel">
       <PanelHeader>
         <div>
           <PanelTitle>Analyse: {opponentName}</PanelTitle>

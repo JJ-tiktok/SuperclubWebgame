@@ -27,7 +27,7 @@ export function CaptainPanel({
   const captain = sorted.find((cp) => cp.id === captainClubPlayerId) ?? null;
 
   return (
-    <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+    <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="captain">
       <PanelHeader>
         <div>
           <PanelTitle>Captain Boost</PanelTitle>

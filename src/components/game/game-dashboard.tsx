@@ -124,6 +124,7 @@ import {
   type EndgameFacilityAction,
 } from "@/lib/lobby/endgame-facilities";
 import { ArchetypeMatchupGuide } from "@/components/game/shared/archetype-matchup-guide";
+import { ViewGuidePanel } from "@/components/game/shared/view-guide-panel";
 import { ArchetypeScoutCard, buildArchetypeScoutFromSquad, SquadArchetypeOverview } from "@/components/game/shared/squad-archetype-overview";
 import { FixtureSideCard } from "@/components/game/shared/fixture-side-card";
 import { MatchResultDetail, parseFixtureResult, type FixtureThird } from "@/components/game/shared/match-result-detail";
@@ -706,6 +707,7 @@ function DashboardView({
 
   return (
     <div className="space-y-4">
+      <ViewGuidePanel roomCode={snapshot.game.room_code} view="dashboard" />
       {snapshot.game.phase === "season_end" ? (
         <SeasonEndSummary isHost={isHost} ownClub={ownClub} snapshot={snapshot} />
       ) : null}
@@ -1027,18 +1029,21 @@ function DraftView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
 
   if (!draft) {
     return (
-      <Panel className="border-[var(--club-border)] bg-zinc-950/85">
-        <PanelHeader>
-          <div>
-            <PanelTitle>Draft</PanelTitle>
-            <PanelDescription>Das Draftboard wird vorbereitet.</PanelDescription>
+      <div className="space-y-4">
+        <ViewGuidePanel roomCode={snapshot.game.room_code} view="draft" />
+        <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+          <PanelHeader>
+            <div>
+              <PanelTitle>Draft</PanelTitle>
+              <PanelDescription>Das Draftboard wird vorbereitet.</PanelDescription>
+            </div>
+            <ClipboardList size={18} className="text-[var(--club-color)]" aria-hidden />
+          </PanelHeader>
+          <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-4 text-sm text-zinc-300">
+            Starte das Spiel aus der Lobby heraus. Danach erzeugt der Server automatisch ein Board mit 16 Spielern.
           </div>
-          <ClipboardList size={18} className="text-[var(--club-color)]" aria-hidden />
-        </PanelHeader>
-        <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-4 text-sm text-zinc-300">
-          Starte das Spiel aus der Lobby heraus. Danach erzeugt der Server automatisch ein Board mit 16 Spielern.
-        </div>
-      </Panel>
+        </Panel>
+      </div>
     );
   }
 
@@ -1066,7 +1071,8 @@ function DraftView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
 
   return (
     <div className="space-y-4">
-      <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+      <ViewGuidePanel roomCode={snapshot.game.room_code} view="draft" />
+      <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="board">
         <PanelHeader>
           <div>
             <PanelTitle>Draft Board</PanelTitle>
@@ -1096,7 +1102,7 @@ function DraftView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
       </Panel>
 
       <div className="grid gap-4 xl:grid-cols-[1fr_320px]">
-        <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+        <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="pool">
           <PanelHeader>
             <div>
               <PanelTitle>Verfuegbare Spieler</PanelTitle>
@@ -1188,7 +1194,7 @@ function DraftView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
             </div>
           </Panel>
 
-          <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+          <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="history">
             <PanelHeader>
               <div>
                 <PanelTitle>Pick-Historie</PanelTitle>
@@ -1265,7 +1271,8 @@ function TrainingView({
 
   return (
     <div className="space-y-4">
-      <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+      <ViewGuidePanel roomCode={snapshot.game.room_code} view="training" />
+      <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="center">
         <PanelHeader>
           <div>
             <PanelTitle>Trainingszentrum</PanelTitle>
@@ -1310,7 +1317,7 @@ function TrainingView({
       </Panel>
 
       <div className="grid gap-4 xl:grid-cols-[1fr_340px]">
-        <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+        <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="squad">
           <PanelHeader>
             <div>
               <PanelTitle>Kadertraining</PanelTitle>
@@ -1384,7 +1391,7 @@ function TrainingView({
           )}
         </Panel>
 
-        <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+        <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="log">
           <PanelHeader>
             <div>
               <PanelTitle>Trainingslog</PanelTitle>
@@ -1476,6 +1483,7 @@ function ScoutingView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub:
 
   return (
     <div className="space-y-4">
+      <ViewGuidePanel roomCode={snapshot.game.room_code} view="scouting" />
       {scoutingError ? (
         <div className="rounded-md border border-amber-700 bg-amber-950/40 p-3 text-sm text-amber-100">
           Kauf nicht moeglich: {getScoutingActionLabel(scoutingError)}
@@ -1502,7 +1510,7 @@ function ScoutingView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub:
         </div>
       ) : null}
 
-      <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+      <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="network">
         <PanelHeader>
           <div>
             <PanelTitle>Scouting Network</PanelTitle>
@@ -1520,7 +1528,7 @@ function ScoutingView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub:
       </Panel>
 
       <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
-        <Panel className="overflow-hidden border-[var(--club-border)] bg-zinc-950/85">
+        <Panel className="overflow-hidden border-[var(--club-border)] bg-zinc-950/85" id="draws">
           <PanelHeader>
             <div>
               <PanelTitle>The World of Scouting</PanelTitle>
@@ -1564,7 +1572,7 @@ function ScoutingView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub:
           </div>
         </Panel>
 
-        <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+        <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="progress">
           <PanelHeader>
             <div>
               <PanelTitle>Fortschritt</PanelTitle>
@@ -1769,6 +1777,7 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
 
   return (
     <div className="space-y-4">
+      <ViewGuidePanel roomCode={snapshot.game.room_code} view="transfer" />
       <Panel className="border-[var(--club-border)] bg-zinc-950/85">
         <PanelHeader>
           <div>
@@ -1797,7 +1806,7 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
         </Panel>
       ) : null}
 
-      <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+      <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="pool">
         <PanelHeader>
           <div>
             <PanelTitle>Eigener Kader</PanelTitle>
@@ -1879,7 +1888,7 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
       </Panel>
 
       <div className="grid gap-4 xl:grid-cols-2">
-        <Panel className="border-zinc-800 bg-zinc-950/75">
+        <Panel className="border-zinc-800 bg-zinc-950/75" id="incoming">
           <PanelHeader>
             <div>
               <PanelTitle>Eingehende Angebote</PanelTitle>
@@ -1899,7 +1908,7 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
             </div>
           )}
         </Panel>
-        <Panel className="border-zinc-800 bg-zinc-950/75">
+        <Panel className="border-zinc-800 bg-zinc-950/75" id="outgoing">
           <PanelHeader>
             <div>
               <PanelTitle>Ausgehende Anfragen</PanelTitle>
@@ -2230,7 +2239,8 @@ function DeadlineView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub:
 
   return (
     <div className="space-y-4">
-      <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+      <ViewGuidePanel roomCode={snapshot.game.room_code} view="deadline" />
+      <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="overview">
         <PanelHeader>
           <div>
             <PanelTitle>Deadline Day</PanelTitle>
@@ -2273,7 +2283,7 @@ function DeadlineView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub:
       ) : null}
 
       {activeAuction ? (
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]" id="active">
           <Panel className="border-[var(--club-border)] bg-zinc-950/85">
             <PanelHeader>
               <div>
@@ -2391,7 +2401,7 @@ function DeadlineAuctionList({ deadline, snapshot }: { deadline: NonNullable<Lob
   const clubNames = new Map(snapshot.clubs.map((club) => [club.id, club.club_name]));
 
   return (
-    <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+    <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="list">
       <PanelHeader>
         <div>
           <PanelTitle>Auktionsliste</PanelTitle>
@@ -2482,6 +2492,7 @@ function LineupView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; sna
 
   return (
     <div className="space-y-4">
+      <ViewGuidePanel roomCode={snapshot.game.room_code} view="lineup" />
       <Panel className="border-[var(--club-border)] bg-zinc-950/85">
         <PanelHeader>
           <div>
@@ -2515,15 +2526,17 @@ function LineupView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; sna
         />
       ) : null}
 
-      <GameLineupBoard
-        archetypesEnabled={snapshot.game.settings.archetypes_enabled !== false}
-        cards={lineupCards}
-        gameId={snapshot.game.id}
-        roomCode={snapshot.game.room_code}
-        staffEffects={staffEffects}
-        captainId={ownClub.captain_club_player_id ?? null}
-        captainBoost={Math.trunc(Number(ownClub.captain_boost_rank ?? 0))}
-      />
+      <div id="board">
+        <GameLineupBoard
+          archetypesEnabled={snapshot.game.settings.archetypes_enabled !== false}
+          cards={lineupCards}
+          gameId={snapshot.game.id}
+          roomCode={snapshot.game.room_code}
+          staffEffects={staffEffects}
+          captainId={ownClub.captain_club_player_id ?? null}
+          captainBoost={Math.trunc(Number(ownClub.captain_boost_rank ?? 0))}
+        />
+      </div>
     </div>
   );
 }
@@ -2553,8 +2566,18 @@ function ClubOverviewView({
     );
   }
 
+  const groundsHiddenSections = [
+    ...(snapshot.game.settings.sponsoring_enabled === false ? ["sponsoring"] : []),
+    ...(!overview.open_staff_offer ? ["staff"] : []),
+  ];
+
   return (
     <div className="space-y-4">
+      <ViewGuidePanel
+        hiddenSectionIds={focus === "grounds" ? groundsHiddenSections : undefined}
+        roomCode={snapshot.game.room_code}
+        view={focus === "squad" ? "squad" : "grounds"}
+      />
       {focus === "grounds" ? <ClubFinancePanel ownClub={ownClub} overview={overview} snapshot={snapshot} /> : null}
       {focus === "grounds" ? <FacilityUpgradePanel ownClub={ownClub} overview={overview} snapshot={snapshot} /> : null}
       {focus === "grounds" ? (
@@ -2610,7 +2633,7 @@ function ClubFinancePanel({
     : `Manager-Rang #${managerRank} · letztes Saisonende`;
 
   return (
-    <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+    <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="finance">
       <PanelHeader>
         <div>
           <PanelTitle>{ownClub.club_name}</PanelTitle>
@@ -2835,7 +2858,7 @@ function FacilityUpgradePanel({
   ];
 
   return (
-    <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+    <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="facilities">
       <PanelHeader>
         <div>
           <PanelTitle>Vereinsgelaende</PanelTitle>
@@ -3130,7 +3153,7 @@ function SquadHubPanel({
 
   return (
     <div className="space-y-4">
-      <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+      <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="hub">
         <PanelHeader>
           <div>
             <PanelTitle>Kaderuebersicht</PanelTitle>
@@ -3163,7 +3186,11 @@ function SquadHubPanel({
         </div>
       </Panel>
 
-      {archetypesEnabled ? <ArchetypeMatchupGuide /> : null}
+      {archetypesEnabled ? (
+        <div id="archetypes">
+          <ArchetypeMatchupGuide />
+        </div>
+      ) : null}
 
       {ownSelected ? (
         <SquadPanel archetypesEnabled={archetypesEnabled} ownClub={ownClub} overview={overview} snapshot={snapshot} title={ownClub.club_name} />
@@ -3208,7 +3235,7 @@ function OtherClubSquadPanel({
         : "Angebote sind erst in der Offseason moeglich.";
 
   return (
-    <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+    <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="roster">
       <PanelHeader>
         <div>
           <PanelTitle>{selectedSquad.club.club_name}</PanelTitle>
@@ -3432,7 +3459,7 @@ function SquadPanel({
   const nlzRespecAvailable = overview.nlz_archetype_respec_available ?? false;
 
   return (
-    <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+    <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="roster">
       <PanelHeader>
         <div>
           <PanelTitle>{title}</PanelTitle>
@@ -3732,7 +3759,7 @@ function StaffMarketView({
   snapshot: LobbySnapshot;
 }) {
   return (
-    <Panel className="border-[var(--club-color)] bg-zinc-950/85">
+    <Panel className="border-[var(--club-color)] bg-zinc-950/85" id="staff">
       <PanelHeader>
         <div>
           <PanelTitle>Mitarbeitermarkt</PanelTitle>
@@ -3881,7 +3908,8 @@ function MatchdayView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub:
 
   return (
     <div className="space-y-4">
-      <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+      <ViewGuidePanel roomCode={snapshot.game.room_code} view="matchday" />
+      <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="overview">
         <PanelHeader>
           <div>
             <PanelTitle>Spieltagsuebersicht</PanelTitle>
@@ -3937,7 +3965,18 @@ function MatchdayView({ isHost, ownClub, snapshot }: { isHost: boolean; ownClub:
         </div>
       ) : null}
 
-      <div className="grid gap-4">
+      <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="secret-weapons">
+        <PanelHeader>
+          <div>
+            <PanelTitle>Geheimwaffen</PanelTitle>
+            <PanelDescription>
+              Nach dem Lineup-Lock findest du Geheimwaffen direkt in deiner Spielkarte unten — vor dem Anpfiff einsetzen.
+            </PanelDescription>
+          </div>
+        </PanelHeader>
+      </Panel>
+
+      <div className="grid gap-4" id="fixtures">
         {matchdayFixtures.map((fixture) => (
           <FixtureCard fixture={fixture} isHost={isHost} key={fixture.id} ownClub={ownClub} snapshot={snapshot} />
         ))}
@@ -4402,7 +4441,8 @@ function TableView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
 
   return (
     <div className="space-y-4">
-      <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+      <ViewGuidePanel roomCode={snapshot.game.room_code} view="table" />
+      <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="positions">
         <PanelHeader>
           <div>
             <PanelTitle>Superclub-Positionsboard</PanelTitle>
@@ -4551,7 +4591,7 @@ function TableView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
 
       {hasActiveSeason ? (
         <>
-          <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+          <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="managers">
             <PanelHeader>
               <div>
                 <PanelTitle>Managerwertung</PanelTitle>
@@ -4591,7 +4631,7 @@ function TableView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
             </div>
           </Panel>
 
-          <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+          <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="league">
             <PanelHeader>
               <div>
                 <PanelTitle>Liga-Tabelle</PanelTitle>
@@ -4675,6 +4715,7 @@ function SettingsView({
 
   return (
     <div className="space-y-4">
+      <ViewGuidePanel roomCode={snapshot.game.room_code} view="settings" />
       <Panel className="border-[var(--club-border)] bg-zinc-950/85">
         <PanelHeader>
           <div>

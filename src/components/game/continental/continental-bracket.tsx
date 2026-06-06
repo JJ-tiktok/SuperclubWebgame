@@ -232,7 +232,7 @@ export function ContinentalBracket({
   });
 
   return (
-    <Panel className="border-zinc-800 bg-zinc-950/70">
+    <Panel className="border-zinc-800 bg-zinc-950/70" id="bracket">
       <PanelHeader>
         <div>
           <PanelTitle>Turnierbaum</PanelTitle>

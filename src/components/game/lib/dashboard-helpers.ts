@@ -27,7 +27,7 @@ export type GameView =
   | "deadline"
   | "continental";
 
-const GAME_VIEWS: GameView[] = [
+export const GAME_VIEWS: GameView[] = [
   "dashboard",
   "squad",
   "grounds",

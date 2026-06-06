@@ -88,6 +88,29 @@ describe("Player card rendering data", () => {
     assert.equal(getPositionGroup(["GK", "DEF", "MID", "ATT"]), "ALL");
   });
 
+  it("ignores stale synced database prices when mapping draft players", () => {
+    const card = mapDbPlayerToPlayerCardData({
+      age_group: "prime",
+      attacker_archetype: null,
+      base_stars: 1,
+      chemistry_left: false,
+      chemistry_right: false,
+      defender_archetype: "beta",
+      display_name: "Jonas Mueller",
+      eligible_positions: ["DEF"],
+      id: "jonas",
+      minimum_bid: 30_000_000,
+      position: "DEF",
+      potential_stars: 0,
+      scouting_price: 15_000_000,
+      skill_max: 5,
+    } satisfies DraftPlayerRow);
+
+    assert.equal(card.market.transferFee, 10);
+    assert.equal(card.market.scoutingFee, 5);
+    assert.equal(getCardSkillRating(card), 1);
+  });
+
   it("treats ALL players as archetype-neutral allrounders", () => {
     const card = mapDbPlayerToPlayerCardData({
       age_group: "prime",

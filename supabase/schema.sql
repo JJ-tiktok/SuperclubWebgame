@@ -80,6 +80,12 @@ create table public.game_events (
 create index game_events_game_seq_idx
 on public.game_events (game_id, seq);
 
+create index game_events_game_seq_desc_idx
+on public.game_events (game_id, seq desc);
+
+create index game_events_game_created_at_idx
+on public.game_events (game_id, created_at desc);
+
 create table public.club_templates (
   id text primary key,
   name text not null unique,
@@ -133,6 +139,8 @@ create table public.clubs (
   supercup_cards int not null default 0,
   captain_boost_rank int,
   captain_club_player_id uuid,
+  squad_stars int not null default 0,
+  squad_size int not null default 0,
   created_at timestamptz not null default now(),
   unique (game_id, clerk_user_id)
 );

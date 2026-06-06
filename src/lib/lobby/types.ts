@@ -91,6 +91,7 @@ export type LobbyClub = {
   captain_boost_rank?: number | null;
   captain_club_player_id?: string | null;
   squad_stars?: number;
+  squad_size?: number;
   is_ready: boolean;
   image_url?: string | null;
   created_at?: string;

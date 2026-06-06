@@ -473,6 +473,9 @@ export async function makeDraftPickAction(formData: FormData) {
     throw insertError;
   }
 
+  const squadStats = await syncClubSquadCache(supabase, ownClub.id);
+  const ownSquadStats = squadStats.get(ownClub.id);
+
   const nextPicks: DraftPickSnapshot[] = [
     ...picks,
     {
@@ -533,7 +536,8 @@ export async function makeDraftPickAction(formData: FormData) {
       playerId,
       roundComplete,
       roundId: draftRound.id,
-      squadCount: nextSquadCounts.get(ownClub.id) ?? 0,
+      squadCount: ownSquadStats?.squad_size ?? nextSquadCounts.get(ownClub.id) ?? 0,
+      squadStars: ownSquadStats?.squad_stars,
     },
     type: "DRAFT_PICK_MADE",
   });
@@ -720,6 +724,11 @@ export async function trainPlayerAction(formData: FormData) {
     throw updatePlayerError;
   }
 
+  const updatedSquadStats =
+    resolution.afterStars !== resolution.beforeStars
+      ? await syncClubSquadCache(supabase, ownedPlayer.club_id)
+      : new Map<string, { squad_size: number; squad_stars: number }>();
+
   if (resolution.afterStars !== resolution.beforeStars) {
     await syncPlayerRowMarketValues(supabase, ownedPlayer.player_id, {
       potentialCeiling: resolvePlayerPotentialCeiling({
@@ -764,6 +773,21 @@ export async function trainPlayerAction(formData: FormData) {
 
   if (saveError) {
     throw saveError;
+  }
+
+  if (starsGained > 0) {
+    await emitGameEvent(supabase, {
+      actorClerkUserId: userId,
+      gameId,
+      payload: {
+        clubId: ownedPlayer.club_id,
+        clubPlayerId: ownedPlayer.id,
+        currentStars: resolution.afterStars,
+        needsRefetch: false,
+        squadStars: updatedSquadStats.get(ownedPlayer.club_id)?.squad_stars,
+      },
+      type: "SAVE_UPDATED",
+    });
   }
 
   revalidatePath(`/games/${roomCode}`);
@@ -911,7 +935,7 @@ export async function drawScoutingPlayerAction(formData: FormData) {
     throw new Error("Kein verfuegbarer Spieler fuer Scouting gefunden.");
   }
 
-  const { error: insertError } = await supabase.from("scouting_draws").insert({
+  const { data: insertedDraw, error: insertError } = await supabase.from("scouting_draws").insert({
     club_id: ownClub.id,
     draw_index: ownDraws.length,
     game_id: gameId,
@@ -919,7 +943,7 @@ export async function drawScoutingPlayerAction(formData: FormData) {
     player_id: selectedPlayer.id,
     season_number: seasonNumber,
     status: "drawn",
-  });
+  }).select("id, created_at").single<{ created_at: string; id: string }>();
 
   if (insertError) {
     throw insertError;
@@ -935,8 +959,11 @@ export async function drawScoutingPlayerAction(formData: FormData) {
     gameId,
     payload: {
       clubId: ownClub.id,
+      createdAt: insertedDraw?.created_at,
+      drawId: insertedDraw?.id,
       drawIndex: ownDraws.length,
       pileKey,
+      player: selectedPlayer,
       playerId: selectedPlayer.id,
       seasonNumber,
     },
@@ -1051,6 +1078,8 @@ export async function buyScoutedPlayerAction(formData: FormData) {
     throw insertClubPlayerError;
   }
 
+  const scoutingSquadStats = await syncClubSquadCache(supabase, ownClub.id);
+
   await syncPlayerRowMarketValues(supabase, draw.player_id, {
     potentialCeiling: resolvePlayerPotentialCeiling({
       baseStars: draw.player.base_stars,
@@ -1120,7 +1149,9 @@ export async function buyScoutedPlayerAction(formData: FormData) {
       drawId: draw.id,
       playerId: draw.player_id,
       price,
+      resolvedAt: now,
       seasonNumber,
+      squadStars: scoutingSquadStats.get(ownClub.id)?.squad_stars,
     },
     type: "SCOUTING_CARD_BOUGHT",
   });
@@ -1186,6 +1217,7 @@ export async function passScoutedPlayerAction(formData: FormData) {
       clubId: ownClub.id,
       drawId: draw.id,
       playerId: draw.player_id,
+      resolvedAt: new Date().toISOString(),
       seasonNumber,
     },
     type: "SCOUTING_CARD_PASSED",
@@ -1308,6 +1340,8 @@ export async function sellClubPlayerAction(formData: FormData) {
     throw deleteError;
   }
 
+  const saleSquadStats = await syncClubSquadCache(supabase, ownClub.id);
+
   const { error: clubError } = await supabase
     .from("clubs")
     .update({ money: Number(ownClub.money) + saleValue })
@@ -1339,6 +1373,18 @@ export async function sellClubPlayerAction(formData: FormData) {
   }
 
   await touchGameSave(supabase, gameId, userId);
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: {
+      clubId: ownClub.id,
+      money: Number(ownClub.money) + saleValue,
+      needsRefetch: false,
+      squadSize: saleSquadStats.get(ownClub.id)?.squad_size,
+      squadStars: saleSquadStats.get(ownClub.id)?.squad_stars,
+    },
+    type: "SAVE_UPDATED",
+  });
   revalidatePath(`/games/${roomCode}`);
   redirect(`/games/${roomCode}?view=${returnView}`);
 }
@@ -1626,6 +1672,8 @@ export async function acceptTransferOfferAction(formData: FormData) {
     throw mutationError;
   }
 
+  await syncClubSquadCache(supabase, [offer.from_club_id, offer.to_club_id]);
+
   await expireCompetingTransferOffers(supabase, {
     acceptedOfferId: offer.id,
     clubPlayerIds: movedClubPlayerIds,
@@ -1707,7 +1755,7 @@ export async function declineTransferOfferAction(formData: FormData) {
     gameId,
     payload: {
       fromClubId: offer.from_club_id,
-      needsRefetch: true,
+      needsRefetch: false,
       offerId: offer.id,
       status: "declined",
       toClubId: offer.to_club_id,
@@ -1754,7 +1802,7 @@ export async function cancelTransferOfferAction(formData: FormData) {
     gameId,
     payload: {
       fromClubId: offer.from_club_id,
-      needsRefetch: true,
+      needsRefetch: false,
       offerId: offer.id,
       status: "cancelled",
       toClubId: offer.to_club_id,
@@ -2479,6 +2527,8 @@ async function insertNlzTalentForClub(supabase: SupabaseServiceClient, gameId: s
     throw clubPlayerError;
   }
 
+  await syncClubSquadCache(supabase, clubId);
+
   await syncOwnedPlayerRowMarketValues(supabase, player.id, {
     current_stars: seed.base_stars,
     player: {
@@ -2717,6 +2767,63 @@ async function getNextSaveVersion(supabase: NonNullable<ReturnType<typeof create
 }
 
 type SupabaseServiceClient = NonNullable<ReturnType<typeof createSupabaseServiceClient>>;
+
+async function syncClubSquadCache(supabase: SupabaseServiceClient, clubIdsInput: string | string[]) {
+  const clubIds = [...new Set((Array.isArray(clubIdsInput) ? clubIdsInput : [clubIdsInput]).filter(Boolean))];
+  if (clubIds.length === 0) {
+    return new Map<string, { squad_size: number; squad_stars: number }>();
+  }
+
+  const { data, error } = await supabase
+    .from("club_players")
+    .select("club_id, current_stars")
+    .in("club_id", clubIds)
+    .returns<Array<{ club_id: string; current_stars: number | string }>>();
+
+  if (error) {
+    throw error;
+  }
+
+  const stats = new Map<string, { squad_size: number; squad_stars: number }>();
+  for (const clubId of clubIds) {
+    stats.set(clubId, { squad_size: 0, squad_stars: 0 });
+  }
+
+  for (const row of data ?? []) {
+    const current = stats.get(row.club_id) ?? { squad_size: 0, squad_stars: 0 };
+    current.squad_size += 1;
+    current.squad_stars += Number(row.current_stars ?? 0);
+    stats.set(row.club_id, current);
+  }
+
+  await Promise.all(
+    [...stats.entries()].map(async ([clubId, row]) => {
+      const result = await supabase
+        .from("clubs")
+        .update({ squad_size: row.squad_size, squad_stars: row.squad_stars })
+        .eq("id", clubId);
+
+      if (!result.error) {
+        return;
+      }
+
+      if (result.error.code === "42703") {
+        const fallback = await supabase
+          .from("clubs")
+          .update({ squad_stars: row.squad_stars })
+          .eq("id", clubId);
+        if (fallback.error && fallback.error.code !== "42703") {
+          throw fallback.error;
+        }
+        return;
+      }
+
+      throw result.error;
+    }),
+  );
+
+  return stats;
+}
 
 type FixtureActionRow = {
   away_cpu_lineup_id?: string | null;
@@ -5643,6 +5750,8 @@ async function resolveDeadlineAuction(
   if (insertPlayerError) {
     throw insertPlayerError;
   }
+
+  await syncClubSquadCache(supabase, auction.winning_club_id);
 
   const { error: clubUpdateError } = await supabase
     .from("clubs")

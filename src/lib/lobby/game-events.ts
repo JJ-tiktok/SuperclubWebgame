@@ -353,7 +353,11 @@ function applyDraftPickMade(snapshot: LobbySnapshot, event: GameEventSnapshot): 
   };
   snapshot.game.current_turn_club_id = nextClubId;
 
-  return { applied: true, needsRefetch: false, snapshot };
+  return {
+    applied: true,
+    needsRefetch: Boolean(getBoolean(event.payload.roundComplete)),
+    snapshot,
+  };
 }
 
 function applyAuctionBidPlaced(snapshot: LobbySnapshot, event: GameEventSnapshot): GameEventApplyResult {

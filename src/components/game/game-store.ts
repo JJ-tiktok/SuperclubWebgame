@@ -1,6 +1,7 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
+import { compareSnapshotFreshness } from "@/components/game/snapshot-freshness";
 import { applyGameEventToSnapshot } from "@/lib/lobby/game-events";
 import type { GameEventSnapshot, LobbySnapshot } from "@/lib/lobby/types";
 
@@ -32,13 +33,32 @@ export function useGameStore<T>(selector: (state: GameStoreState) => T): T {
   return useSyncExternalStore(subscribe, () => selector(state), () => selector(state));
 }
 
-export function hydrateGameStore(snapshot: LobbySnapshot) {
+export function hydrateGameStore(snapshot: LobbySnapshot, options?: { force?: boolean }) {
+  if (
+    !options?.force &&
+    state.snapshot?.game.id === snapshot.game.id &&
+    compareSnapshotFreshness(snapshot, state.snapshot) < 0
+  ) {
+    return;
+  }
+
   state = {
     ...state,
     seq: Number(snapshot.game.live_seq ?? 0),
     snapshot,
   };
   emit();
+}
+
+export function hydrateGameStoreIfNewer(snapshot: LobbySnapshot) {
+  if (!state.snapshot || state.snapshot.game.id !== snapshot.game.id) {
+    hydrateGameStore(snapshot, { force: true });
+    return;
+  }
+
+  if (compareSnapshotFreshness(snapshot, state.snapshot) >= 0) {
+    hydrateGameStore(snapshot, { force: true });
+  }
 }
 
 export function applyGameEvent(event: GameEventSnapshot) {
@@ -94,7 +114,7 @@ export async function refetchGameSnapshot(params: {
 
   const data = (await response.json()) as { snapshot: LobbySnapshot | null };
   if (data.snapshot) {
-    hydrateGameStore(data.snapshot);
+    hydrateGameStore(data.snapshot, { force: true });
   }
 }
 

@@ -34,17 +34,20 @@ export function applyGameEventToSnapshot(snapshot: LobbySnapshot, event: GameEve
       return applyFixturePatched(next, event);
     case "SCOUTING_CARD_PASSED":
       return applyScoutingCardPassed(next, event);
+    case "SCOUTING_CARD_DRAWN":
+      return applyScoutingCardDrawn(next, event);
+    case "SCOUTING_CARD_BOUGHT":
+      return applyScoutingCardResolved(next, event, "bought");
+    case "TRANSFER_OFFER_RESOLVED":
+      return applyTransferOfferResolved(next, event);
     case "PHASE_CHANGED":
       return applyPhaseChanged(next, event);
     case "SAVE_UPDATED":
       return applySaveUpdated(next, event);
-    case "SCOUTING_CARD_BOUGHT":
-    case "SCOUTING_CARD_DRAWN":
     case "SCOUTING_STATUS_CHANGED":
     case "CLUB_SELECTED":
     case "DEADLINE_INITIALIZED":
     case "TRANSFER_OFFER_CREATED":
-    case "TRANSFER_OFFER_RESOLVED":
       return { applied: true, needsRefetch: true, snapshot: next };
     default:
       return { applied: false, needsRefetch: true, snapshot };
@@ -53,30 +56,173 @@ export function applyGameEventToSnapshot(snapshot: LobbySnapshot, event: GameEve
 
 function applySaveUpdated(snapshot: LobbySnapshot, event: GameEventSnapshot): GameEventApplyResult {
   const settings = getRecord(event.payload.settings);
+  const clubId = getString(event.payload.clubId);
+  const money = getNumber(event.payload.money);
+  const squadSize = getNumber(event.payload.squadSize);
+  const squadStars = getNumber(event.payload.squadStars);
 
-  if (!settings) {
+  if (!settings && !clubId) {
     return { applied: true, needsRefetch: true, snapshot };
   }
 
-  const continentalCupEnabled = getBoolean(settings.continental_cup_enabled);
-  const sponsoringEnabled = getBoolean(settings.sponsoring_enabled);
-  const archetypesEnabled = getBoolean(settings.archetypes_enabled);
+  if (settings) {
+    const continentalCupEnabled = getBoolean(settings.continental_cup_enabled);
+    const sponsoringEnabled = getBoolean(settings.sponsoring_enabled);
+    const archetypesEnabled = getBoolean(settings.archetypes_enabled);
 
-  snapshot.game.settings = {
-    ...snapshot.game.settings,
-    ...(continentalCupEnabled === null ? {} : { continental_cup_enabled: continentalCupEnabled }),
-    ...(sponsoringEnabled === null ? {} : { sponsoring_enabled: sponsoringEnabled }),
-    ...(archetypesEnabled === null ? {} : { archetypes_enabled: archetypesEnabled }),
+    snapshot.game.settings = {
+      ...snapshot.game.settings,
+      ...(continentalCupEnabled === null ? {} : { continental_cup_enabled: continentalCupEnabled }),
+      ...(sponsoringEnabled === null ? {} : { sponsoring_enabled: sponsoringEnabled }),
+      ...(archetypesEnabled === null ? {} : { archetypes_enabled: archetypesEnabled }),
+    };
+  }
+
+  if (clubId) {
+    snapshot.clubs = snapshot.clubs.map((club) =>
+      club.id === clubId
+        ? {
+            ...club,
+            ...(money === null ? {} : { money }),
+            ...(squadSize === null ? {} : { squad_size: squadSize }),
+            ...(squadStars === null ? {} : { squad_stars: squadStars }),
+          }
+        : club,
+    );
+
+    if (snapshot.club_overview?.finance) {
+      snapshot.club_overview = {
+        ...snapshot.club_overview,
+        finance: {
+          ...snapshot.club_overview.finance,
+          ...(money === null ? {} : { money }),
+          ...(squadStars === null ? {} : {
+            projected_net: snapshot.club_overview.finance.stadium_income + snapshot.club_overview.finance.placement_reward - squadStars * 1_000_000,
+            squad_stars: squadStars,
+            wages: squadStars * 1_000_000,
+          }),
+        },
+      };
+    }
+  }
+
+  return { applied: true, needsRefetch: Boolean(event.payload.needsRefetch), snapshot };
+}
+
+function applyScoutingCardDrawn(snapshot: LobbySnapshot, event: GameEventSnapshot): GameEventApplyResult {
+  const clubId = getString(event.payload.clubId);
+  const drawId = getString(event.payload.drawId);
+  const drawIndex = getNumber(event.payload.drawIndex);
+  const pileKey = getString(event.payload.pileKey);
+  const playerId = getString(event.payload.playerId);
+  const seasonNumber = getNumber(event.payload.seasonNumber);
+  const player = getRecord(event.payload.player);
+
+  if (!snapshot.scouting || !clubId || !drawId || drawIndex === null || !pileKey || !playerId || seasonNumber === null || !player) {
+    return { applied: true, needsRefetch: true, snapshot };
+  }
+
+  const alreadyExists = snapshot.scouting.draws.some((draw) => draw.id === drawId);
+  const draws = alreadyExists
+    ? snapshot.scouting.draws
+    : [
+        ...snapshot.scouting.draws,
+        {
+          club_id: clubId,
+          created_at: getString(event.payload.createdAt) ?? event.created_at,
+          draw_index: drawIndex,
+          game_id: snapshot.game.id,
+          id: drawId,
+          pile_key: pileKey,
+          player: player as NonNullable<LobbySnapshot["scouting"]>["draws"][number]["player"],
+          player_id: playerId,
+          season_number: seasonNumber,
+          status: "drawn" as const,
+        },
+      ];
+
+  snapshot.scouting = {
+    ...snapshot.scouting,
+    draws,
+    status_by_club_id: patchScoutingStatus(snapshot.scouting.status_by_club_id, clubId, {
+      drawDelta: alreadyExists ? 0 : 1,
+      openDelta: alreadyExists ? 0 : 1,
+    }),
   };
 
   return { applied: true, needsRefetch: false, snapshot };
 }
 
+function applyScoutingCardResolved(
+  snapshot: LobbySnapshot,
+  event: GameEventSnapshot,
+  status: "bought" | "passed",
+): GameEventApplyResult {
+  const clubId = getString(event.payload.clubId);
+  const drawId = getString(event.payload.drawId);
+
+  if (!snapshot.scouting || !clubId || !drawId) {
+    return { applied: true, needsRefetch: true, snapshot };
+  }
+
+  const previousDraw = snapshot.scouting.draws.find((draw) => draw.id === drawId);
+  const wasOpen = previousDraw?.status === "drawn";
+
+  snapshot.scouting = {
+    ...snapshot.scouting,
+    draws: snapshot.scouting.draws.map((draw) =>
+      draw.id === drawId
+        ? {
+            ...draw,
+            resolved_at: getString(event.payload.resolvedAt) ?? event.created_at,
+            status,
+          }
+        : draw,
+    ),
+    status_by_club_id: patchScoutingStatus(snapshot.scouting.status_by_club_id, clubId, {
+      boughtDelta: status === "bought" && previousDraw?.status !== "bought" ? 1 : 0,
+      openDelta: wasOpen ? -1 : 0,
+      passedDelta: status === "passed" && previousDraw?.status !== "passed" ? 1 : 0,
+    }),
+  };
+
+  if (status === "bought") {
+    const price = getNumber(event.payload.price) ?? 0;
+    snapshot.clubs = snapshot.clubs.map((club) =>
+      club.id === clubId
+        ? {
+            ...club,
+            money: Number(club.money) - price,
+            squad_size: Number(club.squad_size ?? 0) + 1,
+            squad_stars: getNumber(event.payload.squadStars) ?? club.squad_stars,
+          }
+        : club,
+    );
+    if (snapshot.club_overview?.finance) {
+      snapshot.club_overview = {
+        ...snapshot.club_overview,
+        finance: {
+          ...snapshot.club_overview.finance,
+          money: snapshot.club_overview.finance.money - price,
+          squad_stars: getNumber(event.payload.squadStars) ?? snapshot.club_overview.finance.squad_stars,
+        },
+      };
+    }
+  }
+
+  return { applied: true, needsRefetch: Boolean(event.payload.needsRefetch), snapshot };
+}
+
 function applyScoutingCardPassed(snapshot: LobbySnapshot, event: GameEventSnapshot): GameEventApplyResult {
   const drawId = getString(event.payload.drawId);
+  const clubId = getString(event.payload.clubId);
 
   if (!snapshot.scouting || !drawId) {
     return { applied: true, needsRefetch: true, snapshot };
+  }
+
+  if (clubId) {
+    return applyScoutingCardResolved(snapshot, event, "passed");
   }
 
   snapshot.scouting = {
@@ -90,6 +236,49 @@ function applyScoutingCardPassed(snapshot: LobbySnapshot, event: GameEventSnapsh
           }
         : draw,
     ),
+  };
+
+  return { applied: true, needsRefetch: Boolean(event.payload.needsRefetch), snapshot };
+}
+
+function patchScoutingStatus(
+  statuses: NonNullable<LobbySnapshot["scouting"]>["status_by_club_id"],
+  clubId: string,
+  deltas: { boughtDelta?: number; drawDelta?: number; openDelta?: number; passedDelta?: number },
+) {
+  const current = statuses[clubId];
+  if (!current) {
+    return statuses;
+  }
+
+  const next = {
+    ...current,
+    bought_count: Math.max(0, current.bought_count + (deltas.boughtDelta ?? 0)),
+    draw_count: Math.max(0, current.draw_count + (deltas.drawDelta ?? 0)),
+    open_count: Math.max(0, current.open_count + (deltas.openDelta ?? 0)),
+    passed_count: Math.max(0, current.passed_count + (deltas.passedDelta ?? 0)),
+  };
+
+  next.finished = next.open_count === 0 && next.draw_count >= next.capacity;
+  return { ...statuses, [clubId]: next };
+}
+
+function applyTransferOfferResolved(snapshot: LobbySnapshot, event: GameEventSnapshot): GameEventApplyResult {
+  const offerId = getString(event.payload.offerId);
+  const status = getString(event.payload.status);
+
+  if (!offerId || !status || status === "accepted") {
+    return { applied: true, needsRefetch: true, snapshot };
+  }
+
+  if (!snapshot.transfer_market) {
+    return { applied: true, needsRefetch: false, snapshot };
+  }
+
+  snapshot.transfer_market = {
+    ...snapshot.transfer_market,
+    incoming_offers: snapshot.transfer_market.incoming_offers.filter((offer) => offer.id !== offerId),
+    outgoing_offers: snapshot.transfer_market.outgoing_offers.filter((offer) => offer.id !== offerId),
   };
 
   return { applied: true, needsRefetch: Boolean(event.payload.needsRefetch), snapshot };

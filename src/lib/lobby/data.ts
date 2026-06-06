@@ -78,6 +78,8 @@ const CLUB_SELECT_V3 =
   "id, game_id, clerk_user_id, club_template_id, club_name, club_slogan, club_color, manager_name, money, points, season_rank, status, status_override, status_override_until_season, stadium_level, stadium_level_cap, stadium_level_cap_until_season, scouting_level, training_level, offseason_scouting_capacity, offseason_training_capacity, supercup_cards, captain_boost_rank, is_ready, image_url, created_at";
 const CLUB_SELECT_V4 = `${CLUB_SELECT_V3}, captain_club_player_id`;
 const CLUB_SELECT_V5 = `${CLUB_SELECT_V4}, medical_center_level, analytics_hub_level, youth_academy_level, construction_yard_built, medical_heals_used_season, nlz_archetype_respecs_used_season`;
+const CLUB_SELECT_V6 = `${CLUB_SELECT_V5}, squad_stars`;
+const CLUB_SELECT_V7 = `${CLUB_SELECT_V6}, squad_size`;
 const CLUB_SELECT = CLUB_SELECT_V3;
 
 const CLUB_GAME_CHANGER_SELECT_LEGACY =
@@ -174,10 +176,10 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
     return { snapshot: null, currentUserId: userId };
   }
 
-  const [clubsResultV5, { data: members, error: membersError }] = await Promise.all([
+  const [clubsResultV7, { data: members, error: membersError }] = await Promise.all([
     supabase
       .from("clubs")
-      .select(CLUB_SELECT_V5)
+      .select(CLUB_SELECT_V7)
       .eq("game_id", game.id)
       .order("created_at", { ascending: true })
       .returns<LobbyClub[]>(),
@@ -189,9 +191,33 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
       .returns<LobbyMember[]>(),
   ]);
 
-  let clubs = clubsResultV5.data;
-  let clubsError = clubsResultV5.error;
-  // Fallback chain for DBs without the latest migrations: V5 -> V4 -> V3 -> legacy.
+  let clubs = clubsResultV7.data;
+  let clubsError = clubsResultV7.error;
+  // Fallback chain for DBs without the latest migrations: V7 -> V6 -> V5 -> V4 -> V3 -> legacy.
+  if (isUndefinedColumnError(clubsError)) {
+    const v6 = await supabase
+      .from("clubs")
+      .select(CLUB_SELECT_V6)
+      .eq("game_id", game.id)
+      .order("created_at", { ascending: true })
+      .returns<LobbyClub[]>();
+    if (!isUndefinedColumnError(v6.error)) {
+      clubs = v6.data;
+      clubsError = v6.error;
+    }
+  }
+  if (isUndefinedColumnError(clubsError)) {
+    const v5 = await supabase
+      .from("clubs")
+      .select(CLUB_SELECT_V5)
+      .eq("game_id", game.id)
+      .order("created_at", { ascending: true })
+      .returns<LobbyClub[]>();
+    if (!isUndefinedColumnError(v5.error)) {
+      clubs = v5.data;
+      clubsError = v5.error;
+    }
+  }
   if (isUndefinedColumnError(clubsError)) {
     const v4 = await supabase
       .from("clubs")
@@ -237,24 +263,25 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
   const clubsWithStars = await addSquadStars(clubs ?? []);
   const ownClub = clubsWithStars.find((club) => club.clerk_user_id === userId);
   const activeView = normalizeSnapshotView(options?.activeView);
-  const draft = shouldLoadDraftSnapshot(game.phase, activeView) ? await getDraftSnapshot(game, clubsWithStars) : null;
-  const scouting = shouldLoadScoutingSnapshot(game.phase, activeView) ? await getScoutingSnapshot(game, clubsWithStars) : null;
-  const deadline = shouldLoadDeadlineSnapshot(game.phase, activeView) ? await getDeadlineSnapshot(game, clubsWithStars, ownClub) : null;
-  const season = shouldLoadSeasonSnapshot(game.phase) ? await getSeasonSnapshot(game, ownClub) : null;
-  const continental = shouldLoadContinentalSnapshot(game.phase, activeView) ? await getContinentalSnapshot(game) : null;
+  const perf = createSnapshotPerfTimer(game, activeView);
+  const draft = shouldLoadDraftSnapshot(game.phase, activeView) ? await perf.time("draft", () => getDraftSnapshot(game, clubsWithStars)) : null;
+  const scouting = shouldLoadScoutingSnapshot(game.phase, activeView) ? await perf.time("scouting", () => getScoutingSnapshot(game, clubsWithStars)) : null;
+  const deadline = shouldLoadDeadlineSnapshot(game.phase, activeView) ? await perf.time("deadline", () => getDeadlineSnapshot(game, clubsWithStars, ownClub)) : null;
+  const season = shouldLoadSeasonSnapshot(game.phase, activeView) ? await perf.time("season", () => getSeasonSnapshot(game, ownClub)) : null;
+  const continental = shouldLoadContinentalSnapshot(game.phase, activeView) ? await perf.time("continental", () => getContinentalSnapshot(game)) : null;
   const clubOverview =
     ownClub && shouldLoadClubOverviewSnapshot(game.phase, activeView)
-      ? await getClubOverviewSnapshot(game, ownClub, clubsWithStars.length)
+      ? await perf.time("club_overview", () => getClubOverviewSnapshot(game, ownClub, clubsWithStars.length, activeView))
       : null;
   const clubSquads =
     ownClub && (activeView === "squad" || activeView === "transfer")
-      ? await getClubSquadsSnapshot(game, clubsWithStars)
+      ? await perf.time("club_squads", () => getClubSquadsSnapshot(game, clubsWithStars))
       : null;
   const transferMarket =
     ownClub && (activeView === "squad" || activeView === "transfer")
-      ? await getTransferMarketSnapshot(game, ownClub, clubsWithStars)
+      ? await perf.time("transfer_market", () => getTransferMarketSnapshot(game, ownClub, clubsWithStars))
       : null;
-  const matchNews = shouldLoadMatchNewsSnapshot(game.phase, activeView) ? await getMatchNewsSnapshot(game) : [];
+  const matchNews = shouldLoadMatchNewsSnapshot(game.phase, activeView) ? await perf.time("match_news", () => getMatchNewsSnapshot(game)) : [];
 
   const snapshot: LobbySnapshot = {
     game,
@@ -271,6 +298,8 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
     match_news: matchNews,
   };
 
+  perf.done();
+
   return { snapshot, currentUserId: userId };
 }
 
@@ -278,20 +307,59 @@ function normalizeSnapshotView(value: string | undefined) {
   return value && value.length > 0 ? value : "dashboard";
 }
 
+function createSnapshotPerfTimer(game: LobbyGame, view: string) {
+  const enabled = process.env.GAME_PERF_LOG === "1" || process.env.NEXT_PUBLIC_GAME_PERF_LOG === "1";
+  const startedAt = Date.now();
+  const parts: Array<{ label: string; ms: number }> = [];
+
+  return {
+    async time<T>(label: string, fn: () => Promise<T>): Promise<T> {
+      if (!enabled) {
+        return fn();
+      }
+
+      const partStartedAt = Date.now();
+      try {
+        return await fn();
+      } finally {
+        parts.push({ label, ms: Date.now() - partStartedAt });
+      }
+    },
+    done() {
+      if (!enabled) {
+        return;
+      }
+
+      const detail = parts.map((part) => `${part.label}=${part.ms}ms`).join(" ");
+      console.info(
+        `[game-snapshot] game=${game.id} room=${game.room_code} phase=${game.phase} view=${view} total=${Date.now() - startedAt}ms ${detail}`,
+      );
+    },
+  };
+}
+
 function shouldLoadDraftSnapshot(phase: LobbyPhase, view: string) {
   return phase === "draft" || view === "draft";
 }
 
 function shouldLoadScoutingSnapshot(phase: LobbyPhase, view: string) {
-  return phase === "off_season" || phase === "offseason_scouting" || view === "scouting";
+  return view === "scouting" || (view === "dashboard" && (phase === "off_season" || phase === "offseason_scouting"));
 }
 
 function shouldLoadDeadlineSnapshot(phase: LobbyPhase, view: string) {
   return phase === "deadline_day" || view === "deadline";
 }
 
-function shouldLoadSeasonSnapshot(phase: LobbyPhase) {
-  return phase === "season" || phase === "prematch" || phase === "match" || phase === "season_end";
+function shouldLoadSeasonSnapshot(phase: LobbyPhase, view: string) {
+  if (phase === "season_end") {
+    return view === "dashboard" || view === "matchday" || view === "table";
+  }
+
+  if (phase === "season" || phase === "prematch" || phase === "match") {
+    return view === "lineup" || view === "matchday" || view === "table";
+  }
+
+  return false;
 }
 
 function shouldLoadContinentalSnapshot(phase: LobbyPhase, view: string) {
@@ -299,19 +367,25 @@ function shouldLoadContinentalSnapshot(phase: LobbyPhase, view: string) {
 }
 
 function shouldLoadClubOverviewSnapshot(phase: LobbyPhase, view: string) {
-  if (phase === "off_season" || phase === "offseason_training" || phase === "offseason_scouting" || phase === "offseason_investments") {
-    return true;
-  }
-
-  if (phase === "deadline_day" || phase === "season" || phase === "prematch" || phase === "match" || phase === "champions_league") {
-    return true;
-  }
-
   if (phase === "season_end" && view === "dashboard") {
     return true;
   }
 
-  return ["grounds", "lineup", "squad", "training", "scouting", "transfer", "matchday", "continental"].includes(view);
+  if (isOffseasonDashboardView(phase, view)) {
+    return true;
+  }
+
+  return ["grounds", "lineup", "squad", "training", "scouting", "transfer", "deadline", "matchday", "continental"].includes(view);
+}
+
+function isOffseasonDashboardView(phase: LobbyPhase, view: string) {
+  return view === "dashboard" && (
+    phase === "off_season" ||
+    phase === "offseason_finance" ||
+    phase === "offseason_training" ||
+    phase === "offseason_scouting" ||
+    phase === "offseason_investments"
+  );
 }
 
 function shouldLoadMatchNewsSnapshot(phase: LobbyPhase, view: string) {
@@ -1048,39 +1122,54 @@ async function getManagerStandings(game: LobbyGame, standings: SeasonStandingSna
     return [];
   }
 
-  const [{ data: clubs, error: clubsError }, { data: squadRows, error: squadError }] = await Promise.all([
-    supabase
+  let clubsResult = await supabase
+    .from("clubs")
+    .select("id, club_name, points, season_rank, status, squad_stars")
+    .in("id", humanClubIds)
+    .returns<Array<{ club_name: string; id: string; points: number | string; season_rank: number | null; squad_stars?: number | string | null; status: string | null }>>();
+
+  if (isUndefinedColumnError(clubsResult.error)) {
+    clubsResult = await supabase
       .from("clubs")
       .select("id, club_name, points, season_rank, status")
       .in("id", humanClubIds)
-      .returns<Array<{ club_name: string; id: string; points: number | string; season_rank: number | null; status: string | null }>>(),
-    supabase
+      .returns<Array<{ club_name: string; id: string; points: number | string; season_rank: number | null; squad_stars?: number | string | null; status: string | null }>>();
+  }
+
+  if (clubsResult.error) {
+    throw clubsResult.error;
+  }
+
+  const clubs = clubsResult.data ?? [];
+  const missingSquadStarClubIds = humanClubIds.filter((clubId) => {
+    const club = clubs.find((row) => row.id === clubId);
+    return club?.squad_stars == null;
+  });
+  const starsByClubId = new Map<string, number>();
+
+  if (missingSquadStarClubIds.length > 0) {
+    const { data: squadRows, error: squadError } = await supabase
       .from("club_players")
       .select("club_id, current_stars")
-      .in("club_id", humanClubIds)
-      .returns<Array<{ club_id: string; current_stars: number | string }>>(),
-  ]);
+      .in("club_id", missingSquadStarClubIds)
+      .returns<Array<{ club_id: string; current_stars: number | string }>>();
 
-  if (clubsError) {
-    throw clubsError;
+    if (squadError) {
+      throw squadError;
+    }
+
+    for (const row of squadRows ?? []) {
+      starsByClubId.set(row.club_id, (starsByClubId.get(row.club_id) ?? 0) + Number(row.current_stars ?? 0));
+    }
   }
 
-  if (squadError) {
-    throw squadError;
-  }
-
-  const starsByClubId = new Map<string, number>();
-  for (const row of squadRows ?? []) {
-    starsByClubId.set(row.club_id, (starsByClubId.get(row.club_id) ?? 0) + Number(row.current_stars ?? 0));
-  }
-
-  const clubsById = new Map((clubs ?? []).map((club) => [club.id, club]));
+  const clubsById = new Map(clubs.map((club) => [club.id, club]));
   const rows = standings
     .filter((standing) => standing.participant.kind === "human" && standing.participant.club_id)
     .map((standing) => {
       const clubId = standing.participant.club_id as string;
       const club = clubsById.get(clubId);
-      const squadStars = starsByClubId.get(clubId) ?? 0;
+      const squadStars = Number(club?.squad_stars ?? starsByClubId.get(clubId) ?? 0);
       const seasonScore = calculateManagerScore(squadStars, standing.match_points);
       const band = getManagerScoreBand(seasonScore);
 
@@ -1129,6 +1218,45 @@ function redactScheduledDeadlinePlayer<T extends DraftPlayerRow>(player: T): T {
     scouting_price: 0,
     skill_max: 0,
     visibility: "hidden",
+  };
+}
+
+function emptyQueryResult<T>(data: T): Promise<{ data: T; error: null }> {
+  return Promise.resolve({ data, error: null });
+}
+
+type ClubOverviewLoadProfile = {
+  loadGameChangers: boolean;
+  loadInvestments: boolean;
+  loadOpenStaffOffer: boolean;
+  loadPendingEffects: boolean;
+  loadSalesTransactions: boolean;
+  loadSponsorContracts: boolean;
+  loadSquad: boolean;
+  loadStaff: boolean;
+  loadTrainingTransactions: boolean;
+};
+
+function getClubOverviewLoadProfile(phase: LobbyPhase, view: string): ClubOverviewLoadProfile {
+  const offseasonDashboard = isOffseasonDashboardView(phase, view);
+  const loadSquad = ["lineup", "squad", "training", "scouting", "transfer", "deadline", "matchday", "continental"].includes(view);
+  const loadStaff =
+    offseasonDashboard ||
+    ["grounds", "lineup", "squad", "training", "matchday", "continental"].includes(view);
+  const loadPendingEffects =
+    offseasonDashboard ||
+    ["grounds", "lineup", "training", "scouting", "transfer", "matchday", "continental"].includes(view);
+
+  return {
+    loadGameChangers: ["grounds", "matchday", "continental"].includes(view),
+    loadInvestments: offseasonDashboard || view === "grounds",
+    loadOpenStaffOffer: view === "grounds",
+    loadPendingEffects,
+    loadSalesTransactions: view === "transfer",
+    loadSponsorContracts: offseasonDashboard || view === "grounds",
+    loadSquad,
+    loadStaff,
+    loadTrainingTransactions: offseasonDashboard || view === "training",
   };
 }
 
@@ -1199,6 +1327,7 @@ async function getClubOverviewSnapshot(
   game: LobbyGame,
   club: LobbyClub,
   clubCount: number,
+  activeView: string,
 ): Promise<ClubOverviewSnapshot> {
   const supabase = createSupabaseServiceClient();
 
@@ -1207,6 +1336,7 @@ async function getClubOverviewSnapshot(
   }
 
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
+  const profile = getClubOverviewLoadProfile(game.phase, activeView);
   const [
     { data: clubPlayers, error: clubPlayersError },
     { data: staffRows, error: staffError },
@@ -1218,72 +1348,95 @@ async function getClubOverviewSnapshot(
     { data: openOfferRows, error: openOfferError },
     { data: sponsorContractRows, error: sponsorContractsError },
   ] = await Promise.all([
-    supabase
-      .from("club_players")
-      .select(
-        `id, club_id, player_id, current_stars, current_zone, injured, lineup_slot, acquired_at,
-        player:players(${DRAFT_PLAYER_SELECT})`,
-      )
-      .eq("club_id", club.id)
-      .order("acquired_at", { ascending: true })
-      .returns<ClubPlayerSnapshot[]>(),
-    supabase
-      .from("club_staff")
-      .select("id, staff_card_id, hired_at, card:staff_cards(id, content_key, display_name, price, effects, visibility)")
-      .eq("club_id", club.id)
-      .order("hired_at", { ascending: true })
-      .returns<ClubStaffSnapshot[]>(),
-    supabase
-      .from("club_game_changers")
-      .select(CLUB_GAME_CHANGER_SELECT_V4)
-      .eq("club_id", club.id)
-      .order("created_at", { ascending: true, nullsFirst: false })
-      .returns<ClubGameChangerSnapshot[]>(),
-    supabase
-      .from("club_pending_effects")
-      .select("id, club_id, season_number, effect_type, payload, scope, consumed_at, fixture_id, source_club_game_changer_id, created_at")
-      .eq("club_id", club.id)
-      .eq("season_number", seasonNumber)
-      .is("consumed_at", null)
-      .order("created_at", { ascending: true })
-      .returns<ClubPendingEffectSnapshot[]>(),
-    supabase
-      .from("investments")
-      .select("id, game_id, club_id, season_number, action, cost, created_at")
-      .eq("club_id", club.id)
-      .eq("season_number", seasonNumber)
-      .order("created_at", { ascending: false })
-      .returns<InvestmentSnapshot[]>(),
-    supabase
-      .from("transactions")
-      .select("id, created_at, metadata")
-      .eq("game_id", game.id)
-      .eq("club_id", club.id)
-      .eq("reason", "training")
-      .order("created_at", { ascending: false })
-      .returns<Array<{ id: string; created_at: string; metadata: unknown }>>(),
-    supabase
-      .from("transactions")
-      .select("id, metadata")
-      .eq("game_id", game.id)
-      .eq("club_id", club.id)
-      .eq("reason", "player_sale")
-      .contains("metadata", { season_number: seasonNumber })
-      .returns<Array<{ id: string; metadata: unknown }>>(),
-    supabase
-      .from("staff_offers")
-      .select("id, season_number, status, offered_card_ids, chosen_card_id")
-      .eq("club_id", club.id)
-      .eq("season_number", seasonNumber)
-      .eq("status", "open")
-      .limit(1)
-      .returns<Array<{ id: string; season_number: number; status: string; offered_card_ids: string[]; chosen_card_id: string | null }>>(),
-    supabase
-      .from("club_sponsor_contracts")
-      .select("*")
-      .eq("club_id", club.id)
-      .order("created_at", { ascending: true })
-      .returns<SponsorContractRow[]>(),
+    profile.loadSquad
+      ? supabase
+          .from("club_players")
+          .select(
+            `id, club_id, player_id, current_stars, current_zone, injured, lineup_slot, acquired_at,
+            player:players(${DRAFT_PLAYER_SELECT})`,
+          )
+          .eq("club_id", club.id)
+          .order("acquired_at", { ascending: true })
+          .returns<ClubPlayerSnapshot[]>()
+      : emptyQueryResult<ClubPlayerSnapshot[]>([]),
+    profile.loadStaff
+      ? supabase
+          .from("club_staff")
+          .select("id, staff_card_id, hired_at, card:staff_cards(id, content_key, display_name, price, effects, visibility)")
+          .eq("club_id", club.id)
+          .order("hired_at", { ascending: true })
+          .returns<ClubStaffSnapshot[]>()
+      : emptyQueryResult<ClubStaffSnapshot[]>([]),
+    profile.loadGameChangers
+      ? supabase
+          .from("club_game_changers")
+          .select(CLUB_GAME_CHANGER_SELECT_V4)
+          .eq("club_id", club.id)
+          .eq("season_number", seasonNumber)
+          .order("created_at", { ascending: true, nullsFirst: false })
+          .limit(80)
+          .returns<ClubGameChangerSnapshot[]>()
+      : emptyQueryResult<ClubGameChangerSnapshot[]>([]),
+    profile.loadPendingEffects
+      ? supabase
+          .from("club_pending_effects")
+          .select("id, club_id, season_number, effect_type, payload, scope, consumed_at, fixture_id, source_club_game_changer_id, created_at")
+          .eq("club_id", club.id)
+          .eq("season_number", seasonNumber)
+          .is("consumed_at", null)
+          .order("created_at", { ascending: true })
+          .returns<ClubPendingEffectSnapshot[]>()
+      : emptyQueryResult<ClubPendingEffectSnapshot[]>([]),
+    profile.loadInvestments
+      ? supabase
+          .from("investments")
+          .select("id, game_id, club_id, season_number, action, cost, created_at")
+          .eq("club_id", club.id)
+          .eq("season_number", seasonNumber)
+          .order("created_at", { ascending: false })
+          .returns<InvestmentSnapshot[]>()
+      : emptyQueryResult<InvestmentSnapshot[]>([]),
+    profile.loadTrainingTransactions
+      ? supabase
+          .from("transactions")
+          .select("id, created_at, metadata")
+          .eq("game_id", game.id)
+          .eq("club_id", club.id)
+          .eq("reason", "training")
+          .contains("metadata", { season_number: seasonNumber })
+          .order("created_at", { ascending: false })
+          .limit(80)
+          .returns<Array<{ id: string; created_at: string; metadata: unknown }>>()
+      : emptyQueryResult<Array<{ id: string; created_at: string; metadata: unknown }>>([]),
+    profile.loadSalesTransactions
+      ? supabase
+          .from("transactions")
+          .select("id, metadata")
+          .eq("game_id", game.id)
+          .eq("club_id", club.id)
+          .eq("reason", "player_sale")
+          .contains("metadata", { season_number: seasonNumber })
+          .limit(3)
+          .returns<Array<{ id: string; metadata: unknown }>>()
+      : emptyQueryResult<Array<{ id: string; metadata: unknown }>>([]),
+    profile.loadOpenStaffOffer
+      ? supabase
+          .from("staff_offers")
+          .select("id, season_number, status, offered_card_ids, chosen_card_id")
+          .eq("club_id", club.id)
+          .eq("season_number", seasonNumber)
+          .eq("status", "open")
+          .limit(1)
+          .returns<Array<{ id: string; season_number: number; status: string; offered_card_ids: string[]; chosen_card_id: string | null }>>()
+      : emptyQueryResult<Array<{ id: string; season_number: number; status: string; offered_card_ids: string[]; chosen_card_id: string | null }>>([]),
+    profile.loadSponsorContracts
+      ? supabase
+          .from("club_sponsor_contracts")
+          .select("*")
+          .eq("club_id", club.id)
+          .order("created_at", { ascending: true })
+          .returns<SponsorContractRow[]>()
+      : emptyQueryResult<SponsorContractRow[]>([]),
   ]);
 
   if (clubPlayersError) {
@@ -1375,7 +1528,9 @@ async function getClubOverviewSnapshot(
     .map(parseTrainingEvent)
     .filter((event): event is NonNullable<ReturnType<typeof parseTrainingEvent>> => Boolean(event))
     .filter((event) => event.season_number === seasonNumber);
-  const squadStars = (clubPlayers ?? []).reduce((total, owned) => total + Number(owned.current_stars), 0);
+  const squadStars = profile.loadSquad
+    ? (clubPlayers ?? []).reduce((total, owned) => total + Number(owned.current_stars), 0)
+    : Number(club.squad_stars ?? 0);
 
   // Resolve status_override (Pressekonferenz / Fanmarsch) for the current season
   const overrideActive = isClubStatusOverrideActive(club, seasonNumber);
@@ -1539,10 +1694,23 @@ export async function getSavedGamesForCurrentUser() {
 
 async function addSquadStars(clubs: LobbyClub[]) {
   const supabase = createSupabaseServiceClient();
-  const clubIds = clubs.map((club) => club.id);
+  const missingClubs = clubs.filter((club) => club.squad_stars == null || club.squad_size == null);
+  const clubIds = missingClubs.map((club) => club.id);
 
-  if (!supabase || clubIds.length === 0) {
-    return clubs;
+  if (clubIds.length === 0) {
+    return clubs.map((club) => ({
+      ...club,
+      squad_stars: Number(club.squad_stars ?? 0),
+      squad_size: Number(club.squad_size ?? 0),
+    }));
+  }
+
+  if (!supabase) {
+    return clubs.map((club) => ({
+      ...club,
+      squad_stars: Number(club.squad_stars ?? 0),
+      squad_size: Number(club.squad_size ?? 0),
+    }));
   }
 
   const { data, error } = await supabase
@@ -1556,14 +1724,17 @@ async function addSquadStars(clubs: LobbyClub[]) {
   }
 
   const starsByClubId = new Map<string, number>();
+  const sizeByClubId = new Map<string, number>();
 
   for (const row of data ?? []) {
     starsByClubId.set(row.club_id, (starsByClubId.get(row.club_id) ?? 0) + Number(row.current_stars));
+    sizeByClubId.set(row.club_id, (sizeByClubId.get(row.club_id) ?? 0) + 1);
   }
 
   return clubs.map((club) => ({
     ...club,
-    squad_stars: starsByClubId.get(club.id) ?? 0,
+    squad_stars: club.squad_stars == null ? (starsByClubId.get(club.id) ?? 0) : Number(club.squad_stars),
+    squad_size: club.squad_size == null ? (sizeByClubId.get(club.id) ?? 0) : Number(club.squad_size),
   }));
 }
 

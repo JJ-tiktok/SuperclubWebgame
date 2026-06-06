@@ -379,9 +379,92 @@ describe("game live event store", () => {
     assert.equal(fixture?.away_third_points, 1);
   });
 
-  it("uses snapshot recovery for transfer events after applying the sequence", () => {
+  it("patches scouting draw and resolution events without snapshot recovery", () => {
     resetGameStoreForTests();
-    hydrateGameStore(snapshot());
+    const base = snapshot();
+    base.scouting = {
+      all_finished: false,
+      current_club_id: "club-a",
+      draws: [],
+      next_pending_club_id: "club-a",
+      sales_by_club_id: {},
+      status_by_club_id: {
+        "club-a": {
+          bought_count: 0,
+          capacity: 2,
+          club_id: "club-a",
+          draw_count: 0,
+          finished: false,
+          open_count: 0,
+          passed_count: 0,
+          sales_count: 0,
+        },
+      },
+    };
+    hydrateGameStore(base);
+
+    assert.equal(
+      applyGameEvent(event("SCOUTING_CARD_DRAWN", 1, {
+        clubId: "club-a",
+        drawId: "draw-a",
+        drawIndex: 0,
+        pileKey: "world",
+        player: {
+          base_stars: 2,
+          display_name: "Scout Player",
+          id: "player-s",
+          position: "MID",
+          potential_stars: 0,
+        },
+        playerId: "player-s",
+        seasonNumber: 1,
+      })).needsRefetch,
+      false,
+    );
+    assert.equal(getGameStoreStateForTests().snapshot?.scouting?.draws.length, 1);
+    assert.equal(getGameStoreStateForTests().snapshot?.scouting?.status_by_club_id["club-a"].open_count, 1);
+
+    assert.equal(
+      applyGameEvent(event("SCOUTING_CARD_BOUGHT", 2, {
+        clubId: "club-a",
+        drawId: "draw-a",
+        playerId: "player-s",
+        price: 5,
+        seasonNumber: 1,
+        squadStars: 12,
+      })).needsRefetch,
+      false,
+    );
+    assert.equal(getGameStoreStateForTests().snapshot?.scouting?.draws[0].status, "bought");
+    assert.equal(getGameStoreStateForTests().snapshot?.scouting?.status_by_club_id["club-a"].bought_count, 1);
+    assert.equal(getGameStoreStateForTests().snapshot?.clubs[0].squad_stars, 12);
+  });
+
+  it("patches transfer close events without snapshot recovery", () => {
+    resetGameStoreForTests();
+    const base = snapshot();
+    base.transfer_market = {
+      incoming_offers: [
+        {
+          cash_amount: 5_000_000,
+          created_at: "2026-01-01T00:00:00.000Z",
+          from_club: { club_color: null, club_name: "Beta", id: "club-b" },
+          from_club_id: "club-b",
+          game_id: "game-a",
+          id: "offer-a",
+          season_number: 1,
+          status: "open",
+          target_club_player_id: "cp-1",
+          target_player_id: "player-a",
+          to_club: { club_color: null, club_name: "Alpha", id: "club-a" },
+          to_club_id: "club-a",
+        },
+      ],
+      manager_departures_count: 0,
+      other_clubs: [],
+      outgoing_offers: [],
+    };
+    hydrateGameStore(base);
 
     assert.equal(
       applyGameEvent(event("TRANSFER_OFFER_CREATED", 1, {
@@ -397,13 +480,14 @@ describe("game live event store", () => {
 
     assert.equal(
       applyGameEvent(event("TRANSFER_OFFER_RESOLVED", 2, {
-        needsRefetch: true,
+        needsRefetch: false,
         offerId: "offer-a",
         status: "declined",
       })).needsRefetch,
-      true,
+      false,
     );
     assert.equal(getGameStoreStateForTests().seq, 2);
+    assert.equal(getGameStoreStateForTests().snapshot?.transfer_market?.incoming_offers.length, 0);
   });
 
   it("patches live game setting updates without snapshot recovery", () => {
@@ -422,6 +506,24 @@ describe("game live event store", () => {
     assert.equal(getGameStoreStateForTests().snapshot?.game.settings.continental_cup_enabled, false);
     assert.equal(getGameStoreStateForTests().snapshot?.game.settings.sponsoring_enabled, false);
     assert.equal(getGameStoreStateForTests().snapshot?.game.settings.archetypes_enabled, true);
+  });
+
+  it("patches live club aggregate updates without snapshot recovery", () => {
+    resetGameStoreForTests();
+    hydrateGameStore(snapshot());
+
+    const result = applyGameEvent(event("SAVE_UPDATED", 1, {
+      clubId: "club-a",
+      money: 42,
+      squadSize: 16,
+      squadStars: 55,
+    }));
+
+    assert.equal(result.needsRefetch, false);
+    assert.equal(getGameStoreStateForTests().snapshot?.clubs[0].money, 42);
+    assert.equal(getGameStoreStateForTests().snapshot?.clubs[0].squad_size, 16);
+    assert.equal(getGameStoreStateForTests().snapshot?.clubs[0].squad_stars, 55);
+    assert.equal(getGameStoreStateForTests().snapshot?.club_overview?.finance.squad_stars, 55);
   });
 
   it("requests recovery for event gaps and ignores stale events", () => {

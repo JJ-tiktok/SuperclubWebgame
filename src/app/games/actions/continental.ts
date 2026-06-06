@@ -153,32 +153,20 @@ async function loadSeasonStandingsForContinental(
   const { data: standings, error: standingsError } = await supabase
     .from("season_standings")
     .select(
-      `rank, participant_id, season_number, wins, draws, losses, played, match_points, fixture_points_for, fixture_points_against, third_points_for, third_points_against,
-      participant:season_participants!inner(id, kind, club_id, display_name, game_id, season_number)`,
+      `participant_id, season_number, played, wins, draws, losses, match_points, third_points_for, third_points_against,
+      fixture_points_for, fixture_points_against, rank,
+      participant:season_participants(id, game_id, season_number, kind, club_id, cpu_team_id, display_name)`,
     )
+    .eq("game_id", gameId)
     .eq("season_number", seasonNumber)
-    .eq("participant.game_id", gameId)
-    .order("rank", { ascending: true });
+    .order("rank", { ascending: true })
+    .returns<SeasonStandingSnapshot[]>();
 
   if (standingsError) {
     throw standingsError;
   }
 
-  return (standings ?? []).map((row) => ({
-    rank: Number(row.rank),
-    participant_id: row.participant_id as string,
-    season_number: Number(row.season_number),
-    wins: Number(row.wins ?? 0),
-    draws: Number(row.draws ?? 0),
-    losses: Number(row.losses ?? 0),
-    played: Number(row.played ?? 0),
-    match_points: Number(row.match_points ?? 0),
-    fixture_points_for: Number(row.fixture_points_for ?? 0),
-    fixture_points_against: Number(row.fixture_points_against ?? 0),
-    third_points_for: Number(row.third_points_for ?? 0),
-    third_points_against: Number(row.third_points_against ?? 0),
-    participant: row.participant as SeasonStandingSnapshot["participant"],
-  }));
+  return standings ?? [];
 }
 
 export async function hasContinentalQualifiers(

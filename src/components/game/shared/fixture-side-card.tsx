@@ -14,6 +14,8 @@ export type FixtureParticipantLike = {
   club_id?: string | null;
   club_color?: string | null;
   cpu_strength_tier?: CpuStrengthTier | null;
+  /** Display label for non-league CPU tiers (e.g. Continental Cup). */
+  cpu_tier_label?: string | null;
 };
 
 export type FixtureLineupLike = {
@@ -57,6 +59,10 @@ export function FixtureSideCard({
   zoneBoosts?: Partial<Record<"ATT" | "MID" | "DEF", number>>;
   hideStandingStats?: boolean;
 }) {
+  const cpuTierLabel =
+    participant.cpu_tier_label ??
+    (participant.cpu_strength_tier ? CPU_TIER_LABEL[participant.cpu_strength_tier] : null);
+
   return (
     <div className="rounded-md border border-zinc-800 bg-zinc-950/70 p-3">
       <div className="flex items-start justify-between gap-3">
@@ -69,17 +75,17 @@ export function FixtureSideCard({
               {participant.display_name}
             </p>
             <p className="mt-1 text-xs text-zinc-500">
-              {participant.kind === "cpu"
-                ? participant.cpu_strength_tier
-                  ? `CPU · ${CPU_TIER_LABEL[participant.cpu_strength_tier]}`
-                  : "CPU-Team"
-                : "Manager-Team"}
+              {participant.kind === "cpu" ? (cpuTierLabel ? `CPU · ${cpuTierLabel}` : "CPU-Team") : "Manager-Team"}
             </p>
           </div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
           {participant.kind === "cpu" && participant.cpu_strength_tier ? (
             <CpuStrengthBadge tier={participant.cpu_strength_tier} />
+          ) : participant.kind === "cpu" && cpuTierLabel ? (
+            <span className="rounded border border-sky-500/50 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-sky-200">
+              {cpuTierLabel}
+            </span>
           ) : null}
           <Badge tone={participant.kind === "cpu" || locked ? "green" : "neutral"}>
             {participant.kind === "cpu" ? "CPU" : locked ? "locked" : "offen"}

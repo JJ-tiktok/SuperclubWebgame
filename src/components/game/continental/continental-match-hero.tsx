@@ -7,7 +7,8 @@ import {
 } from "@/app/games/actions/continental";
 import { FixtureSideCard } from "@/components/game/shared/fixture-side-card";
 import { MatchResultDetail, parseFixtureResult, type FixtureThird } from "@/components/game/shared/match-result-detail";
-import { getContinentalRoundLabel } from "@/lib/lobby/continental-cup";
+import { CONTINENTAL_CPU_TIER_LABEL, getContinentalRoundLabel } from "@/lib/lobby/continental-cup";
+import type { FixtureParticipantLike } from "@/components/game/shared/fixture-side-card";
 import { calculateLineupPower } from "@/lib/lobby/lineup-power";
 import type { ContinentalFixtureSnapshot, LobbyClub, LobbySnapshot } from "@/lib/lobby/types";
 import { Badge } from "@/components/ui/badge";
@@ -58,6 +59,22 @@ function makeLockedLineup(
   att: number | null | undefined,
 ) {
   return def != null && mid != null && att != null ? { def_stars: def, mid_stars: mid, att_stars: att } : null;
+}
+
+function toFixtureParticipant(
+  participant: ContinentalFixtureSnapshot["home_participant"],
+  clubColor: string | null | undefined,
+): FixtureParticipantLike {
+  return {
+    kind: participant.kind,
+    display_name: participant.display_name,
+    club_id: participant.club_id,
+    club_color: clubColor,
+    cpu_tier_label:
+      participant.kind === "cpu" && participant.cpu_strength_tier
+        ? CONTINENTAL_CPU_TIER_LABEL[participant.cpu_strength_tier]
+        : null,
+  };
 }
 
 export function ContinentalMatchHero({
@@ -164,7 +181,7 @@ function ContinentalFixtureHeroCard({
               hideStandingStats
               lineup={homeLineup}
               locked={fixture.home_lineup_locked}
-              participant={{ ...home, club_color: homeClubColor }}
+              participant={toFixtureParticipant(home, homeClubColor)}
               powerSummary={home.club_id === ownClub.id && fixture.home_lineup_locked ? ownPowerSummary : null}
               score={fixture.home_score}
             />
@@ -172,7 +189,7 @@ function ContinentalFixtureHeroCard({
               hideStandingStats
               lineup={awayLineup}
               locked={fixture.away_lineup_locked}
-              participant={{ ...away, club_color: awayClubColor }}
+              participant={toFixtureParticipant(away, awayClubColor)}
               powerSummary={away.club_id === ownClub.id && fixture.away_lineup_locked ? ownPowerSummary : null}
               score={fixture.away_score}
             />

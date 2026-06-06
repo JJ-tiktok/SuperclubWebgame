@@ -239,6 +239,7 @@ export type ClubPlayerSnapshot = {
   id: string;
   club_id: string;
   player_id: string;
+  custom_name?: string | null;
   current_stars: number;
   current_zone: string;
   injured: boolean;
@@ -395,11 +396,12 @@ export type GameEventSnapshot = {
   type: GameEventType;
 };
 
-export type TransferOfferStatus = "accepted" | "cancelled" | "declined" | "expired" | "open";
+export type TransferOfferStatus = "accepted" | "cancelled" | "countered" | "declined" | "expired" | "open";
 
 export type TransferOfferSnapshot = {
   cash_amount: number;
   created_at: string;
+  created_by_club_id?: string | null;
   from_club: Pick<LobbyClub, "club_color" | "club_name" | "id">;
   from_club_id: string;
   game_id: string;
@@ -407,7 +409,9 @@ export type TransferOfferSnapshot = {
   offered_club_player?: ClubPlayerSnapshot | null;
   offered_club_player_id?: string | null;
   offered_player_id?: string | null;
+  parent_offer_id?: string | null;
   resolved_at?: string | null;
+  responder_club_id?: string | null;
   season_number: number;
   status: TransferOfferStatus;
   target_club_player?: ClubPlayerSnapshot | null;

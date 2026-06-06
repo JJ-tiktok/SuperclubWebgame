@@ -101,6 +101,7 @@ import {
   canDrawScoutingPlayer,
   canResolveScoutedPlayer,
   canSellClubPlayer,
+  resolveClubPlayerSaleValue,
   computeOffseasonScoutingBaseCapacity,
   getClubScoutingCapacity,
   isOffseasonPhase,
@@ -126,8 +127,14 @@ import {
   canCreateTransferOffer,
   buildTransferOfferClosePayload,
   cancelOpenSwapTransferOffersForClubPlayer,
+  getTransferOfferCreatorClubId,
+  getTransferOfferResponderClubId,
   normalizeTransferCashAmount,
 } from "@/lib/lobby/transfers";
+import {
+  getClubPlayerDisplayNameFromRow,
+  normalizeClubPlayerCustomName,
+} from "@/lib/lobby/player-names";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
 import { emitGameEvent } from "@/lib/lobby/emit-game-event";
 import type {
@@ -1325,14 +1332,21 @@ export async function sellClubPlayerAction(formData: FormData) {
   }
 
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
-  const salesCount = await getPlayerSaleCount(supabase, gameId, ownClub.id, seasonNumber);
-  const saleCheck = canSellClubPlayer({ isOffseason: true, salesCount });
+  const [salesCount, squadCount] = await Promise.all([
+    getPlayerSaleCount(supabase, gameId, ownClub.id, seasonNumber),
+    getClubSquadCount(supabase, ownClub.id),
+  ]);
+  const saleCheck = canSellClubPlayer({ isOffseason: true, salesCount, squadSize: squadCount });
 
   if (!saleCheck.ok) {
     redirect(`/games/${roomCode}?view=${returnView}`);
   }
 
-  const saleValue = getClubPlayerMarketValues(ownedPlayer).scoutingPrice;
+  const isRelease = saleCheck.mode === "release";
+  const saleValue = resolveClubPlayerSaleValue({
+    scoutingPrice: getClubPlayerMarketValues(ownedPlayer).scoutingPrice,
+    squadSize: squadCount,
+  });
   await cancelOpenSwapTransferOffersForClubPlayer(supabase, ownedPlayer.id, "cancelled");
   const { error: deleteError } = await supabase.from("club_players").delete().eq("id", ownedPlayer.id).eq("club_id", ownClub.id);
 
@@ -1359,9 +1373,10 @@ export async function sellClubPlayerAction(formData: FormData) {
     metadata: {
       club_player_id: ownedPlayer.id,
       player_id: ownedPlayer.player_id,
+      release_reason: isRelease ? "squad_over_capacity" : null,
       season_number: seasonNumber,
     },
-    reason: "player_sale",
+    reason: isRelease ? "player_release" : "player_sale",
   });
 
   if (transactionError) {
@@ -1500,10 +1515,12 @@ export async function createTransferOfferAction(formData: FormData) {
 
   const { data: insertedOffer, error: insertError } = await supabase.from("transfer_offers").insert({
     cash_amount: cashAmount,
+    created_by_club_id: ownClub.id,
     from_club_id: ownClub.id,
     game_id: gameId,
     offered_club_player_id: offeredClubPlayerId || null,
     offered_player_id: offeredPlayerId,
+    responder_club_id: target.club_id,
     season_number: seasonNumber,
     target_club_player_id: target.id,
     target_player_id: target.player_id,
@@ -1530,6 +1547,222 @@ export async function createTransferOfferAction(formData: FormData) {
   redirect(returnPath);
 }
 
+export async function renameClubPlayerAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const clubPlayerId = String(formData.get("club_player_id") || "");
+  const returnViewRaw = String(formData.get("return_view") || "squad");
+  const returnView = returnViewRaw === "transfer" || returnViewRaw === "lineup" || returnViewRaw === "training" ? returnViewRaw : "squad";
+  const returnPath = `/games/${roomCode}?view=${returnView}`;
+  const normalized = normalizeClubPlayerCustomName(formData.get("custom_name"));
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !clubPlayerId || !supabase || !normalized.ok) {
+    redirect(returnPath);
+  }
+
+  const [{ ownClub }, { data: ownedPlayer, error: ownedPlayerError }] = await Promise.all([
+    getGameClubContext(supabase, gameId, userId),
+    supabase
+      .from("club_players")
+      .select("id, club_id, player:players(display_name)")
+      .eq("id", clubPlayerId)
+      .maybeSingle<{ club_id: string; id: string; player: { display_name?: string | null } | null }>(),
+  ]);
+
+  if (ownedPlayerError) {
+    throw ownedPlayerError;
+  }
+
+  if (!ownedPlayer || ownedPlayer.club_id !== ownClub.id) {
+    redirect(returnPath);
+  }
+
+  const { error } = await supabase
+    .from("club_players")
+    .update({ custom_name: normalized.value })
+    .eq("id", clubPlayerId)
+    .eq("club_id", ownClub.id);
+
+  if (error) {
+    throw error;
+  }
+
+  await touchGameSave(supabase, gameId, userId);
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: {
+      clubId: ownClub.id,
+      clubPlayerId,
+      customName: normalized.value,
+      displayName: normalized.value || getClubPlayerDisplayNameFromRow(ownedPlayer),
+      needsRefetch: true,
+    },
+    type: "SAVE_UPDATED",
+  });
+  revalidatePath(`/games/${roomCode}`);
+  redirect(returnPath);
+}
+
+export async function counterTransferOfferAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const offerId = String(formData.get("offer_id") || "");
+  const offeredClubPlayerIdRaw = String(formData.get("offered_club_player_id") || "");
+  const offeredClubPlayerId = offeredClubPlayerIdRaw === "none" ? "" : offeredClubPlayerIdRaw;
+  const cashAmount = normalizeTransferCashAmount(Number(formData.get("cash_amount_millions") || 0) * 1_000_000);
+  const supabase = createSupabaseServiceClient();
+  const returnPath = `/games/${roomCode}?view=transfer`;
+
+  if (!userId || !gameId || !roomCode || !offerId || !supabase) {
+    redirect(returnPath);
+  }
+
+  const [{ game, ownClub }, offer] = await Promise.all([
+    getGameClubContext(supabase, gameId, userId),
+    getTransferOfferForAction(supabase, offerId, gameId),
+  ]);
+
+  if (!offer || offer.status !== "open" || offer.to_club_id !== ownClub.id) {
+    redirect(returnPath);
+  }
+
+  let offeredPlayerId: string | null = null;
+  if (offeredClubPlayerId) {
+    const { data: offered, error: offeredError } = await supabase
+      .from("club_players")
+      .select("id, club_id, player_id")
+      .eq("id", offeredClubPlayerId)
+      .single<{ club_id: string; id: string; player_id: string }>();
+
+    if (offeredError) {
+      throw offeredError;
+    }
+
+    if (offered.club_id !== offer.from_club_id) {
+      redirect(returnPath);
+    }
+
+    offeredPlayerId = offered.player_id;
+  }
+
+  const transfersBlocked =
+    (await isClubTransferBlocked(supabase, offer.from_club_id, game.phase)) ||
+    (await isClubTransferBlocked(supabase, offer.to_club_id, game.phase));
+  const offerCheck = canCreateTransferOffer({
+    cashAmount,
+    hasOfferedPlayer: Boolean(offeredClubPlayerId),
+    isOffseason: isOffseasonPhase(game.phase),
+    targetOwnClub: false,
+    transfersBlocked,
+  });
+
+  if (!offerCheck.ok) {
+    redirect(returnPath);
+  }
+
+  const [{ data: existingTargetOffers, error: existingTargetError }, offeredConflictResult] = await Promise.all([
+    supabase
+      .from("transfer_offers")
+      .select("id")
+      .eq("from_club_id", offer.from_club_id)
+      .eq("target_club_player_id", offer.target_club_player_id)
+      .eq("status", "open")
+      .neq("id", offer.id)
+      .limit(1)
+      .returns<Array<{ id: string }>>(),
+    offeredClubPlayerId
+      ? supabase
+          .from("transfer_offers")
+          .select("id")
+          .eq("offered_club_player_id", offeredClubPlayerId)
+          .eq("status", "open")
+          .neq("id", offer.id)
+          .limit(1)
+          .returns<Array<{ id: string }>>()
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+
+  if (existingTargetError) {
+    throw existingTargetError;
+  }
+
+  if (offeredConflictResult.error) {
+    throw offeredConflictResult.error;
+  }
+
+  if (existingTargetOffers?.length || offeredConflictResult.data?.length) {
+    redirect(returnPath);
+  }
+
+  const now = new Date().toISOString();
+  const { data: counteredOffer, error: counteredError } = await supabase
+    .from("transfer_offers")
+    .update(buildTransferOfferClosePayload("countered", now))
+    .eq("id", offer.id)
+    .eq("status", "open")
+    .select("id")
+    .maybeSingle<{ id: string }>();
+
+  if (counteredError) {
+    throw counteredError;
+  }
+
+  if (!counteredOffer) {
+    redirect(returnPath);
+  }
+
+  const { data: insertedOffer, error: insertError } = await supabase.from("transfer_offers").insert({
+    cash_amount: cashAmount,
+    created_by_club_id: ownClub.id,
+    from_club_id: offer.from_club_id,
+    game_id: gameId,
+    offered_club_player_id: offeredClubPlayerId || null,
+    offered_player_id: offeredPlayerId,
+    parent_offer_id: offer.id,
+    responder_club_id: offer.from_club_id,
+    season_number: offer.season_number,
+    target_club_player_id: offer.target_club_player_id,
+    target_player_id: offer.target_player_id,
+    to_club_id: offer.to_club_id,
+  }).select("id").single<{ id: string }>();
+
+  if (insertError) {
+    throw insertError;
+  }
+
+  await touchGameSave(supabase, gameId, userId);
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: {
+      fromClubId: offer.from_club_id,
+      needsRefetch: true,
+      offerId: offer.id,
+      status: "countered",
+      toClubId: offer.to_club_id,
+    },
+    type: "TRANSFER_OFFER_RESOLVED",
+  });
+  await emitGameEvent(supabase, {
+    actorClerkUserId: userId,
+    gameId,
+    payload: {
+      fromClubId: offer.from_club_id,
+      needsRefetch: true,
+      offerId: insertedOffer?.id,
+      parentOfferId: offer.id,
+      toClubId: offer.to_club_id,
+    },
+    type: "TRANSFER_OFFER_CREATED",
+  });
+  revalidatePath(`/games/${roomCode}`);
+  redirect(returnPath);
+}
+
 export async function acceptTransferOfferAction(formData: FormData) {
   const { userId } = await auth();
   const gameId = String(formData.get("game_id") || "");
@@ -1546,7 +1779,7 @@ export async function acceptTransferOfferAction(formData: FormData) {
     getTransferOfferForAction(supabase, offerId, gameId),
   ]);
 
-  if (!offer || offer.status !== "open" || offer.to_club_id !== ownClub.id) {
+  if (!offer || offer.status !== "open" || getTransferOfferResponderClubId(offer) !== ownClub.id) {
     redirect(`/games/${roomCode}?view=transfer`);
   }
 
@@ -1735,7 +1968,7 @@ export async function declineTransferOfferAction(formData: FormData) {
     getTransferOfferForAction(supabase, offerId, gameId),
   ]);
 
-  if (!offer || offer.to_club_id !== ownClub.id || offer.status !== "open") {
+  if (!offer || getTransferOfferResponderClubId(offer) !== ownClub.id || offer.status !== "open") {
     redirect(`/games/${roomCode}?view=transfer`);
   }
 
@@ -1782,7 +2015,7 @@ export async function cancelTransferOfferAction(formData: FormData) {
     getTransferOfferForAction(supabase, offerId, gameId),
   ]);
 
-  if (!offer || offer.from_club_id !== ownClub.id || offer.status !== "open") {
+  if (!offer || getTransferOfferCreatorClubId(offer) !== ownClub.id || offer.status !== "open") {
     redirect(`/games/${roomCode}?view=transfer`);
   }
 
@@ -3069,7 +3302,7 @@ async function loadClubLineupSnapshotPlayers(supabase: SupabaseServiceClient, cl
 
   const { data, error } = await supabase
     .from("club_players")
-    .select("current_stars, current_zone, lineup_slot, player:players(attacker_archetype, defender_archetype, display_name)")
+    .select("custom_name, current_stars, current_zone, lineup_slot, player:players(attacker_archetype, defender_archetype, display_name)")
     .eq("club_id", clubId)
     .neq("current_zone", "bench")
     .order("lineup_slot", { ascending: true })
@@ -3126,9 +3359,9 @@ async function applyFixtureInjuryEvent(
 
   const { data: injuredPlayer } = await supabase
     .from("club_players")
-    .select("player:players(display_name)")
+    .select("custom_name, player:players(display_name)")
     .eq("id", params.playerId)
-    .maybeSingle<{ player: { display_name: string } | null }>();
+    .maybeSingle<{ custom_name?: string | null; player: { display_name: string } | null }>();
 
   await writeMatchNews(supabase, {
     gameId: params.gameId,
@@ -3136,7 +3369,7 @@ async function applyFixtureInjuryEvent(
     clubId: params.clubId,
     category: "injury",
     headline: `Verletzung in Zone ${params.zone}`,
-    detail: injuredPlayer?.player?.display_name ? `${injuredPlayer.player.display_name} verletzt` : undefined,
+    detail: injuredPlayer ? `${getClubPlayerDisplayNameFromRow(injuredPlayer)} verletzt` : undefined,
   });
 }
 
@@ -3317,7 +3550,7 @@ async function buildFixtureSide(supabase: SupabaseServiceClient, participant: Fi
   const [{ data, error }, { data: staffData }] = await Promise.all([
     supabase
       .from("club_players")
-      .select("id, current_stars, current_zone, lineup_slot, player:players(attacker_archetype, chemistry_left, chemistry_right, defender_archetype, display_name, position, eligible_positions)")
+      .select("id, custom_name, current_stars, current_zone, lineup_slot, player:players(attacker_archetype, chemistry_left, chemistry_right, defender_archetype, display_name, position, eligible_positions)")
       .eq("club_id", participant.club_id)
       .neq("current_zone", "bench")
       .eq("injured", false)
@@ -3325,6 +3558,7 @@ async function buildFixtureSide(supabase: SupabaseServiceClient, participant: Fi
       .returns<
         Array<{
           current_stars: number | string;
+          custom_name?: string | null;
           current_zone: string;
           id: string;
           lineup_slot: number | null;
@@ -3404,7 +3638,7 @@ async function buildFixtureSide(supabase: SupabaseServiceClient, participant: Fi
           player.player?.position,
           player.player?.eligible_positions,
         ),
-        display_name: player.player?.display_name ?? null,
+        display_name: getClubPlayerDisplayNameFromRow(player),
         id: player.id,
         lineup_slot: player.lineup_slot,
         position: player.player?.position ?? null,
@@ -4560,10 +4794,10 @@ export async function playMatchCardAction(formData: FormData) {
         }
         const { data: owned } = await supabase
           .from("club_players")
-          .select("id, player:players(display_name)")
+          .select("id, custom_name, player:players(display_name)")
           .eq("id", newCaptainId)
           .eq("club_id", ownClub.id)
-          .maybeSingle<{ id: string; player: { display_name: string } | null }>();
+          .maybeSingle<{ custom_name?: string | null; id: string; player: { display_name: string } | null }>();
         if (!owned) {
           redirect(`/games/${roomCode}?view=matchday`);
         }
@@ -4587,7 +4821,7 @@ export async function playMatchCardAction(formData: FormData) {
             : { away_locked_def: powers.DEF, away_locked_mid: powers.MID, away_locked_att: powers.ATT };
         await supabase.from("fixtures").update(lockUpdate).eq("id", fixtureId);
         await markCardUsed();
-        await news(`Captain-Wechsel: ${owned!.player?.display_name ?? "Spieler"} ist neuer Captain`);
+        await news(`Captain-Wechsel: ${getClubPlayerDisplayNameFromRow(owned!)} ist neuer Captain`);
         break;
       }
 
@@ -4610,25 +4844,25 @@ export async function playMatchCardAction(formData: FormData) {
         if (!opponentClub?.club_id) redirect(`/games/${roomCode}?view=matchday`);
         const until = effect.duration === "season" ? -1 : Math.max(1, Math.trunc(fixture.matchday)) + 1;
         const targetId = String(choicePayload.club_player_id ?? "");
-        let victim: { id: string; player: { display_name: string } | null } | null = null;
+        let victim: { custom_name?: string | null; id: string; player: { display_name: string } | null } | null = null;
         if (targetId) {
           const { data } = await supabase
             .from("club_players")
-            .select("id, player:players(display_name)")
+            .select("id, custom_name, player:players(display_name)")
             .eq("id", targetId)
             .eq("club_id", opponentClub!.club_id!)
             .eq("injured", false)
-            .maybeSingle<{ id: string; player: { display_name: string } | null }>();
+            .maybeSingle<{ custom_name?: string | null; id: string; player: { display_name: string } | null }>();
           victim = data;
         } else {
           // No client choice (hidden roster): pick a random eligible opponent player.
           const { data: pool } = await supabase
             .from("club_players")
-            .select("id, player:players(display_name)")
+            .select("id, custom_name, player:players(display_name)")
             .eq("club_id", opponentClub!.club_id!)
             .eq("injured", false)
             .neq("current_zone", "bench")
-            .returns<Array<{ id: string; player: { display_name: string } | null }>>();
+            .returns<Array<{ custom_name?: string | null; id: string; player: { display_name: string } | null }>>();
           if (pool && pool.length > 0) {
             victim = pool[Math.floor(Math.random() * pool.length)];
           }
@@ -4642,7 +4876,7 @@ export async function playMatchCardAction(formData: FormData) {
         const oppLockCol = opponentSide === "home" ? "home_lineup_locked" : "away_lineup_locked";
         await supabase.from("fixtures").update({ [oppLockCol]: false }).eq("id", fixtureId);
         await markCardUsed();
-        await news(`Dirty Tackle: ${victim!.player?.display_name ?? "Gegner-Spieler"} verletzt`);
+        await news(`Dirty Tackle: ${getClubPlayerDisplayNameFromRow(victim!)} verletzt`);
         break;
       }
 
@@ -4659,18 +4893,18 @@ export async function playMatchCardAction(formData: FormData) {
         if (!targetId) redirect(`/games/${roomCode}?view=matchday`);
         const { data: patient } = await supabase
           .from("club_players")
-          .select("id, player:players(display_name)")
+          .select("id, custom_name, player:players(display_name)")
           .eq("id", targetId)
           .eq("club_id", ownClub.id)
           .eq("injured", true)
-          .maybeSingle<{ id: string; player: { display_name: string } | null }>();
+          .maybeSingle<{ custom_name?: string | null; id: string; player: { display_name: string } | null }>();
         if (!patient) redirect(`/games/${roomCode}?view=matchday`);
         await supabase
           .from("club_players")
           .update({ injured: false, injured_until_matchday: null })
           .eq("id", patient!.id);
         await markCardUsed();
-        await news(`Magic Ice Spray: ${patient!.player?.display_name ?? "Spieler"} geheilt`);
+        await news(`Magic Ice Spray: ${getClubPlayerDisplayNameFromRow(patient!)} geheilt`);
         break;
       }
 
@@ -5402,13 +5636,16 @@ async function getPlayerSaleCount(supabase: SupabaseServiceClient, gameId: strin
 
 type TransferOfferActionRow = {
   cash_amount: number | string;
+  created_by_club_id?: string | null;
   from_club_id: string;
   game_id: string;
   id: string;
   offered_club_player_id?: string | null;
   offered_player_id?: string | null;
+  parent_offer_id?: string | null;
+  responder_club_id?: string | null;
   season_number: number;
-  status: "accepted" | "cancelled" | "declined" | "expired" | "open";
+  status: "accepted" | "cancelled" | "countered" | "declined" | "expired" | "open";
   target_club_player_id: string;
   target_player_id: string;
   to_club_id: string;
@@ -5418,7 +5655,7 @@ async function getTransferOfferForAction(supabase: SupabaseServiceClient, offerI
   const { data, error } = await supabase
     .from("transfer_offers")
     .select(
-      "id, game_id, season_number, from_club_id, to_club_id, target_club_player_id, target_player_id, offered_club_player_id, offered_player_id, cash_amount, status",
+      "id, game_id, season_number, parent_offer_id, created_by_club_id, responder_club_id, from_club_id, to_club_id, target_club_player_id, target_player_id, offered_club_player_id, offered_player_id, cash_amount, status",
     )
     .eq("id", offerId)
     .eq("game_id", gameId)
@@ -6520,10 +6757,10 @@ export async function resolveGameChangerChoiceAction(formData: FormData) {
 
     const { data: cp } = await supabase
       .from("club_players")
-      .select("id, club_id, player:players(display_name)")
+      .select("id, club_id, custom_name, player:players(display_name)")
       .eq("id", clubPlayerId)
       .eq("club_id", ownClub.id)
-      .maybeSingle<{ id: string; club_id: string; player: { display_name: string } | null }>();
+      .maybeSingle<{ club_id: string; custom_name?: string | null; id: string; player: { display_name: string } | null }>();
     if (!cp) redirect(`/games/${roomCode}`);
 
     const effect = effects.find((e) => e.type === "player_potential_bonus");

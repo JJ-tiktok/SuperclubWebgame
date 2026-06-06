@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { saveGameAction, setReadyAction, startGameAction } from "@/app/lobby/actions";
 import { DevAdminMenu } from "@/components/dev/dev-admin-menu";
+import { ClubBadge } from "@/components/game/club-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelDescription, PanelHeader, PanelTitle } from "@/components/ui/panel";
@@ -312,7 +313,9 @@ export function LobbyRealtime({
                   >
                     <div className="h-1.5" style={{ backgroundColor: club.club_color ?? "#3f3f46" }} />
                     <div className="flex items-start justify-between gap-3 p-4">
-                      <div>
+                      <div className="flex min-w-0 gap-3">
+                        <ClubBadge clubColor={club.club_color} clubName={club.club_name} size="md" />
+                        <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
                           <p className="font-semibold text-zinc-50">{club.club_name}</p>
                           {game.host_clerk_user_id === club.clerk_user_id ? (
@@ -324,6 +327,7 @@ export function LobbyRealtime({
                         </div>
                         {club.club_slogan ? <p className="mt-1 text-xs text-zinc-400">{club.club_slogan}</p> : null}
                         <p className="mt-1 text-sm text-zinc-500">{member?.display_name ?? club.manager_name}</p>
+                        </div>
                       </div>
                       <Badge tone={club.is_ready ? "green" : "neutral"}>{club.is_ready ? "bereit" : "wartet"}</Badge>
                     </div>
@@ -345,9 +349,12 @@ export function LobbyRealtime({
               {ownClub ? (
                 <div className="overflow-hidden rounded-md border border-[var(--club-border)] bg-zinc-900">
                   <div className="h-2" style={{ backgroundColor: ownClub.club_color ?? "#3f3f46" }} />
-                  <div className="p-4">
-                    <p className="font-semibold text-zinc-50">{ownClub.club_name}</p>
-                    {ownClub.club_slogan ? <p className="mt-1 text-sm text-zinc-400">{ownClub.club_slogan}</p> : null}
+                  <div className="flex items-center gap-3 p-4">
+                    <ClubBadge clubColor={ownClub.club_color} clubName={ownClub.club_name} size="lg" />
+                    <div className="min-w-0">
+                      <p className="truncate font-semibold text-zinc-50">{ownClub.club_name}</p>
+                      {ownClub.club_slogan ? <p className="mt-1 text-sm text-zinc-400">{ownClub.club_slogan}</p> : null}
+                    </div>
                   </div>
                 </div>
               ) : null}

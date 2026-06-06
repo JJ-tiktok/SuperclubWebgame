@@ -4,7 +4,7 @@ import { MAX_SQUAD_SIZE } from "@/lib/game/rules";
 export const MANAGER_TRANSFER_DEPARTURE_LIMIT = 2;
 export const TRANSFER_MONEY_STEP = 1_000_000;
 
-export type TransferOfferCloseStatus = "cancelled" | "declined" | "expired";
+export type TransferOfferCloseStatus = "cancelled" | "countered" | "declined" | "expired";
 
 /** Clears swap columns together so transfer_offers_check1 stays valid. */
 export function buildTransferOfferClosePayload(status: TransferOfferCloseStatus, resolvedAt = new Date().toISOString()) {
@@ -44,6 +44,20 @@ export function canCreateTransferOffer(params: {
   }
 
   return { ok: true } as const;
+}
+
+export function getTransferOfferCreatorClubId(offer: {
+  created_by_club_id?: string | null;
+  from_club_id: string;
+}) {
+  return offer.created_by_club_id ?? offer.from_club_id;
+}
+
+export function getTransferOfferResponderClubId(offer: {
+  responder_club_id?: string | null;
+  to_club_id: string;
+}) {
+  return offer.responder_club_id ?? offer.to_club_id;
 }
 
 export function canAcceptTransferOffer(params: {

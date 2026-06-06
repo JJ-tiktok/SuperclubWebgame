@@ -127,6 +127,8 @@ function ContinentalFixtureHeroCard({
   const awayLineup =
     fixture.away_cpu_lineup ??
     makeLockedLineup(fixture.away_locked_def, fixture.away_locked_mid, fixture.away_locked_att);
+  const homeClubColor = snapshot.clubs.find((club) => club.id === home.club_id)?.club_color ?? null;
+  const awayClubColor = snapshot.clubs.find((club) => club.id === away.club_id)?.club_color ?? null;
   const result = parseFixtureResult(fixture.result);
   const partialThirds = ((fixture.partial_result as { thirds?: unknown[] } | null)?.thirds ?? []) as FixtureThird[];
   const showMatchResult =
@@ -162,7 +164,7 @@ function ContinentalFixtureHeroCard({
               hideStandingStats
               lineup={homeLineup}
               locked={fixture.home_lineup_locked}
-              participant={home}
+              participant={{ ...home, club_color: homeClubColor }}
               powerSummary={home.club_id === ownClub.id && fixture.home_lineup_locked ? ownPowerSummary : null}
               score={fixture.home_score}
             />
@@ -170,7 +172,7 @@ function ContinentalFixtureHeroCard({
               hideStandingStats
               lineup={awayLineup}
               locked={fixture.away_lineup_locked}
-              participant={away}
+              participant={{ ...away, club_color: awayClubColor }}
               powerSummary={away.club_id === ownClub.id && fixture.away_lineup_locked ? ownPowerSummary : null}
               score={fixture.away_score}
             />

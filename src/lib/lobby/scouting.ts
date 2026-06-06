@@ -206,19 +206,37 @@ export function canBuyScoutedPlayer(params: {
   return { ok: true } as const;
 }
 
+export function isSquadOverCapacity(squadSize: number) {
+  return squadSize > MAX_SQUAD_SIZE;
+}
+
+export function resolveClubPlayerSaleValue(params: { scoutingPrice: number; squadSize: number }) {
+  return isSquadOverCapacity(params.squadSize) ? 0 : params.scoutingPrice;
+}
+
+export type ClubPlayerSaleCheck =
+  | { mode: "release"; ok: true }
+  | { mode: "sale"; ok: true }
+  | { ok: false; reason: string };
+
 export function canSellClubPlayer(params: {
   isOffseason: boolean;
   salesCount: number;
-}) {
+  squadSize: number;
+}): ClubPlayerSaleCheck {
   if (!params.isOffseason) {
-    return { ok: false, reason: "not_offseason" } as const;
+    return { ok: false, reason: "not_offseason" };
+  }
+
+  if (isSquadOverCapacity(params.squadSize)) {
+    return { ok: true, mode: "release" };
   }
 
   if (params.salesCount >= 2) {
-    return { ok: false, reason: "sale_limit" } as const;
+    return { ok: false, reason: "sale_limit" };
   }
 
-  return { ok: true } as const;
+  return { ok: true, mode: "sale" };
 }
 
 export function getNextPendingScoutingClubId(clubs: Array<Pick<LobbyClub, "id" | "scouting_level">>, draws: Array<Pick<ScoutingDrawSnapshot, "club_id" | "status">>) {
@@ -241,6 +259,7 @@ export function getScoutingActionLabel(reason: string) {
     insufficient_money: "Zu wenig Geld",
     not_offseason: "Nur Offseason",
     sale_limit: "Verkaufslimit",
+    squad_over_capacity: "Kader zu gross",
     squad_full: "Kader voll",
     transfers_blocked: "Transfers gesperrt",
   };

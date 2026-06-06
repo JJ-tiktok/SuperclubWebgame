@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { refreshOffseasonScoutingSnapshot } from "@/lib/lobby/scouting";
 import { resolvePlayerPotentialCeiling, syncPlayerRowMarketValues } from "@/lib/lobby/player-market";
 import { cancelOpenSwapTransferOffersForClubPlayer } from "@/lib/lobby/transfers";
+import { getClubPlayerDisplayNameFromRow } from "@/lib/lobby/player-names";
 import { applyClubStatusDelta, normalizeClubStatus, resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
 import { resolvePendingEffectSeasonNumber } from "@/lib/lobby/offseason-pending-effects";
 import type { GameChangerCategory } from "@/lib/lobby/types";
@@ -279,17 +280,17 @@ export async function applyImmediateEffect(
     case "heal_random_injury": {
       const { data: injured } = await supabase
         .from("club_players")
-        .select("id, player:players(display_name)")
+        .select("id, custom_name, player:players(display_name)")
         .eq("club_id", clubId)
         .eq("injured", true)
         .limit(1)
-        .maybeSingle<{ id: string; player: { display_name: string } | null }>();
+        .maybeSingle<{ custom_name?: string | null; id: string; player: { display_name: string } | null }>();
       if (injured) {
         await supabase
           .from("club_players")
           .update({ injured: false, injured_until_matchday: null })
           .eq("id", injured.id);
-        return { applied: true, detail: injured.player?.display_name ?? "Spieler geheilt" };
+        return { applied: true, detail: `${getClubPlayerDisplayNameFromRow(injured)} geheilt` };
       }
       return { applied: false };
     }
@@ -317,15 +318,15 @@ export async function applyImmediateEffect(
       if (!clubPlayerId) return { applied: false, detail: "Kein Spieler gewaehlt" };
       const { data: cp } = await supabase
         .from("club_players")
-        .select("id, current_stars, player:players(id, display_name, skill_max)")
+        .select("id, custom_name, current_stars, player:players(id, display_name, skill_max)")
         .eq("id", clubPlayerId)
         .eq("club_id", clubId)
-        .maybeSingle<{ id: string; current_stars: number | string; player: { id: string; display_name: string; skill_max: number | string } | null }>();
+        .maybeSingle<{ custom_name?: string | null; id: string; current_stars: number | string; player: { id: string; display_name: string; skill_max: number | string } | null }>();
       if (!cp || !cp.player) return { applied: false };
       const skillMax = Number(cp.player.skill_max ?? 0);
       const newSkillMax = skillMax + Math.max(1, Math.trunc(effect.stars));
       await supabase.from("players").update({ skill_max: newSkillMax }).eq("id", cp.player.id);
-      return { applied: true, detail: `${cp.player.display_name}: Talent +${effect.stars}` };
+      return { applied: true, detail: `${getClubPlayerDisplayNameFromRow(cp)}: Talent +${effect.stars}` };
     }
 
     case "last_trained_star_loss": {
@@ -342,11 +343,12 @@ export async function applyImmediateEffect(
       if (!clubPlayerId) return { applied: false };
       const { data: cp } = await supabase
         .from("club_players")
-        .select("id, current_stars, player_id, player:players(display_name, base_stars, potential_stars, skill_max)")
+        .select("id, custom_name, current_stars, player_id, player:players(display_name, base_stars, potential_stars, skill_max)")
         .eq("id", clubPlayerId)
         .eq("club_id", clubId)
         .maybeSingle<{
           id: string;
+          custom_name?: string | null;
           current_stars: number | string;
           player: {
             base_stars?: number | string | null;
@@ -368,23 +370,23 @@ export async function applyImmediateEffect(
         }),
         stars: newStars,
       });
-      return { applied: true, detail: `${cp.player?.display_name ?? "Spieler"}: -${effect.stars} Stern` };
+      return { applied: true, detail: `${getClubPlayerDisplayNameFromRow(cp)}: -${effect.stars} Stern` };
     }
 
     case "force_release_stars": {
       const target = Math.max(1, Math.trunc(effect.stars));
       const { data: players } = await supabase
         .from("club_players")
-        .select("id, current_stars, player:players(display_name)")
+        .select("id, custom_name, current_stars, player:players(display_name)")
         .eq("club_id", clubId)
         .order("current_stars", { ascending: true })
-        .returns<Array<{ id: string; current_stars: number | string; player: { display_name: string } | null }>>();
+        .returns<Array<{ custom_name?: string | null; id: string; current_stars: number | string; player: { display_name: string } | null }>>();
       const sorted = (players ?? []).slice().sort((a, b) => Number(a.current_stars) - Number(b.current_stars));
       const removed: Array<{ id: string; name: string; stars: number }> = [];
       let removedStars = 0;
       for (const row of sorted) {
         if (removedStars >= target) break;
-        removed.push({ id: row.id, name: row.player?.display_name ?? "Spieler", stars: Number(row.current_stars) });
+        removed.push({ id: row.id, name: getClubPlayerDisplayNameFromRow(row), stars: Number(row.current_stars) });
         removedStars += Number(row.current_stars);
       }
       if (removed.length === 0) return { applied: false };

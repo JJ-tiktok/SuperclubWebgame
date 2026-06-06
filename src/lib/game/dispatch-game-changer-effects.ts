@@ -10,6 +10,7 @@ import {
   type InjuryCandidate,
   type PendingChoice,
 } from "@/lib/game/game-changer-effects";
+import { getClubPlayerDisplayNameFromRow } from "@/lib/lobby/player-names";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 async function loadInjuryCandidates(
@@ -18,12 +19,13 @@ async function loadInjuryCandidates(
 ): Promise<InjuryCandidate[]> {
   const { data } = await supabase
     .from("club_players")
-    .select("id, current_stars, current_zone, injured, player:players(display_name, position)")
+    .select("id, custom_name, current_stars, current_zone, injured, player:players(display_name, position)")
     .eq("club_id", clubId)
     .eq("injured", false)
     .returns<
       Array<{
         id: string;
+        custom_name?: string | null;
         current_stars: number | string;
         current_zone: string;
         injured: boolean;
@@ -35,7 +37,7 @@ async function loadInjuryCandidates(
     current_stars: Number(row.current_stars),
     current_zone: row.current_zone,
     position: row.player?.position ?? null,
-    display_name: row.player?.display_name ?? "Spieler",
+    display_name: getClubPlayerDisplayNameFromRow(row),
   }));
 }
 

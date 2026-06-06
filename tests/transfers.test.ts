@@ -4,6 +4,8 @@ import {
   buildTransferOfferClosePayload,
   canAcceptTransferOffer,
   canCreateTransferOffer,
+  getTransferOfferCreatorClubId,
+  getTransferOfferResponderClubId,
   MANAGER_TRANSFER_DEPARTURE_LIMIT,
   normalizeTransferCashAmount,
 } from "@/lib/lobby/transfers";
@@ -16,6 +18,27 @@ describe("manager transfer rules", () => {
     assert.equal(payload.offered_club_player_id, null);
     assert.equal(payload.offered_player_id, null);
     assert.equal(payload.resolved_at, "2026-06-05T19:42:44.961Z");
+  });
+
+  it("allows closing offers as countered", () => {
+    const payload = buildTransferOfferClosePayload("countered", "2026-06-05T19:42:44.961Z");
+
+    assert.equal(payload.status, "countered");
+    assert.equal(payload.offered_club_player_id, null);
+    assert.equal(payload.offered_player_id, null);
+  });
+
+  it("resolves creator and responder with legacy fallbacks", () => {
+    assert.equal(getTransferOfferCreatorClubId({ from_club_id: "buyer-a" }), "buyer-a");
+    assert.equal(getTransferOfferResponderClubId({ to_club_id: "seller-a" }), "seller-a");
+    assert.equal(
+      getTransferOfferCreatorClubId({ created_by_club_id: "seller-a", from_club_id: "buyer-a" }),
+      "seller-a",
+    );
+    assert.equal(
+      getTransferOfferResponderClubId({ responder_club_id: "buyer-a", to_club_id: "seller-a" }),
+      "buyer-a",
+    );
   });
 
   it("normalizes cash offers to full millions", () => {

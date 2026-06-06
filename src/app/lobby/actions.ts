@@ -4,7 +4,12 @@ import { auth, currentUser } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
 import { isRedirectError } from "next/dist/client/components/redirect-error";
 import { redirect } from "next/navigation";
-import { validateClubTemplateId } from "@/lib/lobby/club-templates";
+import {
+  getClubSelectionName,
+  isClubNameTaken,
+  parseClubSelectionFromFormData,
+  type ClubSelection,
+} from "@/lib/lobby/custom-clubs";
 import { parseCpuTeamIdsFromFormData, validateCpuTeamSelection } from "@/lib/lobby/cpu-teams";
 import { ensureDraftRound } from "@/lib/lobby/draft-server";
 import {
@@ -16,7 +21,7 @@ import {
   validateClubName,
   validateRoomCode,
 } from "@/lib/lobby/rules";
-import type { ActionResult, ClubTemplate, LobbyClub, LobbyGame, LobbySettings } from "@/lib/lobby/types";
+import type { ActionResult, LobbyClub, LobbyGame, LobbySettings } from "@/lib/lobby/types";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
 import { getServiceSupabaseConfigIssue } from "@/lib/supabase/config";
 import { getErrorMessage, getSupabaseSetupHint } from "@/lib/supabase/errors";
@@ -181,10 +186,24 @@ async function createMembershipAndClub(params: {
   clerkUserId: string;
   displayName: string;
   imageUrl: string | null;
-  clubTemplate: ClubTemplate;
+  clubSelection: ClubSelection;
   isHost?: boolean;
 }) {
-  const { supabase, game, clerkUserId, displayName, imageUrl, clubTemplate, isHost = false } = params;
+  const { supabase, game, clerkUserId, displayName, imageUrl, clubSelection, isHost = false } = params;
+  const clubFields =
+    clubSelection.kind === "template"
+      ? {
+          club_template_id: clubSelection.template.id,
+          club_name: clubSelection.template.name,
+          club_slogan: clubSelection.template.slogan,
+          club_color: clubSelection.template.color,
+        }
+      : {
+          club_template_id: null,
+          club_name: clubSelection.club_name,
+          club_slogan: null,
+          club_color: clubSelection.club_color,
+        };
 
   const { error: memberError } = await supabase.from("game_members").upsert(
     {
@@ -205,10 +224,7 @@ async function createMembershipAndClub(params: {
     {
       game_id: game.id,
       clerk_user_id: clerkUserId,
-      club_template_id: clubTemplate.id,
-      club_name: clubTemplate.name,
-      club_slogan: clubTemplate.slogan,
-      club_color: clubTemplate.color,
+      ...clubFields,
       manager_name: displayName,
       image_url: imageUrl,
       money: game.settings.starting_money,
@@ -265,10 +281,10 @@ async function createGame(formData: FormData) {
     throw new Error(cpuValidation.error);
   }
   const settings = { ...settingsBase, cpu_team_ids: cpuValidation.ids };
-  const templateResult = validateClubTemplateId(String(formData.get("club_template_id") || ""));
+  const clubSelectionResult = parseClubSelectionFromFormData(formData);
 
-  if (!templateResult.ok) {
-    throw new Error(templateResult.error);
+  if (!clubSelectionResult.ok) {
+    throw new Error(clubSelectionResult.error);
   }
 
   let game: LobbyGame | null = null;
@@ -311,7 +327,7 @@ async function createGame(formData: FormData) {
     clerkUserId: userId,
     displayName,
     imageUrl,
-    clubTemplate: templateResult.template,
+    clubSelection: clubSelectionResult.selection,
     isHost: true,
   });
 
@@ -330,14 +346,14 @@ async function createGame(formData: FormData) {
 async function joinGame(formData: FormData) {
   const { userId, displayName, imageUrl, supabase } = await requireLobbyContext();
   const roomCode = normalizeRoomCode(String(formData.get("room_code") || ""));
-  const templateResult = validateClubTemplateId(String(formData.get("club_template_id") || ""));
+  const clubSelectionResult = parseClubSelectionFromFormData(formData);
 
   if (!validateRoomCode(roomCode)) {
     throw new Error("Bitte gib einen gueltigen Room-Code ein.");
   }
 
-  if (!templateResult.ok) {
-    throw new Error(templateResult.error);
+  if (!clubSelectionResult.ok) {
+    throw new Error(clubSelectionResult.error);
   }
 
   const game = await findGameByRoomCode(supabase, roomCode);
@@ -351,12 +367,20 @@ async function joinGame(formData: FormData) {
   }
 
   const existingClubs = await getLobbyClubs(supabase, game.id);
-  const templateTaken = existingClubs.some(
-    (club) => club.club_template_id === templateResult.template.id && club.clerk_user_id !== userId,
-  );
+  const clubSelection = clubSelectionResult.selection;
+  const desiredClubName = getClubSelectionName(clubSelection);
+  const templateTaken =
+    clubSelection.kind === "template" &&
+    existingClubs.some(
+      (club) => club.club_template_id === clubSelection.template.id && club.clerk_user_id !== userId,
+    );
 
   if (templateTaken) {
     throw new Error("Dieser Verein ist in der Lobby bereits vergeben.");
+  }
+
+  if (isClubNameTaken(existingClubs, desiredClubName, userId)) {
+    throw new Error("Dieser Clubname ist in der Lobby bereits vergeben.");
   }
 
   await createMembershipAndClub({
@@ -365,7 +389,7 @@ async function joinGame(formData: FormData) {
     clerkUserId: userId,
     displayName,
     imageUrl,
-    clubTemplate: templateResult.template,
+    clubSelection,
     isHost: game.host_clerk_user_id === userId,
   });
 

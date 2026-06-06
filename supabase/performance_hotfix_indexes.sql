@@ -8,6 +8,11 @@ alter table public.clubs
 alter table public.clubs
   add column if not exists squad_size int not null default 0;
 
+alter table public.transfer_offers
+  add column if not exists parent_offer_id uuid references public.transfer_offers(id) on delete set null,
+  add column if not exists created_by_club_id uuid references public.clubs(id) on delete set null,
+  add column if not exists responder_club_id uuid references public.clubs(id) on delete set null;
+
 create index if not exists clubs_game_created_at_idx
   on public.clubs (game_id, created_at);
 
@@ -87,6 +92,12 @@ create index if not exists transfer_offers_from_club_season_idx
 
 create index if not exists transfer_offers_to_club_season_idx
   on public.transfer_offers (to_club_id, season_number, created_at desc);
+
+create index if not exists transfer_offers_created_by_club_season_idx
+  on public.transfer_offers (created_by_club_id, season_number, created_at desc);
+
+create index if not exists transfer_offers_responder_club_season_idx
+  on public.transfer_offers (responder_club_id, season_number, created_at desc);
 
 -- Backfill the cached squad strength used by the lightweight lobby snapshot.
 -- This keeps normal dashboard/lobby reads from recalculating every club from club_players.

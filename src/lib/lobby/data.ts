@@ -1,4 +1,5 @@
 import { auth } from "@clerk/nextjs/server";
+import { getContinentalLineupStars, type ContinentalCpuTier } from "@/lib/lobby/continental-cup";
 import { normalizeRoomCode } from "./rules";
 import { DRAFT_PLAYER_SELECT } from "./draft";
 import { buildNextMatchZoneBoostsByClubId } from "@/lib/game/game-changer-effects";
@@ -597,7 +598,7 @@ async function getContinentalSnapshot(game: LobbyGame): Promise<ContinentalTourn
   const [{ data: participants, error: participantsError }, { data: fixtures, error: fixturesError }] = await Promise.all([
     supabase
       .from("continental_participants")
-      .select("id, kind, club_id, display_name, bracket_seed, eliminated_round")
+      .select("id, kind, club_id, display_name, bracket_seed, eliminated_round, cpu_strength_tier")
       .eq("tournament_id", tournament.id)
       .order("bracket_seed", { ascending: true }),
     supabase
@@ -609,10 +610,9 @@ async function getContinentalSnapshot(game: LobbyGame): Promise<ContinentalTourn
         away_locked_def, away_locked_mid, away_locked_att,
         home_score, away_score, home_third_points, away_third_points,
         partial_result, result, winner_participant_id,
-        home_participant:continental_participants!continental_fixtures_home_participant_id_fkey(id, kind, club_id, display_name, bracket_seed, eliminated_round),
-        away_participant:continental_participants!continental_fixtures_away_participant_id_fkey(id, kind, club_id, display_name, bracket_seed, eliminated_round),
-        home_cpu_lineup:continental_cpu_lineups!continental_fixtures_home_continental_cpu_lineup_id_fkey(id, display_name, def_stars, mid_stars, att_stars),
-        away_cpu_lineup:continental_cpu_lineups!continental_fixtures_away_continental_cpu_lineup_id_fkey(id, display_name, def_stars, mid_stars, att_stars)`,
+        home_cpu_formation_index, away_cpu_formation_index,
+        home_participant:continental_participants!continental_fixtures_home_participant_id_fkey(id, kind, club_id, display_name, bracket_seed, eliminated_round, cpu_strength_tier),
+        away_participant:continental_participants!continental_fixtures_away_participant_id_fkey(id, kind, club_id, display_name, bracket_seed, eliminated_round, cpu_strength_tier)`,
       )
       .eq("tournament_id", tournament.id)
       .order("round", { ascending: false })
@@ -648,8 +648,55 @@ async function getContinentalSnapshot(game: LobbyGame): Promise<ContinentalTourn
       display_name: p.display_name as string,
       bracket_seed: Number(p.bracket_seed),
       eliminated_round: p.eliminated_round != null ? Number(p.eliminated_round) : null,
+      cpu_strength_tier: (p.cpu_strength_tier as ContinentalCpuTier | null) ?? null,
     })),
-    fixtures: fixtures ?? [],
+    fixtures: (fixtures ?? []).map((fixture) => mapContinentalFixtureSnapshot(fixture)),
+  };
+}
+
+function mapContinentalFixtureSnapshot(
+  fixture: ContinentalFixtureSnapshot & {
+    home_cpu_formation_index?: number | null;
+    away_cpu_formation_index?: number | null;
+    home_participant: ContinentalFixtureSnapshot["home_participant"] & { cpu_strength_tier?: ContinentalCpuTier | null };
+    away_participant: ContinentalFixtureSnapshot["away_participant"] & { cpu_strength_tier?: ContinentalCpuTier | null };
+  },
+): ContinentalFixtureSnapshot {
+  return {
+    ...fixture,
+    home_participant: {
+      ...fixture.home_participant,
+      cpu_strength_tier: fixture.home_participant.cpu_strength_tier ?? null,
+    },
+    away_participant: {
+      ...fixture.away_participant,
+      cpu_strength_tier: fixture.away_participant.cpu_strength_tier ?? null,
+    },
+    home_cpu_lineup: buildContinentalCpuLineupSnapshot(
+      fixture.home_participant,
+      fixture.home_cpu_formation_index ?? null,
+    ),
+    away_cpu_lineup: buildContinentalCpuLineupSnapshot(
+      fixture.away_participant,
+      fixture.away_cpu_formation_index ?? null,
+    ),
+  };
+}
+
+function buildContinentalCpuLineupSnapshot(
+  participant: ContinentalFixtureSnapshot["home_participant"] & { cpu_strength_tier?: ContinentalCpuTier | null },
+  formationIndex: number | null,
+) {
+  if (participant.kind !== "cpu" || !participant.cpu_strength_tier) {
+    return null;
+  }
+  const stars = getContinentalLineupStars(participant.cpu_strength_tier, formationIndex ?? 0);
+  return {
+    id: `${participant.id}-${formationIndex ?? 0}`,
+    display_name: stars.display_name,
+    def_stars: stars.def,
+    mid_stars: stars.mid,
+    att_stars: stars.att,
   };
 }
 

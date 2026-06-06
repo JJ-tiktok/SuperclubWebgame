@@ -34,6 +34,7 @@ function managerStanding(
   seasonScore: number,
   squadStars = 30,
   seasonMatchPoints = 12,
+  status: ManagerStandingSnapshot["status"] = rank === 1 ? "title_contender" : "established",
 ): ManagerStandingSnapshot {
   return {
     attractiveness_stars: rank === 1 ? 6 : 4,
@@ -43,7 +44,7 @@ function managerStanding(
     season_match_points: seasonMatchPoints,
     season_score: seasonScore,
     squad_stars: squadStars,
-    status: rank === 1 ? "title_contender" : "established",
+    status,
   };
 }
 
@@ -145,12 +146,35 @@ describe("season end summary model", () => {
   it("detects the Continental Cup as next step when enabled and due", () => {
     const summary = buildSeasonEndSummaryModel({
       matchNews: [],
-      season: season(),
+      season: season({
+        manager_standings: [
+          managerStanding("club-a", 1, 67, 30, 12, "title_contender"),
+          managerStanding("club-b", 2, 52, 28, 10, "mid_table"),
+        ],
+      }),
       settings: { ...baseSettings, continental_cup_enabled: true, seasonNumber: 2 },
     });
 
     assert.equal(summary.nextPhase, "champions_league");
     assert.equal(summary.goesToContinentalCup, true);
+    assert.equal(summary.continentalCupSkipped, false);
+  });
+
+  it("skips the Continental Cup when no club reaches mid_table", () => {
+    const summary = buildSeasonEndSummaryModel({
+      matchNews: [],
+      season: season({
+        manager_standings: [
+          managerStanding("club-a", 1, 67, 30, 12, "established"),
+          managerStanding("club-b", 2, 52, 28, 10, "newly_promoted"),
+        ],
+      }),
+      settings: { ...baseSettings, continental_cup_enabled: true, seasonNumber: 2 },
+    });
+
+    assert.equal(summary.nextPhase, "off_season");
+    assert.equal(summary.goesToContinentalCup, false);
+    assert.equal(summary.continentalCupSkipped, true);
   });
 
   it("detects off-season as next step when Continental Cup is disabled", () => {

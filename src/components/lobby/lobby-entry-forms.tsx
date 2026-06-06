@@ -271,7 +271,7 @@ function ClubSelection({ name }: { name: string }) {
       </div>
       {customSelected ? (
         <div className="rounded-md border border-zinc-800 bg-zinc-950/70 p-3">
-          <div className="grid gap-3 md:grid-cols-[1fr_170px]">
+          <div className="grid gap-3 md:grid-cols-[1fr_220px]">
             <label className="block text-sm font-medium text-zinc-300">
               Clubname
               <input
@@ -284,17 +284,32 @@ function ClubSelection({ name }: { name: string }) {
                 value={customClubName}
               />
             </label>
-            <label className="block text-sm font-medium text-zinc-300">
+            <div className="block text-sm font-medium text-zinc-300">
               Hex-Farbe
-              <input
-                className="mt-2 h-11 w-full rounded-md border border-zinc-800 bg-zinc-900 px-3 font-mono text-zinc-50 outline-none focus:border-lime-300"
-                name="custom_club_color"
-                onChange={(event) => setCustomClubColor(event.target.value)}
-                pattern="^#[0-9A-Fa-f]{6}$"
-                required={customSelected}
-                value={customClubColor}
-              />
-            </label>
+              <div className="mt-2 grid grid-cols-[44px_1fr] gap-2">
+                <label
+                  className="relative h-11 cursor-pointer overflow-hidden rounded-md border border-zinc-800 bg-zinc-900 focus-within:border-lime-300"
+                  title="Farbe waehlen"
+                >
+                  <span className="absolute inset-1 rounded" style={{ backgroundColor: customClubColor }} />
+                  <input
+                    aria-label="Clubfarbe per Farbauswahl waehlen"
+                    className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                    onChange={(event) => setCustomClubColor(event.target.value.toUpperCase())}
+                    type="color"
+                    value={customClubColor}
+                  />
+                </label>
+                <input
+                  className="h-11 w-full rounded-md border border-zinc-800 bg-zinc-900 px-3 font-mono text-zinc-50 outline-none focus:border-lime-300"
+                  name="custom_club_color"
+                  onChange={(event) => setCustomClubColor(event.target.value)}
+                  pattern="^#[0-9A-Fa-f]{6}$"
+                  required={customSelected}
+                  value={customClubColor}
+                />
+              </div>
+            </div>
           </div>
           <div className="mt-3 flex flex-wrap gap-2" aria-label="Clubfarbe waehlen">
             {CUSTOM_CLUB_COLOR_SWATCHES.map((color) => (

@@ -625,6 +625,8 @@ export type SeasonSnapshot = {
   standings: SeasonStandingSnapshot[];
 };
 
+export type ContinentalCpuTier = "underdog" | "schwer" | "sehr_schwer" | "elite";
+
 export type ContinentalParticipantSnapshot = {
   id: string;
   kind: "human" | "cpu";
@@ -632,6 +634,7 @@ export type ContinentalParticipantSnapshot = {
   display_name: string;
   bracket_seed: number;
   eliminated_round: number | null;
+  cpu_strength_tier?: ContinentalCpuTier | null;
 };
 
 export type ContinentalFixtureSnapshot = {

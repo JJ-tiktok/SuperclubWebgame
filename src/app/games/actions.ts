@@ -33,6 +33,7 @@ import { buildYouthPlayerSeed, isNlzOriginPlayer } from "@/lib/lobby/youth-gener
 import { calculateLineupPower, type CaptainBoost } from "@/lib/lobby/lineup-power";
 import {
   ensureContinentalTournament,
+  hasContinentalQualifiers,
   isContinentalTournamentComplete,
 } from "@/app/games/actions/continental";
 import { getNextLobbyPhase, getSettingsForNextPhase, isInvestmentPhase } from "@/lib/lobby/phases";
@@ -2829,7 +2830,14 @@ export async function advancePhaseAction(formData: FormData) {
     }
   }
 
-  const nextPhase = getNextLobbyPhase(game.phase, game.settings);
+  let nextPhase = getNextLobbyPhase(game.phase, game.settings);
+  if (game.phase === "season_end" && nextPhase === "champions_league") {
+    const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
+    const qualified = await hasContinentalQualifiers(supabase, gameId, seasonNumber);
+    if (!qualified) {
+      nextPhase = "off_season";
+    }
+  }
   const now = new Date().toISOString();
   // Scouting is now parallel — no turn concept needed; keep null for all phases that don't need a turn
   const nextTurnClubId = null;

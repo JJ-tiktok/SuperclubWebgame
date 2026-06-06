@@ -6,7 +6,12 @@ import { formatMoney } from "@/components/game/lib/dashboard-helpers";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelDescription, PanelHeader, PanelTitle } from "@/components/ui/panel";
-import { getContinentalRoundLabel } from "@/lib/lobby/continental-cup";
+import {
+  CONTINENTAL_PRIZE_FINALIST,
+  CONTINENTAL_PRIZE_SEMIFINAL,
+  CONTINENTAL_PRIZE_WINNER,
+  getContinentalRoundLabel,
+} from "@/lib/lobby/continental-cup";
 import type { ContinentalParticipantSnapshot, ContinentalTournamentSnapshot, LobbyClub, LobbySnapshot } from "@/lib/lobby/types";
 import { cn } from "@/lib/utils";
 import { computeParticipantRecord, getOwnStatusHeadline } from "./continental-bracket-utils";
@@ -53,7 +58,9 @@ export function ContinentalStatusBanner({
             <p className="text-xs font-medium uppercase tracking-wide text-emerald-400">Continental Cup</p>
             <PanelTitle className="mt-1">{headline}</PanelTitle>
             <PanelDescription className="mt-1">
-              Saison {continental.season_number} — Praemie {formatMoney(continental.prize_amount)}
+              Saison {continental.season_number} — Praemien bis {formatMoney(continental.prize_amount)} (HF{" "}
+              {formatMoney(CONTINENTAL_PRIZE_SEMIFINAL)} / Finale {formatMoney(CONTINENTAL_PRIZE_FINALIST)} / Sieg{" "}
+              {formatMoney(CONTINENTAL_PRIZE_WINNER)})
             </PanelDescription>
           </div>
         </div>

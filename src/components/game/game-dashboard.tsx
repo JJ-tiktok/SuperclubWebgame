@@ -23,6 +23,7 @@ import {
   MapIcon,
   PanelLeftClose,
   PanelLeftOpen,
+  Pencil,
   Play,
   Settings,
   Shield,
@@ -36,7 +37,6 @@ import {
   Users,
   X,
 } from "lucide-react";
-import Image from "next/image";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import type { CSSProperties, ReactNode } from "react";
@@ -52,6 +52,7 @@ import {
 import { makeDraftPickAction } from "@/app/games/actions/draft";
 import {
   healPlayerMedicalAction,
+  renameClubPlayerAction,
   respecPlayerArchetypeAction,
   trainPlayerAction,
   upgradeInvestmentAction,
@@ -77,6 +78,7 @@ import {
 import {
   acceptTransferOfferAction,
   cancelTransferOfferAction,
+  counterTransferOfferAction,
   createTransferOfferAction,
   declineTransferOfferAction,
 } from "@/app/games/actions/transfers";
@@ -137,6 +139,7 @@ import { GameLineupBoard } from "@/components/game/game-lineup-board";
 import { GameRealtimeBridge } from "@/components/game/game-realtime-bridge";
 import { hydrateGameStore, useGameStore } from "@/components/game/game-store";
 import { CaptainPanel } from "@/components/game/captain-panel";
+import { ClubBadge } from "@/components/game/club-badge";
 import { AfterMatchCards, MatchCardsPanel } from "@/components/game/match-cards-panel";
 import { SponsorPanel } from "@/components/game/sponsor-panel";
 import { DrawnGameChangersList, PendingEffectsList } from "@/components/game/pending-effects-list";
@@ -175,6 +178,10 @@ import {
 import { getClubTheme } from "@/lib/lobby/theme";
 import { canTrainOwnedPlayer } from "@/lib/lobby/training";
 import { getClubPlayerMarketValues, resolvePlayerPotentialCeiling } from "@/lib/lobby/player-market";
+import {
+  CLUB_PLAYER_CUSTOM_NAME_MAX_LENGTH,
+  getClubPlayerDisplayName,
+} from "@/lib/lobby/player-names";
 import { MANAGER_TRANSFER_DEPARTURE_LIMIT } from "@/lib/lobby/transfers";
 import type {
   ClubPlayerSnapshot,
@@ -1384,7 +1391,7 @@ function TrainingView({
                   <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3" key={event.id}>
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <p className="text-sm font-semibold text-zinc-100">{owned?.player.display_name ?? "Spieler"}</p>
+                        <p className="text-sm font-semibold text-zinc-100">{owned ? getClubPlayerDisplayName(owned) : "Spieler"}</p>
                         <p className="mt-1 text-xs text-zinc-500">{formatSavedAt(event.created_at)}</p>
                       </div>
                       <Badge tone={event.success ? "green" : "red"}>Wurf {event.dice_roll}</Badge>
@@ -1740,8 +1747,11 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
   }
 
   const salesCount = overview.sales_count;
+  const squadSize = overview.squad.length;
+  const squadOverCapacity = squadSize > MAX_SQUAD_SIZE;
   const isOffseason = isOffseasonPhase(snapshot.game.phase);
-  const saleCheck = canSellClubPlayer({ isOffseason, salesCount });
+  const saleCheck = canSellClubPlayer({ isOffseason, salesCount, squadSize });
+  const isReleaseMode = saleCheck.ok && saleCheck.mode === "release";
   const transfersBlocked = isOffseasonTransfersBlocked(overview.pending_effects ?? [], snapshot.game.phase);
   const managerDeparturesCount = transferMarket?.manager_departures_count ?? 0;
 
@@ -1780,15 +1790,19 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
           <div>
             <PanelTitle>Eigener Kader</PanelTitle>
             <PanelDescription>
-              {overview.squad.length} / {MAX_SQUAD_SIZE} Spieler · {MAX_SQUAD_SIZE - overview.squad.length} Plätze frei
+              {squadOverCapacity
+                ? `${squadSize} / ${MAX_SQUAD_SIZE} Spieler · ${squadSize - MAX_SQUAD_SIZE} Entlassung(en) noetig`
+                : `${squadSize} / ${MAX_SQUAD_SIZE} Spieler · ${MAX_SQUAD_SIZE - squadSize} Plätze frei`}
             </PanelDescription>
           </div>
           <Users size={18} className="text-[var(--club-color)]" aria-hidden />
         </PanelHeader>
         <div className="mb-3 flex flex-wrap items-center gap-2">
-          <Badge tone={saleCheck.ok ? "green" : "red"}>{saleCheck.ok ? "Verkauf moeglich" : getScoutingCheckLabel(saleCheck)}</Badge>
-          <Badge tone={overview.squad.length >= MAX_SQUAD_SIZE ? "red" : overview.squad.length >= MAX_SQUAD_SIZE - 3 ? "amber" : "neutral"}>
-            {overview.squad.length} / {MAX_SQUAD_SIZE} Spieler
+          <Badge tone={isReleaseMode ? "amber" : saleCheck.ok ? "green" : "red"}>
+            {isReleaseMode ? "Entlassungen noetig" : saleCheck.ok ? "Verkauf moeglich" : getScoutingCheckLabel(saleCheck)}
+          </Badge>
+          <Badge tone={squadOverCapacity ? "red" : squadSize >= MAX_SQUAD_SIZE ? "amber" : "neutral"}>
+            {squadSize} / {MAX_SQUAD_SIZE} Spieler
           </Badge>
         </div>
         {overview.squad.length > 0 ? <div className="mb-4"><SquadPositionBreakdown squad={overview.squad} /></div> : null}
@@ -1810,6 +1824,7 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
               const positionLabel = getPlayerPositionLabel(owned.player);
               const currentStars = Number(owned.current_stars);
               const maxStars = Number(owned.player.skill_max ?? card.skill.max);
+              const salePayout = squadOverCapacity ? 0 : market.scoutingPrice;
 
               return (
                 <div className="grid gap-3 rounded-lg border border-zinc-800 bg-zinc-900/55 p-3 sm:grid-cols-[132px_minmax(0,1fr)]" key={owned.id}>
@@ -1818,7 +1833,7 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
                     <div>
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <p className="truncate text-base font-semibold text-zinc-50">{owned.player.display_name}</p>
+                          <p className="truncate text-base font-semibold text-zinc-50">{getClubPlayerDisplayName(owned)}</p>
                           <p className="mt-1 text-sm text-zinc-400">{positionLabel}</p>
                         </div>
                         <Badge tone={owned.injured ? "red" : "green"}>{owned.injured ? "verletzt" : "fit"}</Badge>
@@ -1827,7 +1842,10 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
                         <SmallInfo label="Staerke" value={`${formatStars(currentStars)} / ${formatStars(maxStars)}`} />
                         <SmallInfo label="Zone" value={owned.current_zone} />
                         <SmallInfo label="Transfer Value" value={formatMoney(market.minimumBid)} />
-                        <SmallInfo label="Scouting Value" value={formatMoney(market.scoutingPrice)} />
+                        <SmallInfo
+                          label={squadOverCapacity ? "Entlassung" : "Scouting Value"}
+                          value={squadOverCapacity ? formatMoney(0) : formatMoney(market.scoutingPrice)}
+                        />
                       </div>
                     </div>
                     <form action={sellClubPlayerAction}>
@@ -1835,9 +1853,9 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
                       <input name="room_code" type="hidden" value={snapshot.game.room_code} />
                       <input name="club_player_id" type="hidden" value={owned.id} />
                       <input name="return_view" type="hidden" value="transfer" />
-                      <Button disabled={!saleCheck.ok} size="sm" type="submit" variant="outline">
+                      <Button disabled={!saleCheck.ok} size="sm" type="submit" variant={isReleaseMode ? "secondary" : "outline"}>
                         <UserMinus size={14} aria-hidden />
-                        Spieler verkaufen
+                        {isReleaseMode ? `Spieler entlassen (${formatMoney(salePayout)})` : "Spieler verkaufen"}
                       </Button>
                     </form>
                   </div>
@@ -1903,11 +1921,14 @@ function TransferOfferCard({
   offer: TransferOfferSnapshot;
   snapshot: LobbySnapshot;
 }) {
+  const [counterOffer, setCounterOffer] = useState(false);
   const archetypesEnabled = snapshot.game.settings.archetypes_enabled !== false;
   const targetPlayer = offer.target_club_player;
   const offeredPlayer = offer.offered_club_player;
-  const targetName = targetPlayer?.player.display_name ?? "Spieler";
+  const targetName = targetPlayer ? getClubPlayerDisplayName(targetPlayer) : "Spieler";
   const counterparty = direction === "incoming" ? offer.from_club.club_name : offer.to_club.club_name;
+  const canCounterOffer = direction === "incoming" && !offer.parent_offer_id && (offer.responder_club_id ?? offer.to_club_id) === offer.to_club_id;
+  const counterOfferPlayers = getCounterOfferSwapPlayers(snapshot, offer);
 
   return (
     <div className="rounded-md border border-zinc-800 bg-zinc-900/60 p-3">
@@ -1916,7 +1937,10 @@ function TransferOfferCard({
           <p className="text-sm font-semibold text-zinc-50">{counterparty}</p>
           <p className="mt-1 text-xs text-zinc-500">{formatSavedAt(offer.created_at)}</p>
         </div>
-        <Badge tone="amber">offen</Badge>
+        <div className="flex flex-wrap justify-end gap-2">
+          {offer.parent_offer_id ? <Badge tone="blue">Gegenangebot</Badge> : null}
+          <Badge tone="amber">offen</Badge>
+        </div>
       </div>
       {offeredPlayer && targetPlayer ? (
         <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] lg:items-center">
@@ -1985,6 +2009,12 @@ function TransferOfferCard({
                 Ablehnen
               </Button>
             </form>
+            {canCounterOffer && targetPlayer ? (
+              <Button onClick={() => setCounterOffer(true)} size="sm" type="button" variant="secondary">
+                <ArrowLeftRight size={14} aria-hidden />
+                Gegenangebot
+              </Button>
+            ) : null}
           </>
         ) : (
           <form action={cancelTransferOfferAction}>
@@ -1997,6 +2027,149 @@ function TransferOfferCard({
             </Button>
           </form>
         )}
+      </div>
+      {counterOffer && targetPlayer ? (
+        <CounterTransferOfferModal
+          offer={offer}
+          offerPlayers={counterOfferPlayers}
+          onClose={() => setCounterOffer(false)}
+          snapshot={snapshot}
+          target={targetPlayer}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function getCounterOfferSwapPlayers(snapshot: LobbySnapshot, offer: TransferOfferSnapshot) {
+  const clubSquad = snapshot.club_squads?.find((clubSquad) => clubSquad.club.id === offer.from_club_id)?.squad;
+  const transferMarketSquad = snapshot.transfer_market?.other_clubs.find((club) => club.club.id === offer.from_club_id)?.squad;
+  const squad = clubSquad ?? transferMarketSquad ?? [];
+  const reservedOfferPlayerIds = new Set(
+    [
+      ...(snapshot.transfer_market?.incoming_offers ?? []),
+      ...(snapshot.transfer_market?.outgoing_offers ?? []),
+    ].flatMap((openOffer) => openOffer.id !== offer.id && openOffer.offered_club_player_id ? [openOffer.offered_club_player_id] : []),
+  );
+
+  return squad.filter((player) => !reservedOfferPlayerIds.has(player.id));
+}
+
+function CounterTransferOfferModal({
+  offer,
+  offerPlayers,
+  onClose,
+  snapshot,
+  target,
+}: {
+  offer: TransferOfferSnapshot;
+  offerPlayers: ClubPlayerSnapshot[];
+  onClose: () => void;
+  snapshot: LobbySnapshot;
+  target: ClubPlayerSnapshot;
+}) {
+  const initialOfferedPlayerId =
+    offer.offered_club_player_id && offerPlayers.some((clubPlayer) => clubPlayer.id === offer.offered_club_player_id)
+      ? offer.offered_club_player_id
+      : "none";
+  const [offeredPlayerId, setOfferedPlayerId] = useState(initialOfferedPlayerId);
+  const archetypesEnabled = snapshot.game.settings.archetypes_enabled !== false;
+  const defaultCashMillions = Math.max(0, Math.round(Number(offer.cash_amount) / 1_000_000));
+  const selectedOfferPlayer =
+    offeredPlayerId === "none" ? null : (offerPlayers.find((clubPlayer) => clubPlayer.id === offeredPlayerId) ?? null);
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 px-4 py-6">
+      <div className="w-full max-w-3xl rounded-lg border border-zinc-700 bg-zinc-950 p-4 shadow-2xl shadow-black">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-lg font-bold text-zinc-50">Gegenangebot senden</p>
+            <p className="mt-1 text-sm text-zinc-400">
+              Der angefragte Spieler bleibt fix. Du veraenderst nur Geldbetrag und optionalen Tauschspieler.
+            </p>
+          </div>
+          <Button className="h-8 px-2" onClick={onClose} type="button" variant="outline">
+            <X size={15} aria-hidden />
+          </Button>
+        </div>
+
+        <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] lg:items-start">
+          <div className="rounded-md border border-zinc-800 bg-zinc-900/50 p-3">
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Dein Spieler</p>
+            <PlayerCard
+              disabled={target.injured}
+              player={mapOwnedPlayerToCardData(target)}
+              showArchetypes={archetypesEnabled}
+              variant="draft"
+            />
+            <p className="mt-2 text-xs text-zinc-400">{formatTransferPlayerMeta(target)}</p>
+          </div>
+          <div className="flex flex-col items-center justify-center gap-1 px-1 pt-8 text-zinc-500">
+            <ArrowLeftRight size={18} aria-hidden />
+          </div>
+          <div className="rounded-md border border-zinc-800 bg-zinc-900/50 p-3">
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+              Spieler von {offer.from_club.club_name}
+            </p>
+            {selectedOfferPlayer ? (
+              <>
+                <PlayerCard
+                  disabled={selectedOfferPlayer.injured}
+                  player={mapOwnedPlayerToCardData(selectedOfferPlayer)}
+                  showArchetypes={archetypesEnabled}
+                  variant="draft"
+                />
+                <p className="mt-2 text-xs text-zinc-400">{formatTransferPlayerMeta(selectedOfferPlayer)}</p>
+              </>
+            ) : (
+              <div className="flex min-h-[220px] items-center justify-center rounded-md border border-dashed border-zinc-700 bg-zinc-950/60 px-4 text-center text-xs text-zinc-500">
+                Optional unten einen Spieler des Bieters auswaehlen
+              </div>
+            )}
+          </div>
+        </div>
+
+        <form action={counterTransferOfferAction} className="mt-4 grid gap-3 sm:grid-cols-2">
+          <input name="game_id" type="hidden" value={snapshot.game.id} />
+          <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+          <input name="offer_id" type="hidden" value={offer.id} />
+          <label className="grid gap-1 text-xs text-zinc-400">
+            Geldbetrag in Mio
+            <input
+              className="h-10 rounded-md border border-zinc-700 bg-zinc-950 px-3 text-sm text-zinc-100 outline-none focus:border-lime-300"
+              defaultValue={defaultCashMillions}
+              min={0}
+              name="cash_amount_millions"
+              step={1}
+              type="number"
+            />
+          </label>
+          <label className="grid gap-1 text-xs text-zinc-400">
+            Tauschspieler vom Bieter optional
+            <select
+              className="h-10 rounded-md border border-zinc-700 bg-zinc-950 px-3 text-sm text-zinc-100 outline-none focus:border-lime-300"
+              name="offered_club_player_id"
+              onChange={(event) => setOfferedPlayerId(event.target.value)}
+              value={offeredPlayerId}
+            >
+              <option value="none">Kein Spieler</option>
+              {offerPlayers.map((clubPlayer) => (
+                <option key={clubPlayer.id} value={clubPlayer.id}>
+                  {getClubPlayerDisplayName(clubPlayer)} ({formatTransferPlayerMeta(clubPlayer)})
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="flex flex-wrap justify-end gap-2 pt-1 sm:col-span-2">
+            <Button onClick={onClose} type="button" variant="outline">
+              Abbrechen
+            </Button>
+            <Button type="submit" variant="primary">
+              <ArrowLeftRight size={14} aria-hidden />
+              Gegenangebot senden
+            </Button>
+          </div>
+        </form>
       </div>
     </div>
   );
@@ -3006,7 +3179,7 @@ function OtherClubSquadPanel({
     if (posDiff !== 0) return posDiff;
     const starsDiff = Number(b.current_stars) - Number(a.current_stars);
     if (starsDiff !== 0) return starsDiff;
-    return a.player.display_name.localeCompare(b.player.display_name, "de");
+    return getClubPlayerDisplayName(a).localeCompare(getClubPlayerDisplayName(b), "de");
   });
   const isOffseason = isOffseasonPhase(snapshot.game.phase);
   const transfersBlocked = isOffseasonTransfersBlocked(overview.pending_effects ?? [], snapshot.game.phase);
@@ -3192,7 +3365,7 @@ function TransferOfferModal({
               <option value="none">Kein Spieler</option>
               {offerPlayers.map((ownPlayer) => (
                 <option key={ownPlayer.id} value={ownPlayer.id}>
-                  {ownPlayer.player.display_name} ({formatTransferPlayerMeta(ownPlayer)})
+                  {getClubPlayerDisplayName(ownPlayer)} ({formatTransferPlayerMeta(ownPlayer)})
                 </option>
               ))}
             </select>
@@ -3225,13 +3398,14 @@ function SquadPanel({
   snapshot?: LobbySnapshot;
   title: string;
 }) {
+  const [renameTarget, setRenameTarget] = useState<ClubPlayerSnapshot | null>(null);
   const totalStars = overview.finance.squad_stars;
   const sortedSquad = [...overview.squad].sort((a, b) => {
     const posDiff = getPositionRank(a.player) - getPositionRank(b.player);
     if (posDiff !== 0) return posDiff;
     const starsDiff = Number(b.current_stars) - Number(a.current_stars);
     if (starsDiff !== 0) return starsDiff;
-    return a.player.display_name.localeCompare(b.player.display_name, "de");
+    return getClubPlayerDisplayName(a).localeCompare(getClubPlayerDisplayName(b), "de");
   });
   const playerCount = overview.squad.length;
 
@@ -3307,6 +3481,12 @@ function SquadPanel({
                   <SmallInfo label="Status" value={owned.current_zone === "bench" ? "Nicht aufgestellt" : "Aufgestellt"} />
                   <SmallInfo label="Zone" value={owned.current_zone} />
                 </div>
+                {ownClub && snapshot ? (
+                  <Button className="mt-2 h-7 w-full text-xs" onClick={() => setRenameTarget(owned)} type="button" variant="outline">
+                    <Pencil size={13} aria-hidden />
+                    Umbenennen
+                  </Button>
+                ) : null}
                 {owned.injured && miraHealCharges > 0 && ownClub && snapshot ? (
                   <form action={healInjuredPlayerAction} className="mt-2">
                     <input name="game_id" type="hidden" value={snapshot.game.id} />
@@ -3361,7 +3541,83 @@ function SquadPanel({
           })}
         </div>
       )}
+      {renameTarget && ownClub && snapshot ? (
+        <RenameClubPlayerModal
+          onClose={() => setRenameTarget(null)}
+          player={renameTarget}
+          returnView="squad"
+          snapshot={snapshot}
+        />
+      ) : null}
     </Panel>
+  );
+}
+
+function RenameClubPlayerModal({
+  onClose,
+  player,
+  returnView,
+  snapshot,
+}: {
+  onClose: () => void;
+  player: ClubPlayerSnapshot;
+  returnView: "lineup" | "squad" | "training" | "transfer";
+  snapshot: LobbySnapshot;
+}) {
+  const displayName = getClubPlayerDisplayName(player);
+  const hasCustomName = Boolean(player.custom_name?.trim());
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 px-4 py-6">
+      <div className="w-full max-w-md rounded-lg border border-zinc-700 bg-zinc-950 p-4 shadow-2xl shadow-black">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-lg font-bold text-zinc-50">Spieler umbenennen</p>
+            <p className="mt-1 text-sm text-zinc-400">Original: {player.player.display_name}</p>
+          </div>
+          <Button className="h-8 px-2" onClick={onClose} type="button" variant="outline">
+            <X size={15} aria-hidden />
+          </Button>
+        </div>
+        <form action={renameClubPlayerAction} className="mt-4 space-y-3">
+          <input name="game_id" type="hidden" value={snapshot.game.id} />
+          <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+          <input name="club_player_id" type="hidden" value={player.id} />
+          <input name="return_view" type="hidden" value={returnView} />
+          <label className="grid gap-1 text-xs text-zinc-400">
+            Anzeigename
+            <input
+              className="h-10 rounded-md border border-zinc-700 bg-zinc-950 px-3 text-sm text-zinc-100 outline-none focus:border-lime-300"
+              defaultValue={displayName}
+              maxLength={CLUB_PLAYER_CUSTOM_NAME_MAX_LENGTH}
+              name="custom_name"
+              placeholder={player.player.display_name}
+            />
+          </label>
+          <p className="text-xs text-zinc-500">Leer speichern setzt den Namen auf den Originalnamen zurueck.</p>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button onClick={onClose} type="button" variant="outline">
+              Abbrechen
+            </Button>
+            <Button type="submit" variant="primary">
+              Speichern
+            </Button>
+          </div>
+        </form>
+        {hasCustomName ? (
+          <form action={renameClubPlayerAction} className="mt-2 flex justify-end">
+            <input name="game_id" type="hidden" value={snapshot.game.id} />
+            <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+            <input name="club_player_id" type="hidden" value={player.id} />
+            <input name="return_view" type="hidden" value={returnView} />
+            <input name="custom_name" type="hidden" value="" />
+            <Button type="submit" variant="secondary">
+              Zuruecksetzen
+            </Button>
+          </form>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -3754,6 +4010,8 @@ function FixtureCard({
     seasonBoostsByClubId: seasonZoneBoostsByClub,
     side: "away",
   });
+  const homeClubColor = snapshot.clubs.find((club) => club.id === home.club_id)?.club_color ?? null;
+  const awayClubColor = snapshot.clubs.find((club) => club.id === away.club_id)?.club_color ?? null;
 
   // For PvP, suppress the old "Host resolves PvP" button — the new state machine handles it
   const canHostResolvePvpMatchLegacy = canHostResolvePvpMatch && !isPvP;
@@ -3796,7 +4054,7 @@ function FixtureCard({
             <FixtureSideCard
               locked={fixture.home_lineup_locked}
               lineup={fixture.home_cpu_lineup ?? homePvpLineup}
-              participant={home}
+              participant={{ ...home, club_color: homeClubColor }}
               powerSummary={home.club_id === ownClub?.id && fixture.home_lineup_locked ? ownPowerSummary : null}
               score={fixture.home_score}
               thirdPoints={fixture.home_third_points}
@@ -3805,7 +4063,7 @@ function FixtureCard({
             <FixtureSideCard
               locked={fixture.away_lineup_locked}
               lineup={fixture.away_cpu_lineup ?? awayPvpLineup}
-              participant={away}
+              participant={{ ...away, club_color: awayClubColor }}
               powerSummary={away.club_id === ownClub?.id && fixture.away_lineup_locked ? ownPowerSummary : null}
               score={fixture.away_score}
               thirdPoints={fixture.away_third_points}
@@ -4045,23 +4303,22 @@ function buildParticipantArchetypeScout(
 function TableView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snapshot: LobbySnapshot }) {
   const season = snapshot.season;
   const hasActiveSeason = Boolean(season && !season.setup_error);
+  const clubColorById = new Map(snapshot.clubs.map((club) => [club.id, club.club_color ?? null]));
 
-  const CLUB_LOGO_MAP: Record<string, string> = {
-    "Apex River United": "/AprexRiverUnited.png",
-    "Blackwood Athletic": "/BlackwoodAthletic.png",
-    "Crimson Cape FC": "/crimsonCape.png",
-    "FC Dynamo Draft": "/DynamoDraft.png",
-    "Golden Meadow United": "/GoldenMeadowUnited.png",
-    "Vanguard FC": "/VanguardFC.png",
-  };
-  function getLogoForClub(_clubId: string, clubName: string): string | null {
-    return CLUB_LOGO_MAP[clubName] ?? null;
-  }
-
-  type BoardEntry = { club_id: string; club_name: string; season_score: number; logo: string | null };
+  type BoardEntry = { club_color: string | null; club_id: string; club_name: string; season_score: number };
   const boardEntries: BoardEntry[] = hasActiveSeason
-    ? season!.manager_standings.map((s) => ({ club_id: s.club_id, club_name: s.club_name, season_score: s.season_score, logo: getLogoForClub(s.club_id, s.club_name) }))
-    : snapshot.clubs.map((c) => ({ club_id: c.id, club_name: c.club_name, season_score: Math.round(c.squad_stars ?? 0), logo: getLogoForClub(c.id, c.club_name) }));
+    ? season!.manager_standings.map((s) => ({
+        club_color: clubColorById.get(s.club_id) ?? null,
+        club_id: s.club_id,
+        club_name: s.club_name,
+        season_score: s.season_score,
+      }))
+    : snapshot.clubs.map((c) => ({
+        club_color: c.club_color ?? null,
+        club_id: c.id,
+        club_name: c.club_name,
+        season_score: Math.round(c.squad_stars ?? 0),
+      }));
 
   const BOARD_MIN = 20;
   const BOARD_MAX = 100;
@@ -4187,14 +4444,13 @@ function TableView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
                         )}
                         title={clubsHere.map((e) => `${e.club_name}: ${e.season_score}`).join(" · ")}
                       >
-                        {hasClub && clubsHere[0].logo ? (
+                        {hasClub ? (
                           <>
-                            <Image
-                              alt={clubsHere[0].club_name}
-                              className="h-full w-full object-contain p-[15%]"
-                              fill
-                              sizes="48px"
-                              src={clubsHere[0].logo}
+                            <ClubBadge
+                              className="absolute inset-1 h-auto w-auto rounded-full border-0"
+                              clubColor={clubsHere[0].club_color}
+                              clubName={clubsHere[0].club_name}
+                              imageClassName="p-[15%]"
                             />
                             <span className="absolute bottom-0 left-0 right-0 bg-black/60 text-center text-[7px] font-bold leading-tight text-white">
                               {pos}
@@ -4264,15 +4520,7 @@ function TableView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
                         : "border-zinc-800 bg-zinc-900/40",
                     )}
                   >
-                    <div className="relative h-8 w-8 shrink-0 overflow-hidden rounded-full border border-zinc-700 bg-zinc-800">
-                      {e.logo ? (
-                        <Image alt={e.club_name} className="object-contain p-1" fill sizes="32px" src={e.logo} />
-                      ) : (
-                        <span className="flex h-full w-full items-center justify-center text-[9px] font-bold text-zinc-400">
-                          {e.club_name.substring(0, 2).toUpperCase()}
-                        </span>
-                      )}
-                    </div>
+                    <ClubBadge className="rounded-full" clubColor={e.club_color} clubName={e.club_name} size="sm" />
                     <div className="min-w-0 flex-1">
                       <p className={cn("truncate text-xs font-semibold", isOwn ? "text-[var(--club-color)]" : "text-zinc-200")}>
                         {e.club_name}
@@ -4636,7 +4884,7 @@ function getSortedSquadPlayers(squad: NonNullable<LobbySnapshot["club_overview"]
       return starsDiff;
     }
 
-    return a.player.display_name.localeCompare(b.player.display_name, "de");
+    return getClubPlayerDisplayName(a).localeCompare(getClubPlayerDisplayName(b), "de");
   });
 }
 
@@ -4686,6 +4934,7 @@ function mapOwnedPlayerToCardData(owned: NonNullable<LobbySnapshot["club_overvie
   return {
     ...card,
     cardStyle: isNlzTalent ? { ...card.cardStyle, theme: "purple" } : card.cardStyle,
+    name: getClubPlayerDisplayName(owned),
     market: {
       currency: "M",
       scoutingFee: market.scoutingPrice / 1_000_000,

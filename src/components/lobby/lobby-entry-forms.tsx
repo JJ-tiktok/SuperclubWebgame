@@ -4,7 +4,9 @@ import { useActionState, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelDescription, PanelHeader, PanelTitle } from "@/components/ui/panel";
 import { createGameAction, joinGameAction } from "@/app/lobby/actions";
+import { ClubBadge } from "@/components/game/club-badge";
 import { CLUB_TEMPLATES } from "@/lib/lobby/club-templates";
+import { CUSTOM_CLUB_COLOR_SWATCHES, CUSTOM_CLUB_TEMPLATE_VALUE } from "@/lib/lobby/custom-clubs";
 import { CPU_TIER_LABEL, getMinCpuTeamsForLobby, type CpuTeamCatalogRow } from "@/lib/lobby/cpu-teams";
 import type { CpuStrengthTier } from "@/lib/lobby/types";
 import type { ActionResult } from "@/lib/lobby/types";
@@ -42,7 +44,7 @@ export function LobbyEntryForms({ defaultSettings, cpuTeams }: LobbyEntryFormsPr
           </div>
         </PanelHeader>
         <form action={createFormAction} className="space-y-4">
-          <ClubTemplateSelect name="club_template_id" />
+          <ClubSelection name="club_template_id" />
           <CpuTeamSelect teams={cpuTeams} />
           <div className="grid gap-3 md:grid-cols-3">
             <BooleanSettingToggle
@@ -97,7 +99,7 @@ export function LobbyEntryForms({ defaultSettings, cpuTeams }: LobbyEntryFormsPr
               required
             />
           </label>
-          <ClubTemplateSelect name="club_template_id" />
+          <ClubSelection name="club_template_id" />
           <ActionError state={joinState} />
           <Button type="submit" className="w-full" variant="secondary" disabled={joinPending}>
             {joinPending ? "Beitritt laeuft..." : "Beitreten"}
@@ -217,23 +219,99 @@ function CpuTierBadge({ tier }: { tier: CpuStrengthTier }) {
   );
 }
 
-function ClubTemplateSelect({ name }: { name: string }) {
+function ClubSelection({ name }: { name: string }) {
+  const defaultTemplateId = CLUB_TEMPLATES[0]?.id ?? "";
+  const [selected, setSelected] = useState(defaultTemplateId);
+  const [customClubName, setCustomClubName] = useState("");
+  const [customClubColor, setCustomClubColor] = useState<string>(CUSTOM_CLUB_COLOR_SWATCHES[0]);
+  const customSelected = selected === CUSTOM_CLUB_TEMPLATE_VALUE;
+
   return (
     <fieldset className="space-y-3">
       <legend className="text-sm font-medium text-zinc-300">Verein</legend>
       <div className="grid gap-2 sm:grid-cols-2">
-        {CLUB_TEMPLATES.map((template, index) => (
+        {CLUB_TEMPLATES.map((template) => (
           <label
             className="group relative cursor-pointer overflow-hidden rounded-md border border-zinc-800 bg-zinc-900 p-3 transition has-[:checked]:border-lime-300 has-[:checked]:bg-zinc-800"
             key={template.id}
           >
-            <input className="peer sr-only" defaultChecked={index === 0} name={name} required type="radio" value={template.id} />
+            <input
+              checked={selected === template.id}
+              className="peer sr-only"
+              name={name}
+              onChange={() => setSelected(template.id)}
+              required
+              type="radio"
+              value={template.id}
+            />
             <span className="absolute inset-x-0 top-0 h-1.5" style={{ backgroundColor: template.color }} />
             <span className="block pt-2 text-sm font-semibold text-zinc-50">{template.name}</span>
             <span className="mt-1 block text-xs text-zinc-500">{template.slogan}</span>
           </label>
         ))}
+        <label className="group relative cursor-pointer overflow-hidden rounded-md border border-zinc-800 bg-zinc-900 p-3 transition has-[:checked]:border-lime-300 has-[:checked]:bg-zinc-800">
+          <input
+            checked={customSelected}
+            className="peer sr-only"
+            name={name}
+            onChange={() => setSelected(CUSTOM_CLUB_TEMPLATE_VALUE)}
+            required
+            type="radio"
+            value={CUSTOM_CLUB_TEMPLATE_VALUE}
+          />
+          <span className="absolute inset-x-0 top-0 h-1.5" style={{ backgroundColor: customClubColor }} />
+          <span className="flex items-center gap-2 pt-2">
+            <ClubBadge clubColor={customClubColor} clubName={customClubName || "Eigener Club"} size="sm" />
+            <span>
+              <span className="block text-sm font-semibold text-zinc-50">Eigener Club</span>
+              <span className="mt-1 block text-xs text-zinc-500">Name und Farbe selbst festlegen.</span>
+            </span>
+          </span>
+        </label>
       </div>
+      {customSelected ? (
+        <div className="rounded-md border border-zinc-800 bg-zinc-950/70 p-3">
+          <div className="grid gap-3 md:grid-cols-[1fr_170px]">
+            <label className="block text-sm font-medium text-zinc-300">
+              Clubname
+              <input
+                className="mt-2 h-11 w-full rounded-md border border-zinc-800 bg-zinc-900 px-3 text-zinc-50 outline-none focus:border-lime-300"
+                maxLength={40}
+                name="custom_club_name"
+                onChange={(event) => setCustomClubName(event.target.value)}
+                placeholder="z. B. Nordstadt FC"
+                required={customSelected}
+                value={customClubName}
+              />
+            </label>
+            <label className="block text-sm font-medium text-zinc-300">
+              Hex-Farbe
+              <input
+                className="mt-2 h-11 w-full rounded-md border border-zinc-800 bg-zinc-900 px-3 font-mono text-zinc-50 outline-none focus:border-lime-300"
+                name="custom_club_color"
+                onChange={(event) => setCustomClubColor(event.target.value)}
+                pattern="^#[0-9A-Fa-f]{6}$"
+                required={customSelected}
+                value={customClubColor}
+              />
+            </label>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2" aria-label="Clubfarbe waehlen">
+            {CUSTOM_CLUB_COLOR_SWATCHES.map((color) => (
+              <button
+                aria-label={`Clubfarbe ${color}`}
+                className={`h-8 w-8 rounded-full border transition ${
+                  customClubColor.toUpperCase() === color ? "border-lime-300 ring-2 ring-lime-300/30" : "border-zinc-700"
+                }`}
+                key={color}
+                onClick={() => setCustomClubColor(color)}
+                style={{ backgroundColor: color }}
+                type="button"
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
     </fieldset>
   );
 }

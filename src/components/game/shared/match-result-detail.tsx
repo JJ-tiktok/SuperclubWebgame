@@ -6,6 +6,7 @@ import { ARCHETYPE_META, type PlayerArchetype } from "@/lib/lobby/archetypes";
 import { resolveDisplayZoneBoosts, type ZoneModifier } from "@/lib/game/game-changer-effects";
 import type { LobbySnapshot } from "@/lib/lobby/types";
 import { cn } from "@/lib/utils";
+import { getClubPlayerDisplayName } from "@/lib/lobby/player-names";
 
 export type FixtureThird = {
   archetype_effects?: FixtureArchetypeEffect[];
@@ -375,10 +376,8 @@ export function MatchResultDetail({
                   ? away.display_name
                   : "Unbekannt";
             const ownSquad = snapshot.club_overview?.squad ?? [];
-            const injuredPlayer =
-              event.event_type === "injury"
-                ? (ownSquad.find((player) => player.id === event.player_id)?.player.display_name ?? null)
-                : null;
+            const injuredOwnedPlayer = event.event_type === "injury" ? ownSquad.find((player) => player.id === event.player_id) : null;
+            const injuredPlayer = injuredOwnedPlayer ? getClubPlayerDisplayName(injuredOwnedPlayer) : null;
             const zoneLabel =
               event.zone === "ATT"
                 ? "Angriff"

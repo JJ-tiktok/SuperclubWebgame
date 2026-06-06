@@ -1,6 +1,6 @@
 "use client";
 
-import Image from "next/image";
+import { ClubBadge } from "@/components/game/club-badge";
 import { Badge } from "@/components/ui/badge";
 import { SmallInfo } from "@/components/game/shared/metric";
 import { CPU_TIER_LABEL } from "@/lib/lobby/cpu-teams";
@@ -12,6 +12,7 @@ export type FixtureParticipantLike = {
   kind: "human" | "cpu";
   display_name: string;
   club_id?: string | null;
+  club_color?: string | null;
   cpu_strength_tier?: CpuStrengthTier | null;
 };
 
@@ -20,22 +21,6 @@ export type FixtureLineupLike = {
   mid_stars: number;
   att_stars: number;
 } | null;
-
-const LOGO_BY_NAME: Record<string, string> = {
-  "Apex River United": "/AprexRiverUnited.png",
-  "Blackwood Athletic": "/BlackwoodAthletic.png",
-  "Crimson Cape FC": "/crimsonCape.png",
-  "FC Dynamo Draft": "/DynamoDraft.png",
-  "Golden Meadow United": "/GoldenMeadowUnited.png",
-  "Vanguard FC": "/VanguardFC.png",
-};
-
-export function getClubLogoSrc(participant: FixtureParticipantLike): string | null {
-  if (participant.kind !== "human") {
-    return null;
-  }
-  return LOGO_BY_NAME[participant.display_name] ?? null;
-}
 
 function CpuStrengthBadge({ tier }: { tier: CpuStrengthTier }) {
   const label = CPU_TIER_LABEL[tier];
@@ -72,16 +57,12 @@ export function FixtureSideCard({
   zoneBoosts?: Partial<Record<"ATT" | "MID" | "DEF", number>>;
   hideStandingStats?: boolean;
 }) {
-  const logoSrc = getClubLogoSrc(participant);
-
   return (
     <div className="rounded-md border border-zinc-800 bg-zinc-950/70 p-3">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
-          {logoSrc ? (
-            <div className="relative h-10 w-10 shrink-0 overflow-hidden rounded-md border border-zinc-800 bg-zinc-900">
-              <Image alt="" className="object-contain p-1" fill sizes="40px" src={logoSrc} />
-            </div>
+          {participant.kind === "human" ? (
+            <ClubBadge clubColor={participant.club_color} clubName={participant.display_name} size="md" />
           ) : null}
           <div className="min-w-0">
             <p className="truncate font-semibold text-zinc-50" title={participant.display_name}>

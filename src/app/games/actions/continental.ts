@@ -17,6 +17,7 @@ import {
 import { calculateLineupPower, type CaptainBoost } from "@/lib/lobby/lineup-power";
 import { areArchetypesEnabled, normalizeApplicablePlayerArchetype } from "@/lib/lobby/archetypes";
 import { buildLineupSnapshotFromPlayers, type LineupSnapshotClubPlayerRow } from "@/lib/lobby/lineup-snapshot";
+import { getClubPlayerDisplayNameFromRow } from "@/lib/lobby/player-names";
 import { getMatchPointsMode, resolveFixture, type FixtureSideInput } from "@/lib/lobby/season";
 import type { LobbyGame } from "@/lib/lobby/types";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
@@ -336,7 +337,7 @@ async function buildContinentalFixtureSide(
   const [{ data: playerData }, { data: staffData }] = await Promise.all([
     supabase
       .from("club_players")
-      .select("id, current_stars, current_zone, lineup_slot, player:players(attacker_archetype, chemistry_left, chemistry_right, defender_archetype, display_name, position, eligible_positions)")
+      .select("id, custom_name, current_stars, current_zone, lineup_slot, player:players(attacker_archetype, chemistry_left, chemistry_right, defender_archetype, display_name, position, eligible_positions)")
       .eq("club_id", participant.club_id)
       .neq("current_zone", "bench")
       .eq("injured", false),
@@ -400,7 +401,10 @@ async function buildContinentalFixtureSide(
             player?.position,
             player?.eligible_positions,
           ),
-          display_name: player?.display_name ?? null,
+          display_name: getClubPlayerDisplayNameFromRow({
+            custom_name: p.custom_name as string | null,
+            player,
+          }),
           id: p.id as string,
           lineup_slot: p.lineup_slot as number | null,
           position: player?.position ?? null,
@@ -488,7 +492,7 @@ async function resolveContinentalFixtureServer(
     home.club_id
       ? supabase
           .from("club_players")
-          .select("current_stars, current_zone, lineup_slot, player:players(attacker_archetype, defender_archetype, display_name)")
+          .select("custom_name, current_stars, current_zone, lineup_slot, player:players(attacker_archetype, defender_archetype, display_name)")
           .eq("club_id", home.club_id)
           .neq("current_zone", "bench")
           .order("lineup_slot", { ascending: true })
@@ -497,7 +501,7 @@ async function resolveContinentalFixtureServer(
     away.club_id
       ? supabase
           .from("club_players")
-          .select("current_stars, current_zone, lineup_slot, player:players(attacker_archetype, defender_archetype, display_name)")
+          .select("custom_name, current_stars, current_zone, lineup_slot, player:players(attacker_archetype, defender_archetype, display_name)")
           .eq("club_id", away.club_id)
           .neq("current_zone", "bench")
           .order("lineup_slot", { ascending: true })

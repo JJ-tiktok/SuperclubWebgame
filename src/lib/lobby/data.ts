@@ -67,6 +67,8 @@ import {
 } from "@/lib/lobby/sponsoring";
 import { SPONSOR_PRESTIGE_LABELS } from "@/lib/lobby/sponsor-deals";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
+import { getTransferOfferCreatorClubId, getTransferOfferResponderClubId } from "@/lib/lobby/transfers";
+import { getClubPlayerDisplayName } from "@/lib/lobby/player-names";
 
 const GAME_SELECT_LEGACY =
   "id, room_code, phase, host_clerk_user_id, current_turn_club_id, settings, save_name, save_status, save_version, last_saved_at, last_saved_by_clerk_user_id, created_at, updated_at";
@@ -672,7 +674,7 @@ async function getClubSquadsSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promi
     ? await supabase
         .from("club_players")
         .select(
-          `id, club_id, player_id, current_stars, current_zone, injured, lineup_slot, acquired_at,
+          `id, club_id, player_id, custom_name, current_stars, current_zone, injured, lineup_slot, acquired_at,
           player:players(${DRAFT_PLAYER_SELECT})`,
         )
         .in("club_id", clubIds)
@@ -725,12 +727,13 @@ async function getTransferMarketSnapshot(
 
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
   const otherClubIds = clubs.filter((club) => club.id !== ownClub.id).map((club) => club.id);
-  const transferOfferSelect = `id, game_id, season_number, from_club_id, to_club_id, target_club_player_id, target_player_id,
+  const transferOfferSelect = `id, game_id, season_number, parent_offer_id, created_by_club_id, responder_club_id,
+    from_club_id, to_club_id, target_club_player_id, target_player_id,
     offered_club_player_id, offered_player_id, cash_amount, status, created_at, resolved_at,
     from_club:clubs!transfer_offers_from_club_id_fkey(id, club_name, club_color),
     to_club:clubs!transfer_offers_to_club_id_fkey(id, club_name, club_color),
-    target_club_player:club_players!transfer_offers_target_club_player_id_fkey(id, club_id, player_id, current_stars, current_zone, injured, lineup_slot, acquired_at, player:players(${DRAFT_PLAYER_SELECT})),
-    offered_club_player:club_players!transfer_offers_offered_club_player_id_fkey(id, club_id, player_id, current_stars, current_zone, injured, lineup_slot, acquired_at, player:players(${DRAFT_PLAYER_SELECT}))`;
+    target_club_player:club_players!transfer_offers_target_club_player_id_fkey(id, club_id, player_id, custom_name, current_stars, current_zone, injured, lineup_slot, acquired_at, player:players(${DRAFT_PLAYER_SELECT})),
+    offered_club_player:club_players!transfer_offers_offered_club_player_id_fkey(id, club_id, player_id, custom_name, current_stars, current_zone, injured, lineup_slot, acquired_at, player:players(${DRAFT_PLAYER_SELECT}))`;
 
   const [
     { data: otherPlayers, error: otherPlayersError },
@@ -741,7 +744,7 @@ async function getTransferMarketSnapshot(
       ? supabase
           .from("club_players")
           .select(
-            `id, club_id, player_id, current_stars, current_zone, injured, lineup_slot, acquired_at,
+            `id, club_id, player_id, custom_name, current_stars, current_zone, injured, lineup_slot, acquired_at,
             player:players(${DRAFT_PLAYER_SELECT})`,
           )
           .in("club_id", otherClubIds)
@@ -754,7 +757,7 @@ async function getTransferMarketSnapshot(
       .eq("game_id", game.id)
       .eq("season_number", seasonNumber)
       .eq("status", "open")
-      .or(`from_club_id.eq.${ownClub.id},to_club_id.eq.${ownClub.id}`)
+      .or(`created_by_club_id.eq.${ownClub.id},responder_club_id.eq.${ownClub.id},from_club_id.eq.${ownClub.id},to_club_id.eq.${ownClub.id}`)
       .order("created_at", { ascending: false })
       .returns<TransferOfferRow[]>(),
     supabase
@@ -808,7 +811,7 @@ async function getTransferMarketSnapshot(
   }, 0);
 
   return {
-    incoming_offers: offers.filter((offer) => offer.to_club_id === ownClub.id),
+    incoming_offers: offers.filter((offer) => getTransferOfferResponderClubId(offer) === ownClub.id),
     manager_departures_count: managerDeparturesCount,
     other_clubs: clubs
       .filter((club) => club.id !== ownClub.id)
@@ -821,7 +824,7 @@ async function getTransferMarketSnapshot(
         },
         squad: otherPlayersByClubId.get(club.id) ?? [],
       })),
-    outgoing_offers: offers.filter((offer) => offer.from_club_id === ownClub.id),
+    outgoing_offers: offers.filter((offer) => getTransferOfferCreatorClubId(offer) === ownClub.id),
   };
 }
 
@@ -838,7 +841,7 @@ function normalizeTransferOfferRow(row: TransferOfferRow): TransferOfferSnapshot
 }
 
 function normalizeTransferOfferStatus(status: string): TransferOfferSnapshot["status"] {
-  if (status === "accepted" || status === "cancelled" || status === "declined" || status === "expired") {
+  if (status === "accepted" || status === "cancelled" || status === "countered" || status === "declined" || status === "expired") {
     return status;
   }
 
@@ -854,7 +857,7 @@ function sortClubPlayers(squad: ClubPlayerSnapshot[]) {
     const starsDiff = Number(b.current_stars) - Number(a.current_stars);
     if (starsDiff !== 0) return starsDiff;
 
-    return a.player.display_name.localeCompare(b.player.display_name, "de");
+    return getClubPlayerDisplayName(a).localeCompare(getClubPlayerDisplayName(b), "de");
   });
 }
 
@@ -864,7 +867,7 @@ async function loadClubLockedLineupSnapshot(
 ): Promise<LineupSnapshotSide> {
   const { data, error } = await supabase
     .from("club_players")
-    .select("current_stars, current_zone, lineup_slot, player:players(attacker_archetype, defender_archetype, display_name)")
+    .select("custom_name, current_stars, current_zone, lineup_slot, player:players(attacker_archetype, defender_archetype, display_name)")
     .eq("club_id", clubId)
     .neq("current_zone", "bench")
     .order("lineup_slot", { ascending: true })
@@ -1352,7 +1355,7 @@ async function getClubOverviewSnapshot(
       ? supabase
           .from("club_players")
           .select(
-            `id, club_id, player_id, current_stars, current_zone, injured, lineup_slot, acquired_at,
+            `id, club_id, player_id, custom_name, current_stars, current_zone, injured, lineup_slot, acquired_at,
             player:players(${DRAFT_PLAYER_SELECT})`,
           )
           .eq("club_id", club.id)

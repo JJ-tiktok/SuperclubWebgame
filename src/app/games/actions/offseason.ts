@@ -11,6 +11,7 @@
 
 export {
   healPlayerMedicalAction,
+  renameClubPlayerAction,
   respecPlayerArchetypeAction,
   trainPlayerAction,
   upgradeInvestmentAction,

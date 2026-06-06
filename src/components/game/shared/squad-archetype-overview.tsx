@@ -2,6 +2,7 @@ import { Circle, Square, Triangle } from "lucide-react";
 import { formatStars } from "@/components/game/lib/dashboard-helpers";
 import { ArchetypeMatchupGuide } from "@/components/game/shared/archetype-matchup-guide";
 import { ARCHETYPE_META } from "@/lib/lobby/archetypes";
+import { getClubPlayerDisplayName } from "@/lib/lobby/player-names";
 import type { ClubPlayerSnapshot, DraftPlayerRow, PlayerArchetype } from "@/lib/lobby/types";
 import { cn } from "@/lib/utils";
 
@@ -52,7 +53,7 @@ function buildArchetypeScoutLine(squad: ClubPlayerSnapshot[], zone: "ATT" | "DEF
         ? [{
             archetype,
             id: owned.id,
-            name: owned.player.display_name,
+            name: getClubPlayerDisplayName(owned),
             stars: Math.trunc(Number(owned.current_stars)),
           }]
         : [];

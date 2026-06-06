@@ -195,12 +195,14 @@ create table public.club_players (
   id uuid primary key default gen_random_uuid(),
   club_id uuid not null references public.clubs(id) on delete cascade,
   player_id uuid not null references public.players(id) on delete restrict,
+  custom_name text,
   current_stars numeric(3,1) not null,
   current_zone public.lineup_zone not null default 'bench',
   injured boolean not null default false,
   lineup_slot int,
   acquired_at timestamptz not null default now(),
-  unique (club_id, player_id)
+  unique (club_id, player_id),
+  check (custom_name is null or char_length(custom_name) <= 32)
 );
 
 -- Captain assignment (added after club_players exists to avoid a forward reference).
@@ -277,12 +279,15 @@ create table public.transfer_offers (
   season_number int not null,
   from_club_id uuid not null references public.clubs(id) on delete cascade,
   to_club_id uuid not null references public.clubs(id) on delete cascade,
+  parent_offer_id uuid references public.transfer_offers(id) on delete set null,
+  created_by_club_id uuid references public.clubs(id) on delete set null,
+  responder_club_id uuid references public.clubs(id) on delete set null,
   target_club_player_id uuid not null references public.club_players(id) on delete cascade,
   target_player_id uuid not null references public.players(id) on delete restrict,
   offered_club_player_id uuid references public.club_players(id) on delete set null,
   offered_player_id uuid references public.players(id) on delete restrict,
   cash_amount bigint not null default 0 check (cash_amount >= 0),
-  status text not null default 'open' check (status in ('open', 'accepted', 'declined', 'cancelled', 'expired')),
+  status text not null default 'open' check (status in ('open', 'accepted', 'declined', 'cancelled', 'countered', 'expired')),
   created_at timestamptz not null default now(),
   resolved_at timestamptz,
   check (from_club_id <> to_club_id),
@@ -301,11 +306,22 @@ create unique index transfer_offers_open_offered_player_unique
   on public.transfer_offers (offered_club_player_id)
   where offered_club_player_id is not null and status = 'open';
 
+create index transfer_offers_parent_offer_id_idx
+  on public.transfer_offers (parent_offer_id);
+
+create index transfer_offers_created_by_club_season_idx
+  on public.transfer_offers (created_by_club_id, season_number, created_at desc);
+
+create index transfer_offers_responder_club_season_idx
+  on public.transfer_offers (responder_club_id, season_number, created_at desc);
+
 create or replace function public.normalize_transfer_offer_offered_player()
 returns trigger
 language plpgsql
 as $$
 begin
+  new.created_by_club_id := coalesce(new.created_by_club_id, new.from_club_id);
+  new.responder_club_id := coalesce(new.responder_club_id, new.to_club_id);
   if new.offered_club_player_id is null then
     new.offered_player_id := null;
   end if;
@@ -1138,29 +1154,61 @@ with check (
 -- RPC contracts. Implement the full rule mutations in private schema or Edge Functions
 -- and expose these stable signatures to the client.
 
-create or replace function public.create_game(room_code text, settings jsonb, display_name text, image_url text, club_template_id text)
+create or replace function public.create_game(
+  room_code text,
+  settings jsonb,
+  display_name text,
+  image_url text,
+  club_template_id text,
+  custom_club_name text default null,
+  custom_club_color text default null
+)
 returns uuid
 language plpgsql
 security invoker
-as $$
+as $custom_clubs_create_game$
 declare
   new_game_id uuid;
   clerk_id text := public.requesting_clerk_user_id();
   starting_money bigint := coalesce((settings ->> 'starting_money')::bigint, 100000000);
   selected_template public.club_templates%rowtype;
+  resolved_template_id text;
+  resolved_club_name text;
+  resolved_club_slogan text;
+  resolved_club_color text;
 begin
   if clerk_id is null then
     raise exception 'unauthorized';
   end if;
 
-  select * into selected_template
-  from public.club_templates
-  where id = create_game.club_template_id
-    and is_active
-  limit 1;
+  if create_game.club_template_id is null or create_game.club_template_id = 'custom' then
+    resolved_template_id := null;
+    resolved_club_name := nullif(btrim(coalesce(custom_club_name, '')), '');
+    resolved_club_slogan := null;
+    resolved_club_color := upper(btrim(coalesce(custom_club_color, '')));
 
-  if selected_template.id is null then
-    raise exception 'invalid_club_template';
+    if resolved_club_name is null or char_length(resolved_club_name) < 2 then
+      raise exception 'invalid_club_name';
+    end if;
+
+    if resolved_club_color !~ '^#[0-9A-F]{6}$' then
+      raise exception 'invalid_club_color';
+    end if;
+  else
+    select * into selected_template
+    from public.club_templates
+    where id = create_game.club_template_id
+      and is_active
+    limit 1;
+
+    if selected_template.id is null then
+      raise exception 'invalid_club_template';
+    end if;
+
+    resolved_template_id := selected_template.id;
+    resolved_club_name := selected_template.name;
+    resolved_club_slogan := selected_template.slogan;
+    resolved_club_color := selected_template.color;
   end if;
 
   insert into public.games (room_code, settings, host_clerk_user_id, save_name, last_saved_by_clerk_user_id)
@@ -1171,7 +1219,7 @@ begin
   values (new_game_id, clerk_id, display_name, image_url, true);
 
   insert into public.clubs (game_id, clerk_user_id, club_template_id, club_name, club_slogan, club_color, manager_name, image_url, money)
-  values (new_game_id, clerk_id, selected_template.id, selected_template.name, selected_template.slogan, selected_template.color, display_name, image_url, starting_money);
+  values (new_game_id, clerk_id, resolved_template_id, resolved_club_name, resolved_club_slogan, resolved_club_color, display_name, image_url, starting_money);
 
   insert into public.game_saves (game_id, saved_by_clerk_user_id, save_name, save_version, phase, snapshot)
   values (
@@ -1189,19 +1237,30 @@ begin
 
   return new_game_id;
 end;
-$$;
+$custom_clubs_create_game$;
 
-create or replace function public.join_game(room_code text, display_name text, image_url text, club_template_id text)
+create or replace function public.join_game(
+  room_code text,
+  display_name text,
+  image_url text,
+  club_template_id text,
+  custom_club_name text default null,
+  custom_club_color text default null
+)
 returns uuid
 language plpgsql
 security invoker
-as $$
+as $custom_clubs_join_game$
 declare
   target_game_id uuid;
   target_game public.games%rowtype;
   clerk_id text := public.requesting_clerk_user_id();
   starting_money bigint;
   selected_template public.club_templates%rowtype;
+  resolved_template_id text;
+  resolved_club_name text;
+  resolved_club_slogan text;
+  resolved_club_color text;
 begin
   if clerk_id is null then
     raise exception 'unauthorized';
@@ -1223,24 +1282,54 @@ begin
   target_game_id := target_game.id;
   starting_money := coalesce((target_game.settings ->> 'starting_money')::bigint, 100000000);
 
-  select * into selected_template
-  from public.club_templates
-  where id = join_game.club_template_id
-    and is_active
-  limit 1;
+  if join_game.club_template_id is null or join_game.club_template_id = 'custom' then
+    resolved_template_id := null;
+    resolved_club_name := nullif(btrim(coalesce(custom_club_name, '')), '');
+    resolved_club_slogan := null;
+    resolved_club_color := upper(btrim(coalesce(custom_club_color, '')));
 
-  if selected_template.id is null then
-    raise exception 'invalid_club_template';
+    if resolved_club_name is null or char_length(resolved_club_name) < 2 then
+      raise exception 'invalid_club_name';
+    end if;
+
+    if resolved_club_color !~ '^#[0-9A-F]{6}$' then
+      raise exception 'invalid_club_color';
+    end if;
+  else
+    select * into selected_template
+    from public.club_templates
+    where id = join_game.club_template_id
+      and is_active
+    limit 1;
+
+    if selected_template.id is null then
+      raise exception 'invalid_club_template';
+    end if;
+
+    resolved_template_id := selected_template.id;
+    resolved_club_name := selected_template.name;
+    resolved_club_slogan := selected_template.slogan;
+    resolved_club_color := selected_template.color;
+  end if;
+
+  if resolved_template_id is not null and exists (
+    select 1
+    from public.clubs c
+    where c.game_id = target_game_id
+      and c.club_template_id = resolved_template_id
+      and c.clerk_user_id <> clerk_id
+  ) then
+    raise exception 'club_template_taken';
   end if;
 
   if exists (
     select 1
     from public.clubs c
     where c.game_id = target_game_id
-      and c.club_template_id = selected_template.id
+      and lower(c.club_name) = lower(resolved_club_name)
       and c.clerk_user_id <> clerk_id
   ) then
-    raise exception 'club_template_taken';
+    raise exception 'club_name_taken';
   end if;
 
   insert into public.game_members (game_id, clerk_user_id, display_name, image_url, is_host)
@@ -1249,7 +1338,7 @@ begin
     set display_name = excluded.display_name;
 
   insert into public.clubs (game_id, clerk_user_id, club_template_id, club_name, club_slogan, club_color, manager_name, image_url, money)
-  values (target_game_id, clerk_id, selected_template.id, selected_template.name, selected_template.slogan, selected_template.color, display_name, image_url, starting_money)
+  values (target_game_id, clerk_id, resolved_template_id, resolved_club_name, resolved_club_slogan, resolved_club_color, display_name, image_url, starting_money)
   on conflict (game_id, clerk_user_id) do update
     set club_template_id = excluded.club_template_id,
         club_name = excluded.club_name,
@@ -1260,7 +1349,7 @@ begin
 
   return target_game_id;
 end;
-$$;
+$custom_clubs_join_game$;
 
 create or replace function public.start_draft(game_id uuid)
 returns void

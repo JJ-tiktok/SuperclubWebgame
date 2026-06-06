@@ -6,6 +6,7 @@ import {
   canResolveScoutedPlayer,
   canSellClubPlayer,
   computeOffseasonScoutingBaseCapacity,
+  resolveClubPlayerSaleValue,
   getClubScoutingCapacity,
   getEffectiveScoutingDrawCapacity,
   getFreeScoutingDrawCount,
@@ -85,9 +86,33 @@ describe("Scouting rules", () => {
   });
 
   it("limits offseason player sales to two", () => {
-    assert.deepEqual(canSellClubPlayer({ isOffseason: true, salesCount: 1 }), { ok: true });
-    assert.equal(canSellClubPlayer({ isOffseason: true, salesCount: 2 }).ok, false);
-    assert.equal(canSellClubPlayer({ isOffseason: false, salesCount: 0 }).ok, false);
+    assert.deepEqual(canSellClubPlayer({ isOffseason: true, salesCount: 1, squadSize: 20 }), {
+      mode: "sale",
+      ok: true,
+    });
+    assert.equal(canSellClubPlayer({ isOffseason: true, salesCount: 2, squadSize: 20 }).ok, false);
+    assert.equal(canSellClubPlayer({ isOffseason: false, salesCount: 0, squadSize: 20 }).ok, false);
+  });
+
+  it("allows unlimited zero-value releases when the squad is over capacity", () => {
+    assert.deepEqual(canSellClubPlayer({ isOffseason: true, salesCount: 2, squadSize: 25 }), {
+      mode: "release",
+      ok: true,
+    });
+    assert.equal(
+      resolveClubPlayerSaleValue({
+        scoutingPrice: 17_000_000,
+        squadSize: 24,
+      }),
+      0,
+    );
+    assert.equal(
+      resolveClubPlayerSaleValue({
+        scoutingPrice: 17_000_000,
+        squadSize: 23,
+      }),
+      17_000_000,
+    );
   });
 
   it("counts free scouting draws toward resolve capacity", () => {

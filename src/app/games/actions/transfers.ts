@@ -7,6 +7,7 @@
 export {
   acceptTransferOfferAction,
   cancelTransferOfferAction,
+  counterTransferOfferAction,
   createTransferOfferAction,
   declineTransferOfferAction,
 } from "@/app/games/actions";

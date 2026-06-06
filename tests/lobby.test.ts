@@ -11,6 +11,13 @@ import {
   validateClubName,
   validateRoomCode,
 } from "@/lib/lobby/rules";
+import {
+  buildClubInitials,
+  CUSTOM_CLUB_TEMPLATE_VALUE,
+  isClubNameTaken,
+  normalizeClubColor,
+  parseClubSelectionFromFormData,
+} from "@/lib/lobby/custom-clubs";
 import type { LobbyClub, LobbyGame } from "@/lib/lobby/types";
 
 const game: LobbyGame = {
@@ -90,6 +97,38 @@ describe("Lobby rules", () => {
     assert.equal(settings.sponsoring_enabled, false);
     assert.equal(settings.archetypes_enabled, false);
   });
+
+  it("validates custom club colors and badge initials", () => {
+    assert.equal(normalizeClubColor("#1a2b3c"), "#1A2B3C");
+    assert.equal(normalizeClubColor("2563EB"), null);
+    assert.equal(normalizeClubColor("#GGGGGG"), null);
+    assert.equal(buildClubInitials("Nordstadt United"), "NU");
+    assert.equal(buildClubInitials("FC Dynamo Draft"), "FDD");
+    assert.equal(buildClubInitials("Ajax"), "AJA");
+  });
+
+  it("parses custom club selection from form data", () => {
+    const formData = new FormData();
+    formData.set("club_template_id", CUSTOM_CLUB_TEMPLATE_VALUE);
+    formData.set("custom_club_name", "  Nordstadt   FC ");
+    formData.set("custom_club_color", "#2563eb");
+
+    const result = parseClubSelectionFromFormData(formData);
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.deepEqual(result.selection, {
+        kind: "custom",
+        club_name: "Nordstadt FC",
+        club_color: "#2563EB",
+      });
+    }
+  });
+
+  it("detects duplicate club names across templates and custom clubs", () => {
+    assert.equal(isClubNameTaken(clubs, "host fc", "user-away"), true);
+    assert.equal(isClubNameTaken(clubs, "Host FC", "user-host"), false);
+    assert.equal(isClubNameTaken(clubs, "New Club", "user-away"), false);
+  });
 });
 
 describe("Lobby schema blueprint", () => {
@@ -120,6 +159,15 @@ describe("Lobby schema blueprint", () => {
     assert.match(schema, /'crimson_cape', 'Crimson Cape FC', 'Fortune Favors the Bold\.'/);
     assert.match(schema, /club_template_id text references public\.club_templates\(id\)/);
     assert.match(schema, /create unique index clubs_game_template_unique/);
+    assert.match(schema, /where club_template_id is not null/);
+  });
+
+  it("allows lobby RPCs to create custom clubs with nullable templates", () => {
+    assert.match(schema, /custom_club_name text default null/);
+    assert.match(schema, /custom_club_color text default null/);
+    assert.match(schema, /resolved_template_id := null/);
+    assert.match(schema, /raise exception 'club_name_taken'/);
+    assert.match(schema, /resolved_club_color !~ '\^#\[0-9A-F\]\{6\}\$'/);
   });
 
   it("models persistent save metadata and checkpoints", () => {

@@ -79,7 +79,7 @@ describe("Sponsoring sign rules", () => {
     }
   });
 
-  it("blocks deals from other prestige tiers", () => {
+  it("blocks deals from higher prestige tiers", () => {
     const result = canSignSponsorDeal({
       phase: "off_season",
       contracts: [],
@@ -88,14 +88,31 @@ describe("Sponsoring sign rules", () => {
     });
     assert.equal(result.ok, false);
     if (!result.ok) {
-      assert.match(result.reason, /aktuelle Prestige-Stufe/);
+      assert.match(result.reason, /erst ab Prestige-Stufe/);
     }
   });
 
-  it("only lists deals for the current club status", () => {
+  it("allows signing a deal from a lower prestige tier after promotion", () => {
+    const result = canSignSponsorDeal({
+      phase: "off_season",
+      contracts: [],
+      dealId: "bockwurst_behrens",
+      clubStatus: "mid_table",
+    });
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.deal.prestige_tier, "newly_promoted");
+    }
+  });
+
+  it("lists deals for all accessible unconsumed tiers", () => {
     const available = getAvailableSponsorDeals([], "mid_table");
     assert.ok(available.length > 0);
-    assert.ok(available.every((deal) => deal.prestige_tier === "mid_table"));
+    const tiers = new Set(available.map((deal) => deal.prestige_tier));
+    assert.ok(tiers.has("newly_promoted"));
+    assert.ok(tiers.has("established"));
+    assert.ok(tiers.has("mid_table"));
+    assert.equal(tiers.has("title_contender"), false);
   });
 
   it("blocks re-pick of consumed tier", () => {

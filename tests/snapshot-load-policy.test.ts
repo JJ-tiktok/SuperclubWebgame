@@ -30,4 +30,10 @@ describe("off-season snapshot loading", () => {
       assert.equal(profile.loadPendingEffects, true, `${view}: pending effects`);
     }
   });
+
+  it("loads squad on grounds for sponsor reward player picks", () => {
+    const profile = getClubOverviewLoadProfileForView("off_season", "grounds");
+    assert.equal(profile.loadSquad, true);
+    assert.equal(profile.loadSponsorContracts, true);
+  });
 });

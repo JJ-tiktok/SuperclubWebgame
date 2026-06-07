@@ -159,7 +159,7 @@ import {
 } from "@/lib/lobby/draft";
 import { canUpgradeFacility, getStaffRecruitBlockReason, getStaffRecruitHint, getStaffRecruitReasonLabel, getUpgradeCost, getUpgradeReasonLabel, type UpgradeAction } from "@/lib/lobby/investments";
 import { isOffseasonPendingScopeActive } from "@/lib/lobby/offseason-pending-effects";
-import { calculateLineupPower } from "@/lib/lobby/lineup-power";
+import { calculateLineupPower, getCaptainBoostExtra } from "@/lib/lobby/lineup-power";
 import { getPhaseLabel, isInvestmentPhase } from "@/lib/lobby/phases";
 import { buildSeasonEndSummaryModel } from "@/lib/lobby/season-end-summary";
 import { isClubStatusOverrideActive, resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
@@ -2518,6 +2518,7 @@ function LineupView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; sna
       </Panel>
 
       <CaptainPanel
+        boostExtra={getCaptainBoostExtra(staffEffects)}
         gameId={snapshot.game.id}
         roomCode={snapshot.game.room_code}
         squad={overview.squad}
@@ -2543,7 +2544,7 @@ function LineupView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; sna
           roomCode={snapshot.game.room_code}
           staffEffects={staffEffects}
           captainId={ownClub.captain_club_player_id ?? null}
-          captainBoost={Math.trunc(Number(ownClub.captain_boost_rank ?? 0))}
+          captainBoost={Math.trunc(Number(ownClub.captain_boost_rank ?? 0)) + getCaptainBoostExtra(staffEffects)}
         />
       </div>
     </div>
@@ -5047,10 +5048,12 @@ function getOwnLineupPowerSummary(snapshot: LobbySnapshot, ownClub?: LobbyClub):
     (s) => s.card.effects as Array<{ type: string; zone?: string; stars?: number }>,
   );
 
-  const captainBoost = Math.trunc(Number(ownClub?.captain_boost_rank ?? 0));
   const captain =
-    ownClub?.captain_club_player_id && captainBoost > 0
-      ? { clubPlayerId: ownClub.captain_club_player_id, boost: captainBoost }
+    ownClub?.captain_club_player_id
+      ? {
+          clubPlayerId: ownClub.captain_club_player_id,
+          boost: Math.max(0, Math.trunc(Number(ownClub.captain_boost_rank ?? 0))),
+        }
       : null;
 
   return calculateLineupPower(

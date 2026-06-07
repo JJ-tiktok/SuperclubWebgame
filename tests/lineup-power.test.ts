@@ -120,4 +120,28 @@ describe("captain boost", () => {
     const noCaptain = calculateLineupPower([{ ...player("ATT", 1, 3), id: "cap" }]);
     assert.equal(noCaptain.ATT.base, 3);
   });
+
+  it("adds captain_boost_extra from staff to the assigned captain", () => {
+    const summary = calculateLineupPower(
+      [
+        { ...player("ATT", 1, 3), id: "cap" },
+        { ...player("MID", 2, 2), id: "p2" },
+      ],
+      [{ type: "captain_boost_extra", stars: 3 }],
+      { clubPlayerId: "cap", boost: 2 },
+    );
+
+    assert.equal(summary.ATT.base, 8);
+    assert.equal(summary.MID.base, 2);
+  });
+
+  it("applies staff captain boost even when placement rank is zero", () => {
+    const summary = calculateLineupPower(
+      [{ ...player("DEF", 1, 4), id: "cap" }],
+      [{ type: "captain_boost_extra", stars: 3 }],
+      { clubPlayerId: "cap", boost: 0 },
+    );
+
+    assert.equal(summary.DEF.base, 7);
+  });
 });

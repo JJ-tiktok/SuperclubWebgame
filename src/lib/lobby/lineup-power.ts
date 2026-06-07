@@ -50,6 +50,34 @@ export type StaffEffectInput = {
   perMatchday?: number;
 };
 
+export function getCaptainBoostExtra(staffEffects: StaffEffectInput[] = []): number {
+  return staffEffects
+    .filter((effect) => effect.type === "captain_boost_extra")
+    .reduce((sum, effect) => sum + (effect.stars ?? 0), 0);
+}
+
+export function resolveEffectiveCaptainBoost(
+  captain: CaptainBoost | null,
+  staffEffects: StaffEffectInput[] = [],
+  activePlayerIds?: Iterable<string | null | undefined>,
+): CaptainBoost | null {
+  if (!captain?.clubPlayerId) {
+    return null;
+  }
+
+  const activeIds = activePlayerIds ? new Set(activePlayerIds) : null;
+  if (activeIds && !activeIds.has(captain.clubPlayerId)) {
+    return null;
+  }
+
+  const boost = Math.max(0, Math.trunc(Number(captain.boost))) + getCaptainBoostExtra(staffEffects);
+  if (boost <= 0) {
+    return null;
+  }
+
+  return { clubPlayerId: captain.clubPlayerId, boost };
+}
+
 export function calculateLineupPower(
   players: LineupPowerPlayer[],
   staffEffects: StaffEffectInput[] = [],
@@ -59,11 +87,11 @@ export function calculateLineupPower(
     .filter((player) => !player.injured && isLineupZone(player.current_zone))
     .sort((a, b) => Number(a.lineup_slot ?? 999) - Number(b.lineup_slot ?? 999));
 
-  // Captain boost only applies when the captain is an active (non-injured) lineup player.
-  const captainBoost =
-    captain && captain.boost > 0 && activePlayers.some((p) => p.id === captain.clubPlayerId)
-      ? captain
-      : null;
+  const captainBoost = resolveEffectiveCaptainBoost(
+    captain,
+    staffEffects,
+    activePlayers.map((player) => player.id),
+  );
 
   const diceZoneBonus = staffEffects
     .filter((e) => e.type === "dice_zone_bonus")

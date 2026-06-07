@@ -466,6 +466,7 @@ function toContractOverview(row: SponsorContractRow): SponsorContractOverviewSna
     duration_seasons: snapshot.deal.duration_seasons,
     needs_player_pick: row.status === "awaiting_reward_pick",
     reward_pick_count: rewardPickCount,
+    reward_type: snapshot.deal.reward_type,
   };
 }
 

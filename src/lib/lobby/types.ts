@@ -485,6 +485,7 @@ export type SponsorContractOverviewSnapshot = {
   duration_seasons: number;
   needs_player_pick: boolean;
   reward_pick_count: number;
+  reward_type: string;
 };
 
 export type SponsorDealOverviewSnapshot = {

@@ -56,7 +56,7 @@ export function shouldLoadClubOverviewForView(phase: LobbyPhase, view: string): 
 export function getClubOverviewLoadProfileForView(phase: LobbyPhase, view: string): ClubOverviewLoadProfile {
   const offseasonDashboard = isOffseasonDashboardView(phase, view);
   const offSeasonChecklist = needsOffSeasonChecklistSnapshot(phase);
-  const loadSquad = ["lineup", "squad", "training", "scouting", "transfer", "deadline", "matchday", "continental"].includes(
+  const loadSquad = ["grounds", "lineup", "squad", "training", "scouting", "transfer", "deadline", "matchday", "continental"].includes(
     view,
   );
   const loadStaff =

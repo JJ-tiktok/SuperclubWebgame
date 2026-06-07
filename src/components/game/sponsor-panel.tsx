@@ -14,6 +14,7 @@ import {
   isSponsorSigningPhase,
   SPONSOR_PRESTIGE_LABELS,
 } from "@/lib/lobby/sponsoring";
+import { getClubPlayerDisplayName } from "@/lib/lobby/player-names";
 import type { ClubOverviewSnapshot, LobbyClub, LobbySnapshot } from "@/lib/lobby/types";
 
 function sponsorStatusLabel(status: string) {
@@ -290,6 +291,17 @@ function SponsorRewardPickForm({
   );
   const pickCount = contract.reward_pick_count;
   const isDualPick = pickCount > 1;
+  const isMaxLevelReward = contract.reward_type === "player_max_level";
+  const playerLabel = (cp: ClubOverviewSnapshot["squad"][number]) =>
+    `${getClubPlayerDisplayName(cp)} (${Number(cp.current_stars)} Sterne)`;
+
+  if (sortedSquad.length === 0) {
+    return (
+      <p className="mt-4 rounded border border-amber-800/50 bg-amber-950/20 px-3 py-2 text-sm text-amber-200">
+        Kein Kader geladen — bitte Seite neu laden. Falls das Problem bleibt, wechsle kurz zur Kaderansicht und zurück.
+      </p>
+    );
+  }
 
   if (isDualPick) {
     return (
@@ -302,7 +314,7 @@ function SponsorRewardPickForm({
         <input name="contract_id" type="hidden" value={contract.id} />
         <p className="text-sm font-semibold text-emerald-200">Spielerauswahl für Belohnung</p>
         <label className="block text-xs text-zinc-400">
-          Spieler 1 (+ Potential)
+          {isMaxLevelReward ? "Spieler 1 (+ Potential)" : "Spieler 1 (+1 Potential)"}
           <select
             className="mt-1 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100"
             name="club_player_id"
@@ -311,13 +323,13 @@ function SponsorRewardPickForm({
             <option value="">Auswählen…</option>
             {sortedSquad.map((cp) => (
               <option key={cp.id} value={cp.id}>
-                {cp.player?.display_name ?? "Spieler"} ({Number(cp.current_stars)} Sterne)
+                {playerLabel(cp)}
               </option>
             ))}
           </select>
         </label>
         <label className="block text-xs text-zinc-400">
-          Spieler 2 (Max-Level)
+          {isMaxLevelReward ? "Spieler 2 (Max-Level)" : "Spieler 2 (+1 Potential)"}
           <select
             className="mt-1 w-full rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100"
             name="club_player_id"
@@ -325,8 +337,8 @@ function SponsorRewardPickForm({
           >
             <option value="">Auswählen…</option>
             {sortedSquad.map((cp) => (
-              <option key={`max-${cp.id}`} value={cp.id}>
-                {cp.player?.display_name ?? "Spieler"} ({Number(cp.current_stars)} Sterne)
+              <option key={`pick-2-${cp.id}`} value={cp.id}>
+                {playerLabel(cp)}
               </option>
             ))}
           </select>
@@ -355,7 +367,7 @@ function SponsorRewardPickForm({
           type="submit"
           value={cp.id}
         >
-          <span>{cp.player?.display_name ?? "Spieler"}</span>
+          <span>{getClubPlayerDisplayName(cp)}</span>
           <span className="text-xs text-zinc-400">{Number(cp.current_stars)} Sterne</span>
         </button>
       ))}

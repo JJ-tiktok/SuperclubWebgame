@@ -97,9 +97,11 @@ async function loadClubCaptain(supabase: SupabaseServiceClient, clubId: string):
     .select("captain_club_player_id, captain_boost_rank")
     .eq("id", clubId)
     .maybeSingle<{ captain_club_player_id: string | null; captain_boost_rank: number | null }>();
-  const boost = Math.trunc(Number(data?.captain_boost_rank ?? 0));
-  if (!data?.captain_club_player_id || boost <= 0) return null;
-  return { clubPlayerId: data.captain_club_player_id, boost };
+  if (!data?.captain_club_player_id) return null;
+  return {
+    clubPlayerId: data.captain_club_player_id,
+    boost: Math.max(0, Math.trunc(Number(data.captain_boost_rank ?? 0))),
+  };
 }
 
 async function computeClubLockedPower(supabase: SupabaseServiceClient, clubId: string) {

@@ -7,19 +7,23 @@ import { Panel, PanelDescription, PanelHeader, PanelTitle } from "@/components/u
 import type { ClubPlayerSnapshot } from "@/lib/lobby/types";
 
 export function CaptainPanel({
+  boostExtra = 0,
   gameId,
   roomCode,
   squad,
   captainClubPlayerId,
   boostRank,
 }: {
+  boostExtra?: number;
   gameId: string;
   roomCode: string;
   squad: ClubPlayerSnapshot[];
   captainClubPlayerId: string | null | undefined;
   boostRank: number | null | undefined;
 }) {
-  const boost = Math.trunc(Number(boostRank ?? 0));
+  const placementBoost = Math.trunc(Number(boostRank ?? 0));
+  const staffBoost = Math.trunc(Number(boostExtra ?? 0));
+  const boost = placementBoost + staffBoost;
   const hasBoost = boost > 0;
   const sorted = squad
     .slice()
@@ -33,7 +37,11 @@ export function CaptainPanel({
           <PanelTitle>Captain Boost</PanelTitle>
           <PanelDescription>
             {hasBoost
-              ? `Dein Captain erhaelt +${boost} Sterne in seiner Zone (Saison-Bonus aus Platzierung).`
+              ? staffBoost > 0 && placementBoost > 0
+                ? `Dein Captain erhaelt +${boost} Sterne in seiner Zone (+${placementBoost} Platzierung, +${staffBoost} Mitarbeiter).`
+                : staffBoost > 0
+                  ? `Dein Captain erhaelt +${boost} Sterne in seiner Zone (Mitarbeiter-Bonus).`
+                  : `Dein Captain erhaelt +${boost} Sterne in seiner Zone (Saison-Bonus aus Platzierung).`
               : "Noch kein Captain-Boost. Der Bonus wird nach Saisonende anhand der Platzierung vergeben."}
           </PanelDescription>
         </div>

@@ -26,10 +26,12 @@ function getOwnLineupPowerSummary(snapshot: LobbySnapshot, ownClub?: LobbyClub) 
     (entry) => entry.card.effects as Array<{ type: string; zone?: string; stars?: number }>,
   );
 
-  const captainBoost = Math.trunc(Number(ownClub?.captain_boost_rank ?? 0));
   const captain =
-    ownClub?.captain_club_player_id && captainBoost > 0
-      ? { clubPlayerId: ownClub.captain_club_player_id, boost: captainBoost }
+    ownClub?.captain_club_player_id
+      ? {
+          clubPlayerId: ownClub.captain_club_player_id,
+          boost: Math.max(0, Math.trunc(Number(ownClub.captain_boost_rank ?? 0))),
+        }
       : null;
 
   return calculateLineupPower(

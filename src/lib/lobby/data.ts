@@ -3,6 +3,7 @@ import { getContinentalLineupStars, type ContinentalCpuTier } from "@/lib/lobby/
 import { normalizeRoomCode } from "./rules";
 import { DRAFT_PLAYER_SELECT } from "./draft";
 import { mergeCarriedSecretWeapons } from "@/lib/lobby/club-game-changers";
+import { buildNextMatchZoneBoostsByClubId } from "@/lib/game/game-changer-effects";
 import {
   buildLineupSnapshotFromPlayers,
   type LineupSnapshotClubPlayerRow,

@@ -2,7 +2,7 @@ import { auth } from "@clerk/nextjs/server";
 import { getContinentalLineupStars, type ContinentalCpuTier } from "@/lib/lobby/continental-cup";
 import { normalizeRoomCode } from "./rules";
 import { DRAFT_PLAYER_SELECT } from "./draft";
-import { buildNextMatchZoneBoostsByClubId } from "@/lib/game/game-changer-effects";
+import { mergeCarriedSecretWeapons } from "@/lib/lobby/club-game-changers";
 import {
   buildLineupSnapshotFromPlayers,
   type LineupSnapshotClubPlayerRow,
@@ -1335,6 +1335,7 @@ async function getClubOverviewSnapshot(
     { data: clubPlayers, error: clubPlayersError },
     { data: staffRows, error: staffError },
     { data: gameChangerRows, error: gameChangerError },
+    { data: carriedSecretWeaponRows, error: carriedSecretWeaponError },
     { data: pendingEffectRows, error: pendingEffectsError },
     { data: investments, error: investmentsError },
     { data: trainingTransactions, error: trainingTransactionsError },
@@ -1369,6 +1370,17 @@ async function getClubOverviewSnapshot(
           .eq("season_number", seasonNumber)
           .order("created_at", { ascending: true, nullsFirst: false })
           .limit(80)
+          .returns<ClubGameChangerSnapshot[]>()
+      : emptyQueryResult<ClubGameChangerSnapshot[]>([]),
+    profile.loadGameChangers && seasonNumber > 1
+      ? supabase
+          .from("club_game_changers")
+          .select(CLUB_GAME_CHANGER_SELECT_V4)
+          .eq("club_id", club.id)
+          .lt("season_number", seasonNumber)
+          .is("used_at", null)
+          .order("created_at", { ascending: true, nullsFirst: false })
+          .limit(40)
           .returns<ClubGameChangerSnapshot[]>()
       : emptyQueryResult<ClubGameChangerSnapshot[]>([]),
     profile.loadPendingEffects
@@ -1480,6 +1492,19 @@ async function getClubOverviewSnapshot(
 
   if (gameChangerErrorFinal) {
     throw gameChangerErrorFinal;
+  }
+
+  if (
+    profile.loadGameChangers &&
+    seasonNumber > 1 &&
+    !isUndefinedColumnError(carriedSecretWeaponError) &&
+    carriedSecretWeaponError
+  ) {
+    throw carriedSecretWeaponError;
+  }
+
+  if (profile.loadGameChangers && seasonNumber > 1 && (carriedSecretWeaponRows?.length ?? 0) > 0) {
+    gameChangerRowsFinal = mergeCarriedSecretWeapons(gameChangerRowsFinal ?? [], carriedSecretWeaponRows ?? []);
   }
 
   // pendingEffectsError can occur when the v3 migration has not been applied yet.

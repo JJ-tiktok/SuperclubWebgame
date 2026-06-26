@@ -44,11 +44,17 @@ export function applyGameEventToSnapshot(snapshot: LobbySnapshot, event: GameEve
       return applyPhaseChanged(next, event);
     case "SAVE_UPDATED":
       return applySaveUpdated(next, event);
-    case "SCOUTING_STATUS_CHANGED":
     case "CLUB_SELECTED":
-    case "DEADLINE_INITIALIZED":
-    case "TRANSFER_OFFER_CREATED":
       return { applied: true, needsRefetch: true, snapshot: next };
+    case "SCOUTING_STATUS_CHANGED":
+      // Only clients currently viewing scouting need the fresh data.
+      return { applied: true, needsRefetch: next.scouting !== null, snapshot: next };
+    case "DEADLINE_INITIALIZED":
+      // Auctions are only shown on the deadline view; PHASE_CHANGED already refetches others.
+      return { applied: true, needsRefetch: next.deadline !== null, snapshot: next };
+    case "TRANSFER_OFFER_CREATED":
+      // The offer list is only loaded on squad/transfer views.
+      return { applied: true, needsRefetch: next.transfer_market !== null, snapshot: next };
     default:
       return { applied: false, needsRefetch: true, snapshot };
   }

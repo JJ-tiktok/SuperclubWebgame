@@ -138,6 +138,7 @@ import {
 } from "@/lib/lobby/player-names";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
 import { emitGameEvent } from "@/lib/lobby/emit-game-event";
+import { cleanupGameHistory } from "@/lib/lobby/cleanup-history";
 import type {
   DraftPickSnapshot,
   DraftPlayerRow,
@@ -2933,6 +2934,9 @@ export async function advancePhaseAction(formData: FormData) {
     },
     type: "PHASE_CHANGED",
   });
+  // Prune non-rule-critical live/UI history each phase advance so long sessions
+  // (4-5h) stay responsive. Best-effort: never blocks the phase transition.
+  await cleanupGameHistory(supabase, gameId);
   revalidatePath(`/games/${roomCode}`);
   redirect(`/games/${roomCode}`);
 }

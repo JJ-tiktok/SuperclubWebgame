@@ -54,14 +54,31 @@ export function GameRealtimeBridge({
     const gameId = snapshot.game.id;
     const roomCode = snapshot.game.room_code;
     const snapshotPollMs = getSnapshotPollMs(snapshot.game.phase);
+    const useBroadcast = process.env.NEXT_PUBLIC_REALTIME_BROADCAST === "1";
     let lastLiveActivityAt = Date.now();
     const eventChannel = client.channel(`game:${gameId}`, {
       config: {
+        // Broadcast-from-DB requires a private channel gated by realtime.messages RLS.
+        ...(useBroadcast ? { private: true } : {}),
         presence: {
           key: currentUserId,
         },
       },
     });
+
+    function handleIncomingEvent(value: unknown, fallbackReason: string) {
+      lastLiveActivityAt = Date.now();
+      const event = normalizeGameEvent(value);
+      if (!event) {
+        scheduleRecover(fallbackReason);
+        return;
+      }
+
+      const result = applyGameEvent(event);
+      if (result.needsRefetch) {
+        scheduleRecover(`event_${event.type.toLowerCase()}`);
+      }
+    }
 
     async function recover(reason: string) {
       if (!active) {
@@ -98,42 +115,42 @@ export function GameRealtimeBridge({
 
       client.realtime.setAuth(token);
 
-      eventChannel
-        .on(
-          "postgres_changes",
-          {
-            event: "INSERT",
-            filter: `game_id=eq.${gameId}`,
-            schema: "public",
-            table: "game_events",
-          },
-          (payload) => {
-            lastLiveActivityAt = Date.now();
-            const event = normalizeGameEvent(payload.new);
-            if (!event) {
-              scheduleRecover("invalid_event_payload");
-              return;
-            }
+      if (useBroadcast) {
+        // Low-latency path: events are pushed via realtime.send() from append_game_event.
+        // Draft round transitions are carried by DRAFT_PICK_MADE (roundComplete) events.
+        eventChannel.on("broadcast", { event: "game_event" }, (message) => {
+          handleIncomingEvent(message.payload, "invalid_broadcast_payload");
+        });
+      } else {
+        eventChannel
+          .on(
+            "postgres_changes",
+            {
+              event: "INSERT",
+              filter: `game_id=eq.${gameId}`,
+              schema: "public",
+              table: "game_events",
+            },
+            (payload) => {
+              handleIncomingEvent(payload.new, "invalid_event_payload");
+            },
+          )
+          .on(
+            "postgres_changes",
+            {
+              event: "*",
+              filter: `game_id=eq.${gameId}`,
+              schema: "public",
+              table: "draft_rounds",
+            },
+            () => {
+              lastLiveActivityAt = Date.now();
+              scheduleRecover("draft_rounds");
+            },
+          );
+      }
 
-            const result = applyGameEvent(event);
-            if (result.needsRefetch) {
-              scheduleRecover(`event_${event.type.toLowerCase()}`);
-            }
-          },
-        )
-        .on(
-          "postgres_changes",
-          {
-            event: "*",
-            filter: `game_id=eq.${gameId}`,
-            schema: "public",
-            table: "draft_rounds",
-          },
-          () => {
-            lastLiveActivityAt = Date.now();
-            scheduleRecover("draft_rounds");
-          },
-        )
+      eventChannel
         .on("presence", { event: "sync" }, () => {
           lastLiveActivityAt = Date.now();
           setGamePresence(normalizePresenceState(eventChannel.presenceState()));

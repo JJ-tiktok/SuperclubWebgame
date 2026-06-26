@@ -273,24 +273,28 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
   const ownClub = clubsWithStars.find((club) => club.clerk_user_id === userId);
   const activeView = normalizeSnapshotView(options?.activeView);
   const perf = createSnapshotPerfTimer(game, activeView);
-  const draft = shouldLoadDraftSnapshot(game.phase, activeView) ? await perf.time("draft", () => getDraftSnapshot(game, clubsWithStars)) : null;
-  const scouting = shouldLoadScoutingSnapshot(game.phase, activeView) ? await perf.time("scouting", () => getScoutingSnapshot(game, clubsWithStars)) : null;
-  const deadline = shouldLoadDeadlineSnapshot(game.phase, activeView) ? await perf.time("deadline", () => getDeadlineSnapshot(game, clubsWithStars, ownClub)) : null;
-  const season = shouldLoadSeasonSnapshot(game.phase, activeView) ? await perf.time("season", () => getSeasonSnapshot(game, ownClub)) : null;
-  const continental = shouldLoadContinentalSnapshot(game.phase, activeView) ? await perf.time("continental", () => getContinentalSnapshot(game)) : null;
-  const clubOverview =
-    ownClub && shouldLoadClubOverviewSnapshot(game.phase, activeView)
-      ? await perf.time("club_overview", () => getClubOverviewSnapshot(game, ownClub, clubsWithStars.length, activeView))
-      : null;
-  const clubSquads =
-    ownClub && (activeView === "squad" || activeView === "transfer")
-      ? await perf.time("club_squads", () => getClubSquadsSnapshot(game, clubsWithStars))
-      : null;
-  const transferMarket =
-    ownClub && (activeView === "squad" || activeView === "transfer")
-      ? await perf.time("transfer_market", () => getTransferMarketSnapshot(game, ownClub, clubsWithStars))
-      : null;
-  const matchNews = shouldLoadMatchNewsSnapshot(game.phase, activeView) ? await perf.time("match_news", () => getMatchNewsSnapshot(game)) : [];
+
+  // These snapshot slices are independent of each other, so load the ones the
+  // current view needs in parallel instead of sequentially. Most views activate
+  // only 1-3 of these, but parallelizing removes serial round-trip latency.
+  const [draft, scouting, deadline, season, continental, clubOverview, clubSquads, transferMarket, matchNews] =
+    await Promise.all([
+      shouldLoadDraftSnapshot(game.phase, activeView) ? perf.time("draft", () => getDraftSnapshot(game, clubsWithStars)) : Promise.resolve(null),
+      shouldLoadScoutingSnapshot(game.phase, activeView) ? perf.time("scouting", () => getScoutingSnapshot(game, clubsWithStars)) : Promise.resolve(null),
+      shouldLoadDeadlineSnapshot(game.phase, activeView) ? perf.time("deadline", () => getDeadlineSnapshot(game, clubsWithStars, ownClub)) : Promise.resolve(null),
+      shouldLoadSeasonSnapshot(game.phase, activeView) ? perf.time("season", () => getSeasonSnapshot(game, ownClub)) : Promise.resolve(null),
+      shouldLoadContinentalSnapshot(game.phase, activeView) ? perf.time("continental", () => getContinentalSnapshot(game)) : Promise.resolve(null),
+      ownClub && shouldLoadClubOverviewSnapshot(game.phase, activeView)
+        ? perf.time("club_overview", () => getClubOverviewSnapshot(game, ownClub, clubsWithStars.length, activeView))
+        : Promise.resolve(null),
+      ownClub && (activeView === "squad" || activeView === "transfer")
+        ? perf.time("club_squads", () => getClubSquadsSnapshot(game, clubsWithStars))
+        : Promise.resolve(null),
+      ownClub && (activeView === "squad" || activeView === "transfer")
+        ? perf.time("transfer_market", () => getTransferMarketSnapshot(game, ownClub, clubsWithStars))
+        : Promise.resolve(null),
+      shouldLoadMatchNewsSnapshot(game.phase, activeView) ? perf.time("match_news", () => getMatchNewsSnapshot(game)) : Promise.resolve([]),
+    ]);
 
   const snapshot: LobbySnapshot = {
     game,
@@ -410,6 +414,7 @@ async function getScoutingSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promise
       .eq("game_id", game.id)
       .eq("season_number", seasonNumber)
       .order("draw_index", { ascending: true })
+      .limit(500)
       .returns<ScoutingDrawRow[]>(),
     supabase
       .from("transactions")
@@ -1401,6 +1406,7 @@ async function getClubOverviewSnapshot(
           .eq("club_id", club.id)
           .eq("season_number", seasonNumber)
           .order("created_at", { ascending: false })
+          .limit(200)
           .returns<InvestmentSnapshot[]>()
       : emptyQueryResult<InvestmentSnapshot[]>([]),
     profile.loadTrainingTransactions

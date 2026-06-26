@@ -27,7 +27,8 @@ export type GameView =
   | "deadline"
   | "continental"
   | "hall_of_fame"
-  | "prestige";
+  | "prestige"
+  | "game_end";
 
 export const GAME_VIEWS: GameView[] = [
   "dashboard",
@@ -39,6 +40,7 @@ export const GAME_VIEWS: GameView[] = [
   "table",
   "hall_of_fame",
   "prestige",
+  "game_end",
   "settings",
   "draft",
   "training",
@@ -47,7 +49,11 @@ export const GAME_VIEWS: GameView[] = [
   "continental",
 ];
 
-export function normalizeView(value: string | undefined): GameView {
+export function normalizeView(value: string | undefined, phase?: string): GameView {
+  if ((!value || value === "dashboard") && phase === "completed") {
+    return "game_end";
+  }
+
   return GAME_VIEWS.includes(value as GameView) ? (value as GameView) : "dashboard";
 }
 

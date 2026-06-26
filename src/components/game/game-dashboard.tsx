@@ -116,6 +116,8 @@ import { OpponentIntelPanel } from "@/components/game/opponent-intel-panel";
 import { PlayerHighlightsPanel } from "@/components/game/player-highlights-panel";
 import { HallOfFameView } from "@/components/game/hall-of-fame-view";
 import { PrestigeView } from "@/components/game/prestige-view";
+import { FinalSeasonBanner } from "@/components/game/final-season-banner";
+import { GameEndView } from "@/components/game/game-end-view";
 import { LobbySetupView } from "@/components/lobby/lobby-setup-view";
 import {
   canUpgradeEndgameFacility,
@@ -166,7 +168,7 @@ import {
 import { canUpgradeFacility, getStaffRecruitBlockReason, getStaffRecruitHint, getStaffRecruitReasonLabel, getUpgradeCost, getUpgradeReasonLabel, type UpgradeAction } from "@/lib/lobby/investments";
 import { isOffseasonPendingScopeActive } from "@/lib/lobby/offseason-pending-effects";
 import { calculateLineupPower, getCaptainBoostExtra } from "@/lib/lobby/lineup-power";
-import { getPhaseLabel, isInvestmentPhase } from "@/lib/lobby/phases";
+import { getPhaseLabel, isFinalSeason, isInvestmentPhase } from "@/lib/lobby/phases";
 import { isQualifiedTransferProfit } from "@/lib/lobby/prestige";
 import { buildSeasonEndSummaryModel } from "@/lib/lobby/season-end-summary";
 import { isClubStatusOverrideActive, resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
@@ -262,7 +264,7 @@ export function GameDashboard(props: GameDashboardProps) {
 
 function GameDashboardContent({ activeView, currentUserId, snapshot }: GameDashboardProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const view = normalizeView(activeView);
+  const view = normalizeView(activeView, snapshot.game.phase);
   const ownClub = snapshot.clubs.find((club) => club.clerk_user_id === currentUserId);
   const theme = getClubTheme(ownClub);
   const isHost = snapshot.game.host_clerk_user_id === currentUserId;
@@ -336,6 +338,7 @@ function GameDashboardContent({ activeView, currentUserId, snapshot }: GameDashb
             snapshot={snapshot}
             startState={startState}
           />
+          <FinalSeasonBanner game={snapshot.game} />
           {snapshot.game.phase === "off_season" && ownClub ? (
             <OffSeasonChecklist ownClub={ownClub} snapshot={snapshot} />
           ) : null}
@@ -398,6 +401,15 @@ function AppSidebar({
         </div>
 
         <div className="mt-5 space-y-1">
+          {snapshot.game.phase === "completed" ? (
+            <MenuLink
+              active={activeView === "game_end"}
+              badge="Sieger"
+              collapsed={collapsed}
+              game={snapshot.game.room_code}
+              item={{ id: "game_end", label: "Spielende", icon: Crown }}
+            />
+          ) : null}
           {mainMenu.map((item) => (
             <MenuLink active={activeView === item.id} collapsed={collapsed} game={snapshot.game.room_code} item={item} key={item.id} />
           ))}
@@ -608,6 +620,7 @@ function GameHeader({
   startState: ReturnType<typeof canStartLobby>;
 }) {
   const seasonNumber = Number(snapshot.game.settings?.seasonNumber ?? 1);
+  const finalSeasonActive = isFinalSeason(snapshot.game.settings) && snapshot.game.phase !== "completed";
 
   return (
     <header className="overflow-hidden rounded-lg border border-[var(--club-border)] bg-zinc-950/90 shadow-sm shadow-black/30">
@@ -620,6 +633,17 @@ function GameHeader({
             </span>
             <Badge tone="green">Room {snapshot.game.room_code}</Badge>
             <Badge>{snapshot.game.phase.toUpperCase()}</Badge>
+            {finalSeasonActive ? (
+              <Badge tone="amber" title="Letzte Saison des Spiels">
+                FINALE SAISON {seasonNumber}
+              </Badge>
+            ) : null}
+            {snapshot.game.settings.final_season_number && !finalSeasonActive && snapshot.game.phase !== "completed" ? (
+              <Badge tone="neutral" title="Finale Saison wurde ausgeloest">
+                Finale ab S{snapshot.game.settings.final_season_number}
+              </Badge>
+            ) : null}
+            {snapshot.game.phase === "completed" ? <Badge tone="green">Spiel beendet</Badge> : null}
             <Badge>{phaseDoneCount}/{phaseDoneTotal} fertig</Badge>
             <Badge>Save v{snapshot.game.save_version ?? 1}</Badge>
             <Badge tone={snapshot.game.settings.continental_cup_enabled === false ? "neutral" : "blue"}>
@@ -688,7 +712,16 @@ function GameHeader({
               </Button>
             </form>
           ) : null}
-          {snapshot.game.phase !== "lobby" && ownMember ? (
+          {snapshot.game.phase === "completed" ? (
+            <Link
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-lime-300 px-4 text-sm font-medium text-zinc-950 transition hover:bg-lime-200"
+              href={`/games/${snapshot.game.room_code}?view=game_end`}
+            >
+              <Crown size={16} aria-hidden />
+              Spielende
+            </Link>
+          ) : null}
+          {snapshot.game.phase !== "lobby" && snapshot.game.phase !== "completed" && ownMember ? (
             <form action={setPhaseDoneAction}>
               <input name="game_id" type="hidden" value={snapshot.game.id} />
               <input name="room_code" type="hidden" value={snapshot.game.room_code} />
@@ -698,7 +731,7 @@ function GameHeader({
               </Button>
             </form>
           ) : null}
-          {snapshot.game.phase !== "lobby" && isHost ? (
+          {snapshot.game.phase !== "lobby" && snapshot.game.phase !== "completed" && isHost ? (
             <form action={advancePhaseAction}>
               <input name="game_id" type="hidden" value={snapshot.game.id} />
               <input name="room_code" type="hidden" value={snapshot.game.room_code} />
@@ -5023,6 +5056,10 @@ function renderView(
         snapshot={props.snapshot}
       />
     );
+  }
+
+  if (view === "game_end") {
+    return <GameEndView ownClub={props.ownClub} snapshot={props.snapshot} />;
   }
 
   return null;

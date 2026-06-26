@@ -208,6 +208,19 @@ export const VIEW_GUIDES: Record<GameView, ViewGuideConfig> = {
       { id: "history", label: "Historie", description: "Deine vergebenen Punkte" },
     ],
   },
+  game_end: {
+    title: "Spielende",
+    summary:
+      "Die finale Saison ist vorbei. Hier siehst du den Sieger und die endgueltige Prestige-Wertung aller Manager.",
+    tips: [
+      "Bei Gleichstand entscheiden Continental-Cup-Siege, Tabellenplatz und Vereinsname.",
+      "Ueber Prestige kannst du die detaillierte Punktehistorie einsehen.",
+    ],
+    sections: [
+      { id: "winner", label: "Sieger", description: "Gewinner des Prestige-Rennens" },
+      { id: "ranking", label: "Endstand", description: "Finale Prestige-Rangliste" },
+    ],
+  },
   settings: {
     title: "Einstellungen",
     summary:

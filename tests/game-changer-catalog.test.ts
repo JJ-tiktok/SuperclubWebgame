@@ -27,6 +27,13 @@ describe("game-changer-catalog", () => {
     assert.match(rows[0]?.choiceHint ?? "", /Spieler/);
   });
 
+  it("classifies force_release_stars as choice mode", () => {
+    const effect: GameChangerEffect = { type: "force_release_stars", stars: 4 };
+    const rows = dryRunGameChangerEffects([effect]);
+    assert.equal(rows[0]?.mode, "choice");
+    assert.match(rows[0]?.choiceHint ?? "", /4 Sternen entlassen/);
+  });
+
   it("classifies v4 match_zone_boost as match_card", () => {
     const effect: GameChangerEffect = { type: "match_zone_boost", stars: 2, choice: "zone" };
     assert.equal(classifyGameChangerEffect(effect), "match_card");

@@ -7039,6 +7039,23 @@ export async function resolveGameChangerChoiceAction(formData: FormData) {
     resolvedPayload = { type: "pick_player", club_player_id: clubPlayerId };
     const res = await applyImmediateEffect(supabase, ownClub.id, effect, { resolvedPayload, seasonNumber });
     detail = res.detail;
+  } else if (choiceType === "pick_release_players") {
+    const clubPlayerIds = formData
+      .getAll("club_player_id")
+      .map((value) => String(value))
+      .filter((value) => value.length > 0);
+
+    if (clubPlayerIds.length === 0) redirect(`/games/${roomCode}`);
+
+    const effect = effects.find((e) => e.type === "force_release_stars");
+    if (!effect || effect.type !== "force_release_stars") redirect(`/games/${roomCode}`);
+
+    resolvedPayload = { club_player_ids: clubPlayerIds, type: "pick_release_players" };
+    const res = await applyImmediateEffect(supabase, ownClub.id, effect, { resolvedPayload, seasonNumber });
+    if (!res.applied) {
+      redirect(`/games/${roomCode}`);
+    }
+    detail = res.detail;
   } else if (choiceType === "pick_zone") {
     const zone = String(formData.get("zone") || "").toUpperCase();
     if (!["ATT", "MID", "DEF"].includes(zone)) redirect(`/games/${roomCode}`);

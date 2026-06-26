@@ -49,6 +49,9 @@ function choiceHintForEffect(effect: GameChangerEffect): string | null {
   const pendingChoice = buildPendingChoice(effect);
   if (pendingChoice?.type === "pick_player") return "Spieler aus Kader waehlen";
   if (pendingChoice?.type === "pick_zone") return "Zone ATT/MID/DEF waehlen";
+  if (pendingChoice?.type === "pick_release_players") {
+    return `Spieler im Wert von ${pendingChoice.stars} Sternen entlassen`;
+  }
   return null;
 }
 

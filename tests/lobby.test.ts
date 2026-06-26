@@ -42,6 +42,7 @@ const clubs: LobbyClub[] = [
     money: 100_000_000,
     points: 0,
     is_ready: true,
+    philosophy_id: "vereinsbauer",
   },
   {
     id: "club-2",
@@ -52,6 +53,7 @@ const clubs: LobbyClub[] = [
     money: 100_000_000,
     points: 0,
     is_ready: true,
+    philosophy_id: "talentschmiede",
   },
 ];
 
@@ -82,6 +84,7 @@ describe("Lobby rules", () => {
     assert.equal(canStartLobby(game, clubs, "user-away").ok, false);
     assert.equal(canStartLobby(game, [], "user-host").ok, false);
     assert.equal(canStartLobby(game, [{ ...clubs[0], is_ready: false }, clubs[1]], "user-host").ok, false);
+    assert.equal(canStartLobby(game, [{ ...clubs[0], philosophy_id: null }, clubs[1]], "user-host").ok, false);
     assert.equal(canStartLobby({ ...game, phase: "draft" }, clubs, "user-host").ok, false);
   });
 

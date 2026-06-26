@@ -49,6 +49,7 @@ import type {
   TransferMarketSnapshot,
   TransferOfferSnapshot,
   HallOfFameSnapshot,
+  PrestigeSnapshot,
 } from "./types";
 import { calculateManagerScore, getManagerScoreBand, getPlacementReward, getStadiumIncome, getTrainingCapacity } from "@/lib/game/rules";
 import { getDeadlineAuctionCount } from "@/lib/lobby/deadline";
@@ -74,9 +75,19 @@ import {
   getClubOverviewLoadProfileForView as getClubOverviewLoadProfile,
   shouldLoadClubOverviewForView as shouldLoadClubOverviewSnapshot,
   shouldLoadHallOfFameSnapshot,
+  shouldLoadPrestigeSnapshot,
   shouldLoadScoutingForView as shouldLoadScoutingSnapshot,
 } from "@/lib/lobby/snapshot-load-policy";
 import { buildHallOfFameSnapshot } from "@/lib/lobby/hall-of-fame";
+import {
+  getPhilosophyById,
+  getPhilosophyProgress,
+  getPrestigeTarget,
+  isPrestigeEnabled,
+  normalizePrestigeState,
+  resolvePrestigeWinner,
+} from "@/lib/lobby/prestige";
+import { isFinalSeason } from "@/lib/lobby/phases";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
 import { getTransferOfferCreatorClubId, getTransferOfferResponderClubId } from "@/lib/lobby/transfers";
 import { getClubPlayerDisplayName, getClubPlayerDisplayNameFromRow } from "@/lib/lobby/player-names";
@@ -96,6 +107,7 @@ const CLUB_SELECT_V4 = `${CLUB_SELECT_V3}, captain_club_player_id`;
 const CLUB_SELECT_V5 = `${CLUB_SELECT_V4}, medical_center_level, analytics_hub_level, youth_academy_level, construction_yard_built, medical_heals_used_season, nlz_archetype_respecs_used_season`;
 const CLUB_SELECT_V6 = `${CLUB_SELECT_V5}, squad_stars`;
 const CLUB_SELECT_V7 = `${CLUB_SELECT_V6}, squad_size`;
+const CLUB_SELECT_V8 = `${CLUB_SELECT_V7}, prestige_points, continental_wins, philosophy_id, philosophy_fulfilled, prestige_state`;
 const CLUB_SELECT = CLUB_SELECT_V3;
 
 const CLUB_GAME_CHANGER_SELECT_LEGACY =
@@ -192,10 +204,10 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
     return { snapshot: null, currentUserId: userId };
   }
 
-  const [clubsResultV7, { data: members, error: membersError }] = await Promise.all([
+  const [clubsResultV8, { data: members, error: membersError }] = await Promise.all([
     supabase
       .from("clubs")
-      .select(CLUB_SELECT_V7)
+      .select(CLUB_SELECT_V8)
       .eq("game_id", game.id)
       .order("created_at", { ascending: true })
       .returns<LobbyClub[]>(),
@@ -207,9 +219,21 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
       .returns<LobbyMember[]>(),
   ]);
 
-  let clubs = clubsResultV7.data;
-  let clubsError = clubsResultV7.error;
-  // Fallback chain for DBs without the latest migrations: V7 -> V6 -> V5 -> V4 -> V3 -> legacy.
+  let clubs = clubsResultV8.data;
+  let clubsError = clubsResultV8.error;
+  // Fallback chain for DBs without the latest migrations: V8 -> V7 -> V6 -> V5 -> V4 -> V3 -> legacy.
+  if (isUndefinedColumnError(clubsError)) {
+    const v7 = await supabase
+      .from("clubs")
+      .select(CLUB_SELECT_V7)
+      .eq("game_id", game.id)
+      .order("created_at", { ascending: true })
+      .returns<LobbyClub[]>();
+    if (!isUndefinedColumnError(v7.error)) {
+      clubs = v7.data;
+      clubsError = v7.error;
+    }
+  }
   if (isUndefinedColumnError(clubsError)) {
     const v6 = await supabase
       .from("clubs")
@@ -284,7 +308,7 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
   // These snapshot slices are independent of each other, so load the ones the
   // current view needs in parallel instead of sequentially. Most views activate
   // only 1-3 of these, but parallelizing removes serial round-trip latency.
-  const [draft, scouting, deadline, season, continental, clubOverview, clubSquads, transferMarket, matchNews, hallOfFame] =
+  const [draft, scouting, deadline, season, continental, clubOverview, clubSquads, transferMarket, matchNews, hallOfFame, prestige] =
     await Promise.all([
       shouldLoadDraftSnapshot(game.phase, activeView) ? perf.time("draft", () => getDraftSnapshot(game, clubsWithStars)) : Promise.resolve(null),
       shouldLoadScoutingSnapshot(game.phase, activeView) ? perf.time("scouting", () => getScoutingSnapshot(game, clubsWithStars)) : Promise.resolve(null),
@@ -304,6 +328,9 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
       ownClub && shouldLoadHallOfFameSnapshot(activeView)
         ? perf.time("hall_of_fame", () => getHallOfFameSnapshot(game, ownClub, clubsWithStars))
         : Promise.resolve(null),
+      shouldLoadPrestigeSnapshot(activeView, game.settings)
+        ? perf.time("prestige", () => getPrestigeSnapshot(game, clubsWithStars, ownClub?.id ?? null))
+        : Promise.resolve(null),
     ]);
 
   const snapshot: LobbySnapshot = {
@@ -320,6 +347,7 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
     transfer_market: transferMarket,
     match_news: matchNews,
     hall_of_fame: hallOfFame,
+    prestige,
   };
 
   perf.done();
@@ -817,6 +845,99 @@ async function getHallOfFameSnapshot(
     ownClubId: ownClub.id,
     trainingTransactions: trainingTransactions ?? [],
   });
+}
+
+async function getPrestigeSnapshot(
+  game: LobbyGame,
+  clubs: LobbyClub[],
+  ownClubId: string | null,
+): Promise<PrestigeSnapshot | null> {
+  if (!isPrestigeEnabled(game.settings)) {
+    return null;
+  }
+
+  const supabase = createSupabaseServiceClient();
+  if (!supabase) {
+    return null;
+  }
+
+  const target = getPrestigeTarget(game.settings);
+  const clubRows = clubs.map((club) => ({
+    club_id: club.id,
+    club_name: club.club_name,
+    club_color: club.club_color,
+    manager_name: club.manager_name,
+    prestige_points: Number(club.prestige_points ?? 0),
+    continental_wins: Number(club.continental_wins ?? 0),
+    philosophy_id: club.philosophy_id ?? null,
+    philosophy_fulfilled: Boolean(club.philosophy_fulfilled),
+    season_rank: club.season_rank ?? null,
+  }));
+
+  const winner = game.phase === "completed" ? resolvePrestigeWinner(clubRows) : null;
+
+  const prestigeClubs = clubRows
+    .map((club) => {
+      const philosophy = club.philosophy_id ? getPhilosophyById(club.philosophy_id) : null;
+      const state = normalizePrestigeState(
+        clubs.find((entry) => entry.id === club.club_id)?.prestige_state ?? {},
+      );
+      return {
+        ...club,
+        philosophy_label: philosophy?.label ?? null,
+        philosophy_progress: club.philosophy_id
+          ? getPhilosophyProgress(club.philosophy_id as never, state)
+          : null,
+        awards: [] as PrestigeSnapshot["clubs"][number]["awards"],
+      };
+    })
+    .sort((left, right) => right.prestige_points - left.prestige_points);
+
+  const { data: allAwards, error: awardsError } = await supabase
+    .from("prestige_awards")
+    .select("id, club_id, season_number, category, ref, points, metadata, created_at")
+    .eq("game_id", game.id)
+    .order("created_at", { ascending: false })
+    .limit(500);
+
+  if (awardsError && (awardsError as { code?: string }).code !== "42P01") {
+    throw awardsError;
+  }
+
+  const awardsByClub = new Map<string, PrestigeSnapshot["own_awards"]>();
+  for (const award of allAwards ?? []) {
+    const mapped = {
+      id: award.id,
+      season_number: award.season_number,
+      category: award.category,
+      ref: award.ref,
+      points: award.points,
+      metadata: (award.metadata as Record<string, unknown>) ?? {},
+      created_at: award.created_at,
+    };
+    const existing = awardsByClub.get(award.club_id) ?? [];
+    existing.push(mapped);
+    awardsByClub.set(award.club_id, existing);
+  }
+
+  const clubsWithAwards = prestigeClubs.map((club) => ({
+    ...club,
+    awards: awardsByClub.get(club.club_id) ?? [],
+  }));
+
+  const ownAwards = ownClubId ? awardsByClub.get(ownClubId) ?? [] : [];
+
+  return {
+    enabled: true,
+    target,
+    final_season_number: game.settings.final_season_number ?? null,
+    is_final_season: isFinalSeason(game.settings),
+    game_completed: game.phase === "completed",
+    winner_club_id: winner?.club_id ?? null,
+    winner_club_name: winner?.club_name ?? null,
+    clubs: clubsWithAwards,
+    own_awards: ownAwards,
+  };
 }
 
 async function getTransferMarketSnapshot(

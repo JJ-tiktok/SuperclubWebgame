@@ -37,6 +37,14 @@ import {
   isContinentalTournamentComplete,
 } from "@/app/games/actions/continental";
 import { getNextLobbyPhase, getSettingsForNextPhase, isInvestmentPhase, shouldAdvanceSeason } from "@/lib/lobby/phases";
+import {
+  maybeTriggerFinalSeason,
+  processContinentalPrestigeAtCupEnd,
+  processPrestigeAtSeasonEnd,
+  recordQualifiedTransferSale,
+  snapshotSeasonStartSquadStars,
+} from "@/lib/lobby/prestige-server";
+import { isPrestigeEnabled } from "@/lib/lobby/prestige";
 import { incrementPlayerTenureForGame } from "@/lib/lobby/player-tenure";
 import {
   hasActiveTrainingLock,
@@ -1083,6 +1091,7 @@ export async function buyScoutedPlayerAction(formData: FormData) {
     current_stars: newSigningStars,
     current_zone: "bench",
     player_id: draw.player_id,
+    purchase_price: price,
     stars_at_acquisition: newSigningStars,
   });
 
@@ -1306,13 +1315,14 @@ export async function sellClubPlayerAction(formData: FormData) {
     getGameClubContext(supabase, gameId, userId),
     supabase
       .from("club_players")
-      .select("id, club_id, current_stars, player_id, player:players(id, potential_stars)")
+      .select("id, club_id, current_stars, player_id, purchase_price, player:players(id, potential_stars, metadata)")
       .eq("id", clubPlayerId)
       .single<{
         club_id: string;
         current_stars: number | string;
         id: string;
-        player: { id: string; potential_stars?: number | string | null };
+        purchase_price?: number | string | null;
+        player: { id: string; metadata?: Record<string, unknown> | null; potential_stars?: number | string | null };
         player_id: string;
       }>(),
   ]);
@@ -1352,6 +1362,17 @@ export async function sellClubPlayerAction(formData: FormData) {
     scoutingPrice: getClubPlayerMarketValues(ownedPlayer).scoutingPrice,
     squadSize: squadCount,
   });
+
+  if (isPrestigeEnabled(game.settings) && !isRelease) {
+    await recordQualifiedTransferSale(
+      supabase,
+      ownClub.id,
+      saleValue,
+      ownedPlayer.purchase_price == null ? null : Number(ownedPlayer.purchase_price),
+      ownedPlayer.player.metadata,
+    );
+  }
+
   await cancelOpenSwapTransferOffersForClubPlayer(supabase, ownedPlayer.id, "cancelled");
   const { error: deleteError } = await supabase.from("club_players").delete().eq("id", ownedPlayer.id).eq("club_id", ownClub.id);
 
@@ -1884,6 +1905,7 @@ export async function acceptTransferOfferAction(formData: FormData) {
         club_id: offer.from_club_id,
         current_zone: "bench",
         lineup_slot: null,
+        purchase_price: Number(offer.cash_amount),
         seasons_at_club: 1,
         stars_at_acquisition: Math.trunc(Number(targetPlayer.current_stars)),
       })
@@ -2844,13 +2866,13 @@ export async function advancePhaseAction(formData: FormData) {
     const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
     const qualified = await hasContinentalQualifiers(supabase, gameId, seasonNumber);
     if (!qualified) {
-      nextPhase = "off_season";
+      nextPhase = game.settings.final_season_number === seasonNumber ? "completed" : "off_season";
     }
   }
   const now = new Date().toISOString();
   // Scouting is now parallel — no turn concept needed; keep null for all phases that don't need a turn
   const nextTurnClubId = null;
-  const nextSettings = getSettingsForNextPhase(game.settings, game.phase, nextPhase);
+  let nextSettings = getSettingsForNextPhase(game.settings, game.phase, nextPhase);
 
   if (nextPhase === "season" || nextPhase === "prematch") {
     await ensureSeasonSchedule(supabase, gameId, nextSettings);
@@ -2861,22 +2883,43 @@ export async function advancePhaseAction(formData: FormData) {
       await processSponsorContractsAtSeasonEnd(supabase, gameId, Number(game.settings?.seasonNumber ?? 1));
     }
     await finalizeSeasonEnd(supabase, gameId, Number(game.settings?.seasonNumber ?? 1));
+    if (isPrestigeEnabled(game.settings)) {
+      await processPrestigeAtSeasonEnd(supabase, gameId, Number(game.settings?.seasonNumber ?? 1), game.settings);
+    }
   }
 
   if (
     game.phase === "season_end" &&
-    (nextPhase === "off_season" || nextPhase === "champions_league" || nextPhase === "offseason_finance")
+    (nextPhase === "off_season" || nextPhase === "champions_league" || nextPhase === "offseason_finance" || nextPhase === "completed")
   ) {
     await bookSeasonFinance(supabase, gameId, Number(game.settings?.seasonNumber ?? 1), {
       sponsoringEnabled: isSponsoringEnabled(game.settings),
     });
+    if (isPrestigeEnabled(game.settings)) {
+      nextSettings = await maybeTriggerFinalSeason(
+        supabase,
+        gameId,
+        nextSettings,
+        Number(game.settings?.seasonNumber ?? 1),
+      );
+    }
   }
 
-  if (game.phase === "champions_league" && nextPhase === "off_season") {
+  if (game.phase === "champions_league" && (nextPhase === "off_season" || nextPhase === "completed")) {
     const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
     const complete = await isContinentalTournamentComplete(supabase, gameId, seasonNumber);
     if (!complete) {
       redirect(`/games/${roomCode}?view=continental`);
+    }
+    if (isPrestigeEnabled(game.settings)) {
+      await processContinentalPrestigeAtCupEnd(supabase, gameId, seasonNumber, game.settings);
+      nextSettings = await maybeTriggerFinalSeason(supabase, gameId, nextSettings, seasonNumber);
+    }
+  }
+
+  if (nextPhase === "season" || nextPhase === "prematch") {
+    if (isPrestigeEnabled(nextSettings)) {
+      await snapshotSeasonStartSquadStars(supabase, gameId, Number(nextSettings.seasonNumber ?? 1));
     }
   }
 
@@ -6007,6 +6050,7 @@ async function resolveDeadlineAuction(
     current_stars: deadlineStars,
     current_zone: "bench",
     player_id: auction.player_id,
+    purchase_price: winningAmount,
     stars_at_acquisition: deadlineStars,
   });
 

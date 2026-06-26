@@ -22,6 +22,7 @@ import {
   LineChart,
   ListOrdered,
   MapIcon,
+  Medal,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
@@ -114,6 +115,8 @@ import { ContinentalView } from "@/components/game/continental/continental-view"
 import { OpponentIntelPanel } from "@/components/game/opponent-intel-panel";
 import { PlayerHighlightsPanel } from "@/components/game/player-highlights-panel";
 import { HallOfFameView } from "@/components/game/hall-of-fame-view";
+import { PrestigeView } from "@/components/game/prestige-view";
+import { LobbySetupView } from "@/components/lobby/lobby-setup-view";
 import {
   canUpgradeEndgameFacility,
   ENDGAME_FACILITY_LABELS,
@@ -229,6 +232,7 @@ const mainMenu: Array<{ id: GameView; label: string; icon: typeof Home }> = [
   { id: "matchday", label: "Spieltagsuebersicht", icon: CalendarDays },
   { id: "transfer", label: "Transfermarkt", icon: ShoppingCart },
   { id: "table", label: "Tabelle", icon: Trophy },
+  { id: "prestige", label: "Prestige", icon: Medal },
   { id: "hall_of_fame", label: "Hall of Fame", icon: Award },
   { id: "settings", label: "Settings", icon: Settings },
 ];
@@ -332,12 +336,16 @@ function GameDashboardContent({ activeView, currentUserId, snapshot }: GameDashb
           {snapshot.game.phase === "off_season" && ownClub ? (
             <OffSeasonChecklist ownClub={ownClub} snapshot={snapshot} />
           ) : null}
-          {renderView(view, {
-            currentTurnClub,
-            isHost,
-            ownClub,
-            snapshot,
-          })}
+          {snapshot.game.phase === "lobby" ? (
+            <LobbySetupView ownClub={ownClub} snapshot={snapshot} />
+          ) : (
+            renderView(view, {
+              currentTurnClub,
+              isHost,
+              ownClub,
+              snapshot,
+            })
+          )}
         </section>
       </div>
       <GameEventsDock
@@ -723,6 +731,38 @@ function DashboardView({
       <ViewGuidePanel roomCode={snapshot.game.room_code} view="dashboard" />
       {snapshot.game.phase === "season_end" ? (
         <SeasonEndSummary isHost={isHost} ownClub={ownClub} snapshot={snapshot} />
+      ) : null}
+      {snapshot.prestige?.game_completed ? (
+        <Panel className="border-amber-700/60 bg-amber-950/30">
+          <PanelHeader>
+            <div>
+              <PanelTitle className="text-amber-100">Spiel beendet</PanelTitle>
+              <PanelDescription>
+                {snapshot.prestige.winner_club_name
+                  ? `${snapshot.prestige.winner_club_name} gewinnt mit ${snapshot.prestige.clubs.find((club) => club.club_id === snapshot.prestige?.winner_club_id)?.prestige_points ?? 0} Prestige.`
+                  : "Das Spiel ist abgeschlossen."}
+              </PanelDescription>
+            </div>
+            <Crown size={18} className="text-amber-300" aria-hidden />
+          </PanelHeader>
+        </Panel>
+      ) : snapshot.prestige?.enabled ? (
+        <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+          <PanelHeader>
+            <div>
+              <PanelTitle>Prestige-Fortschritt</PanelTitle>
+              <PanelDescription>
+                Ziel: {snapshot.prestige.target} Prestige
+                {snapshot.prestige.is_final_season ? " — finale Saison laeuft" : ""}
+              </PanelDescription>
+            </div>
+            <Medal size={18} className="text-[var(--club-color)]" aria-hidden />
+          </PanelHeader>
+          <p className="text-sm text-zinc-300">
+            Dein Verein: {snapshot.prestige.clubs.find((club) => club.club_id === ownClub?.id)?.prestige_points ?? 0} /{" "}
+            {snapshot.prestige.target} Prestige
+          </p>
+        </Panel>
       ) : null}
 
       <Panel className="border-[var(--club-border)] bg-zinc-950/85">
@@ -4937,6 +4977,17 @@ function renderView(
 
   if (view === "hall_of_fame") {
     return <HallOfFameView hallOfFame={props.snapshot.hall_of_fame} roomCode={props.snapshot.game.room_code} />;
+  }
+
+  if (view === "prestige") {
+    return (
+      <PrestigeView
+        ownClubId={props.ownClub?.id}
+        prestige={props.snapshot.prestige}
+        roomCode={props.snapshot.game.room_code}
+        snapshot={props.snapshot}
+      />
+    );
   }
 
   return null;

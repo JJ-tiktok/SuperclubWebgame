@@ -3,9 +3,10 @@
 import { ClubBadge } from "@/components/game/club-badge";
 import { Badge } from "@/components/ui/badge";
 import { SmallInfo } from "@/components/game/shared/metric";
+import { TeamTopPlayersList } from "@/components/game/team-top-players-list";
 import { CPU_TIER_LABEL } from "@/lib/lobby/cpu-teams";
 import { formatStars } from "@/components/game/lib/dashboard-helpers";
-import type { CpuStrengthTier } from "@/lib/lobby/types";
+import type { CpuStrengthTier, OpponentTopPlayerSnapshot } from "@/lib/lobby/types";
 import type { LineupPowerSummary } from "@/lib/lobby/lineup-power";
 
 export type FixtureParticipantLike = {
@@ -49,6 +50,7 @@ export function FixtureSideCard({
   thirdPoints,
   zoneBoosts,
   hideStandingStats = false,
+  topPlayers,
 }: {
   lineup: FixtureLineupLike;
   locked: boolean;
@@ -58,6 +60,7 @@ export function FixtureSideCard({
   thirdPoints?: number | null;
   zoneBoosts?: Partial<Record<"ATT" | "MID" | "DEF", number>>;
   hideStandingStats?: boolean;
+  topPlayers?: OpponentTopPlayerSnapshot[];
 }) {
   const cpuTierLabel =
     participant.cpu_tier_label ??
@@ -120,6 +123,7 @@ export function FixtureSideCard({
           <SmallInfo label="Tabellenpunkte" value={score == null ? "-" : String(score)} />
         </div>
       )}
+      {participant.kind === "human" && topPlayers?.length ? <TeamTopPlayersList players={topPlayers} /> : null}
     </div>
   );
 }

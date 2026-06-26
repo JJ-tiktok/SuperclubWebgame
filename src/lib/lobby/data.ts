@@ -43,10 +43,12 @@ import type {
   SeasonFixtureSnapshot,
   SeasonSnapshot,
   SeasonStandingSnapshot,
+  OpponentTopPlayerSnapshot,
   StaffCardRow,
   StaffOfferSnapshot,
   TransferMarketSnapshot,
   TransferOfferSnapshot,
+  HallOfFameSnapshot,
 } from "./types";
 import { calculateManagerScore, getManagerScoreBand, getPlacementReward, getStadiumIncome, getTrainingCapacity } from "@/lib/game/rules";
 import { getDeadlineAuctionCount } from "@/lib/lobby/deadline";
@@ -71,11 +73,16 @@ import { SPONSOR_PRESTIGE_LABELS } from "@/lib/lobby/sponsor-deals";
 import {
   getClubOverviewLoadProfileForView as getClubOverviewLoadProfile,
   shouldLoadClubOverviewForView as shouldLoadClubOverviewSnapshot,
+  shouldLoadHallOfFameSnapshot,
   shouldLoadScoutingForView as shouldLoadScoutingSnapshot,
 } from "@/lib/lobby/snapshot-load-policy";
+import { buildHallOfFameSnapshot } from "@/lib/lobby/hall-of-fame";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
 import { getTransferOfferCreatorClubId, getTransferOfferResponderClubId } from "@/lib/lobby/transfers";
-import { getClubPlayerDisplayName } from "@/lib/lobby/player-names";
+import { getClubPlayerDisplayName, getClubPlayerDisplayNameFromRow } from "@/lib/lobby/player-names";
+import { normalizeSeasonsAtClub } from "@/lib/lobby/player-tenure";
+
+const CLUB_PLAYER_SNAPSHOT_SELECT = `id, club_id, player_id, custom_name, current_stars, current_zone, injured, lineup_slot, acquired_at, seasons_at_club, stars_at_acquisition, player:players(${DRAFT_PLAYER_SELECT})`;
 
 const GAME_SELECT_LEGACY =
   "id, room_code, phase, host_clerk_user_id, current_turn_club_id, settings, save_name, save_status, save_version, last_saved_at, last_saved_by_clerk_user_id, created_at, updated_at";
@@ -277,7 +284,7 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
   // These snapshot slices are independent of each other, so load the ones the
   // current view needs in parallel instead of sequentially. Most views activate
   // only 1-3 of these, but parallelizing removes serial round-trip latency.
-  const [draft, scouting, deadline, season, continental, clubOverview, clubSquads, transferMarket, matchNews] =
+  const [draft, scouting, deadline, season, continental, clubOverview, clubSquads, transferMarket, matchNews, hallOfFame] =
     await Promise.all([
       shouldLoadDraftSnapshot(game.phase, activeView) ? perf.time("draft", () => getDraftSnapshot(game, clubsWithStars)) : Promise.resolve(null),
       shouldLoadScoutingSnapshot(game.phase, activeView) ? perf.time("scouting", () => getScoutingSnapshot(game, clubsWithStars)) : Promise.resolve(null),
@@ -294,6 +301,9 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
         ? perf.time("transfer_market", () => getTransferMarketSnapshot(game, ownClub, clubsWithStars))
         : Promise.resolve(null),
       shouldLoadMatchNewsSnapshot(game.phase, activeView) ? perf.time("match_news", () => getMatchNewsSnapshot(game)) : Promise.resolve([]),
+      ownClub && shouldLoadHallOfFameSnapshot(activeView)
+        ? perf.time("hall_of_fame", () => getHallOfFameSnapshot(game, ownClub, clubsWithStars))
+        : Promise.resolve(null),
     ]);
 
   const snapshot: LobbySnapshot = {
@@ -309,6 +319,7 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
     club_overview: clubOverview,
     transfer_market: transferMarket,
     match_news: matchNews,
+    hall_of_fame: hallOfFame,
   };
 
   perf.done();
@@ -705,10 +716,7 @@ async function getClubSquadsSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promi
   const { data, error } = clubIds.length
     ? await supabase
         .from("club_players")
-        .select(
-          `id, club_id, player_id, custom_name, current_stars, current_zone, injured, lineup_slot, acquired_at,
-          player:players(${DRAFT_PLAYER_SELECT})`,
-        )
+        .select(CLUB_PLAYER_SNAPSHOT_SELECT)
         .in("club_id", clubIds)
         .order("acquired_at", { ascending: true })
         .returns<ClubPlayerSnapshot[]>()
@@ -746,6 +754,71 @@ async function getClubSquadsSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promi
   });
 }
 
+async function getHallOfFameSnapshot(
+  game: LobbyGame,
+  ownClub: LobbyClub,
+  clubs: LobbyClub[],
+): Promise<HallOfFameSnapshot | null> {
+  const supabase = createSupabaseServiceClient();
+
+  if (!supabase) {
+    return null;
+  }
+
+  const [{ data: clubPlayers, error: clubPlayersError }, { data: trainingTransactions, error: trainingTransactionsError }] =
+    await Promise.all([
+      clubs.length
+        ? supabase
+            .from("club_players")
+            .select(CLUB_PLAYER_SNAPSHOT_SELECT)
+            .in(
+              "club_id",
+              clubs.map((club) => club.id),
+            )
+            .order("acquired_at", { ascending: true })
+            .returns<ClubPlayerSnapshot[]>()
+        : Promise.resolve({ data: [], error: null }),
+      supabase
+        .from("transactions")
+        .select("id, club_id, created_at, metadata")
+        .eq("game_id", game.id)
+        .eq("reason", "training")
+        .order("created_at", { ascending: false })
+        .limit(2000)
+        .returns<Array<{ club_id: string; created_at: string; id: string; metadata: unknown }>>(),
+    ]);
+
+  if (clubPlayersError) {
+    throw clubPlayersError;
+  }
+
+  if (trainingTransactionsError) {
+    throw trainingTransactionsError;
+  }
+
+  const playersByClubId = new Map<string, ClubPlayerSnapshot[]>();
+  for (const row of clubPlayers ?? []) {
+    const rows = playersByClubId.get(row.club_id) ?? [];
+    rows.push(row);
+    playersByClubId.set(row.club_id, rows);
+  }
+
+  const clubSquads = clubs.map((club) => ({
+    club: {
+      club_color: club.club_color,
+      club_name: club.club_name,
+      id: club.id,
+    },
+    squad: sortClubPlayers(playersByClubId.get(club.id) ?? []),
+  }));
+
+  return buildHallOfFameSnapshot({
+    clubSquads,
+    ownClubId: ownClub.id,
+    trainingTransactions: trainingTransactions ?? [],
+  });
+}
+
 async function getTransferMarketSnapshot(
   game: LobbyGame,
   ownClub: LobbyClub,
@@ -764,8 +837,8 @@ async function getTransferMarketSnapshot(
     offered_club_player_id, offered_player_id, cash_amount, status, created_at, resolved_at,
     from_club:clubs!transfer_offers_from_club_id_fkey(id, club_name, club_color),
     to_club:clubs!transfer_offers_to_club_id_fkey(id, club_name, club_color),
-    target_club_player:club_players!transfer_offers_target_club_player_id_fkey(id, club_id, player_id, custom_name, current_stars, current_zone, injured, lineup_slot, acquired_at, player:players(${DRAFT_PLAYER_SELECT})),
-    offered_club_player:club_players!transfer_offers_offered_club_player_id_fkey(id, club_id, player_id, custom_name, current_stars, current_zone, injured, lineup_slot, acquired_at, player:players(${DRAFT_PLAYER_SELECT}))`;
+    target_club_player:club_players!transfer_offers_target_club_player_id_fkey(id, club_id, player_id, custom_name, current_stars, current_zone, injured, lineup_slot, acquired_at, seasons_at_club, stars_at_acquisition, player:players(${DRAFT_PLAYER_SELECT})),
+    offered_club_player:club_players!transfer_offers_offered_club_player_id_fkey(id, club_id, player_id, custom_name, current_stars, current_zone, injured, lineup_slot, acquired_at, seasons_at_club, stars_at_acquisition, player:players(${DRAFT_PLAYER_SELECT}))`;
 
   const [
     { data: otherPlayers, error: otherPlayersError },
@@ -775,10 +848,7 @@ async function getTransferMarketSnapshot(
     otherClubIds.length
       ? supabase
           .from("club_players")
-          .select(
-            `id, club_id, player_id, custom_name, current_stars, current_zone, injured, lineup_slot, acquired_at,
-            player:players(${DRAFT_PLAYER_SELECT})`,
-          )
+          .select(CLUB_PLAYER_SNAPSHOT_SELECT)
           .in("club_id", otherClubIds)
           .order("acquired_at", { ascending: true })
           .returns<ClubPlayerSnapshot[]>()
@@ -880,8 +950,30 @@ function normalizeTransferOfferStatus(status: string): TransferOfferSnapshot["st
   return "open";
 }
 
+function normalizeClubPlayerRow(row: ClubPlayerSnapshot): ClubPlayerSnapshot {
+  return {
+    ...row,
+    seasons_at_club: normalizeSeasonsAtClub(row.seasons_at_club),
+    stars_at_acquisition: normalizeStarsAtAcquisition(row.stars_at_acquisition, row.current_stars, row.player.base_stars),
+  };
+}
+
+function normalizeStarsAtAcquisition(
+  value: unknown,
+  currentStars: number | string,
+  baseStars?: number | string | null,
+): number {
+  const parsed = Number(value);
+  if (Number.isFinite(parsed) && parsed >= 0) {
+    return Math.trunc(parsed);
+  }
+
+  const fallback = Number(baseStars ?? currentStars);
+  return Number.isFinite(fallback) && fallback >= 0 ? Math.trunc(fallback) : 0;
+}
+
 function sortClubPlayers(squad: ClubPlayerSnapshot[]) {
-  return [...squad].sort((a, b) => {
+  return [...squad].map(normalizeClubPlayerRow).sort((a, b) => {
     const posOrder: Record<string, number> = { GK: 0, DEF: 1, MID: 2, ATT: 3 };
     const posDiff = (posOrder[a.player.position] ?? 4) - (posOrder[b.player.position] ?? 4);
     if (posDiff !== 0) return posDiff;
@@ -910,6 +1002,54 @@ async function loadClubLockedLineupSnapshot(
   }
 
   return buildLineupSnapshotFromPlayers(data ?? []);
+}
+
+const OPPONENT_TOP_PLAYER_LIMIT = 3;
+
+async function loadOpponentTopPlayersByClubId(
+  supabase: NonNullable<ReturnType<typeof createSupabaseServiceClient>>,
+  clubIds: string[],
+): Promise<Record<string, OpponentTopPlayerSnapshot[]>> {
+  if (clubIds.length === 0) {
+    return {};
+  }
+
+  const { data, error } = await supabase
+    .from("club_players")
+    .select("club_id, custom_name, current_stars, player:players(display_name, position)")
+    .in("club_id", clubIds)
+    .returns<
+      Array<{
+        club_id: string;
+        custom_name?: string | null;
+        current_stars: number | string;
+        player: { display_name: string; position: string } | null;
+      }>
+    >();
+
+  if (error) {
+    throw error;
+  }
+
+  const grouped = new Map<string, OpponentTopPlayerSnapshot[]>();
+
+  for (const row of data ?? []) {
+    const players = grouped.get(row.club_id) ?? [];
+    players.push({
+      name: getClubPlayerDisplayNameFromRow(row),
+      position: row.player?.position,
+      stars: Number(row.current_stars),
+    });
+    grouped.set(row.club_id, players);
+  }
+
+  const result: Record<string, OpponentTopPlayerSnapshot[]> = {};
+  for (const clubId of clubIds) {
+    const sorted = (grouped.get(clubId) ?? []).sort((left, right) => right.stars - left.stars || left.name.localeCompare(right.name, "de"));
+    result[clubId] = sorted.slice(0, OPPONENT_TOP_PLAYER_LIMIT);
+  }
+
+  return result;
 }
 
 async function getSeasonSnapshot(game: LobbyGame, viewerClub?: LobbyClub): Promise<SeasonSnapshot | null> {
@@ -977,10 +1117,12 @@ async function getSeasonSnapshot(game: LobbyGame, viewerClub?: LobbyClub): Promi
   const currentMatchday = normalizedFixtures.find((fixture) => fixture.status !== "completed")?.matchday ?? normalizedFixtures.at(-1)?.matchday ?? 1;
   const humanClubIds = [
     ...new Set(
-      normalizedFixtures.flatMap((fixture) => [
-        fixture.home_participant?.club_id,
-        fixture.away_participant?.club_id,
-      ].filter((id): id is string => Boolean(id))),
+      normalizedFixtures.flatMap((fixture) =>
+        [
+          fixture.home_participant?.kind === "human" ? fixture.home_participant.club_id : null,
+          fixture.away_participant?.kind === "human" ? fixture.away_participant.club_id : null,
+        ].filter((id): id is string => Boolean(id)),
+      ),
     ),
   ];
   let nextMatchZoneBoostsByClubId: Record<string, Record<"ATT" | "DEF" | "MID", number>> = {};
@@ -1024,12 +1166,15 @@ async function getSeasonSnapshot(game: LobbyGame, viewerClub?: LobbyClub): Promi
     }
   }
 
+  const opponentTopPlayersByClubId = await loadOpponentTopPlayersByClubId(supabase, humanClubIds);
+
   return {
     current_matchday: currentMatchday,
     fixtures: enrichedFixtures,
     manager_standings: managerStandings,
     next_match_zone_boosts_by_club_id: nextMatchZoneBoostsByClubId,
     opponent_locked_lineups,
+    opponent_top_players_by_club_id: opponentTopPlayersByClubId,
     standings: enrichedStandings,
   };
 }
@@ -1352,10 +1497,7 @@ async function getClubOverviewSnapshot(
     profile.loadSquad
       ? supabase
           .from("club_players")
-          .select(
-            `id, club_id, player_id, custom_name, current_stars, current_zone, injured, lineup_slot, acquired_at,
-            player:players(${DRAFT_PLAYER_SELECT})`,
-          )
+          .select(CLUB_PLAYER_SNAPSHOT_SELECT)
           .eq("club_id", club.id)
           .order("acquired_at", { ascending: true })
           .returns<ClubPlayerSnapshot[]>()

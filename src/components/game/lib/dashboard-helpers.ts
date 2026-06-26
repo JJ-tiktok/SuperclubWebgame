@@ -25,7 +25,8 @@ export type GameView =
   | "training"
   | "scouting"
   | "deadline"
-  | "continental";
+  | "continental"
+  | "hall_of_fame";
 
 export const GAME_VIEWS: GameView[] = [
   "dashboard",
@@ -35,6 +36,7 @@ export const GAME_VIEWS: GameView[] = [
   "matchday",
   "transfer",
   "table",
+  "hall_of_fame",
   "settings",
   "draft",
   "training",

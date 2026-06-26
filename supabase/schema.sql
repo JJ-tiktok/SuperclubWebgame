@@ -201,6 +201,8 @@ create table public.club_players (
   injured boolean not null default false,
   lineup_slot int,
   acquired_at timestamptz not null default now(),
+  seasons_at_club int not null default 1,
+  stars_at_acquisition numeric(3,1) not null,
   unique (club_id, player_id),
   check (custom_name is null or char_length(custom_name) <= 32)
 );

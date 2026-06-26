@@ -179,6 +179,19 @@ export const VIEW_GUIDES: Record<GameView, ViewGuideConfig> = {
       { id: "bracket", label: "Turnierbaum", description: "Alle Paarungen" },
     ],
   },
+  hall_of_fame: {
+    title: "Hall of Fame",
+    summary:
+      "Ranglisten fuer Vereinslegenden, Trainingshelden und die groesste Entwicklung seit Beitritt — fuer deinen Verein und die ganze Liga.",
+    tips: [
+      "Trainingshelden zaehlen nur echte Training-Sterne, nicht Game-Changer.",
+      "Eigene Spielernamen erscheinen hier genauso wie im Kader.",
+    ],
+    sections: [
+      { id: "own", label: "Mein Verein", description: "Deine persoenlichen Legenden" },
+      { id: "league", label: "Liga", description: "Beste Spieler aller Manager" },
+    ],
+  },
   settings: {
     title: "Einstellungen",
     summary:

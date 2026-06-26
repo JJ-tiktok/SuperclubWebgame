@@ -1,4 +1,5 @@
 import type { ClubStatus } from "@/lib/game/types";
+import { calculateManagerStandingScore } from "@/lib/game/rules";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   addSponsorPrestigeToState,
@@ -226,11 +227,11 @@ async function loadManagerScoreRows(supabase: ServiceClient, gameId: string, sea
   const participantIds = humanParticipants.map((participant) => participant.id);
   const { data: standings, error: standingsError } = await supabase
     .from("season_standings")
-    .select("participant_id, match_points")
+    .select("participant_id, match_points, manager_match_points")
     .eq("game_id", gameId)
     .eq("season_number", seasonNumber)
     .in("participant_id", participantIds)
-    .returns<Array<{ participant_id: string; match_points: number | string }>>();
+    .returns<Array<{ manager_match_points?: number | string | null; participant_id: string; match_points: number | string }>>();
 
   if (standingsError) {
     throw standingsError;
@@ -255,10 +256,10 @@ async function loadManagerScoreRows(supabase: ServiceClient, gameId: string, sea
   const rows = humanParticipants.map((participant) => {
     const standing = standings?.find((entry) => entry.participant_id === participant.id);
     const squadStars = squadStarsByClub.get(participant.club_id as string) ?? 0;
-    const matchPoints = Number(standing?.match_points ?? 0);
+    const matchPoints = Number(standing?.manager_match_points ?? standing?.match_points ?? 0);
     return {
       club_id: participant.club_id as string,
-      season_score: Math.trunc(squadStars + matchPoints),
+      season_score: calculateManagerStandingScore(matchPoints),
       squad_stars: squadStars,
     };
   });

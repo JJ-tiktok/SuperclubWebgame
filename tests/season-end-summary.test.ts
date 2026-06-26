@@ -44,6 +44,7 @@ function managerStanding(
     season_match_points: seasonMatchPoints,
     season_score: seasonScore,
     squad_stars: squadStars,
+    stage_score: squadStars + seasonMatchPoints,
     status,
   };
 }

@@ -258,6 +258,7 @@ export type ClubPlayerSnapshot = {
   acquired_at?: string;
   seasons_at_club?: number;
   stars_at_acquisition?: number;
+  unavailable_until_season?: number | null;
   purchase_price?: number | null;
   player: DraftPlayerRow;
 };
@@ -449,11 +450,41 @@ export type ClubSquadSnapshot = {
   squad_stars: number;
 };
 
+export type PoachRequestStatus = "open" | "accepted" | "declined" | "cancelled";
+
+export type PoachRequestSnapshot = {
+  id: string;
+  game_id: string;
+  season_number: number;
+  from_club_id: string;
+  to_club_id: string;
+  target_club_player_id: string;
+  target_player_id: string;
+  cash_amount: number;
+  status: PoachRequestStatus;
+  created_at: string;
+  resolved_at?: string | null;
+  from_club: Pick<LobbyClub, "club_color" | "club_name" | "id" | "manager_name">;
+  to_club: Pick<LobbyClub, "club_color" | "club_name" | "id" | "manager_name">;
+  target_club_player?: ClubPlayerSnapshot | null;
+};
+
+export type PoachableClubSnapshot = {
+  attractiveness_stars: number;
+  club: Pick<LobbyClub, "club_color" | "club_name" | "id" | "manager_name">;
+  players: ClubPlayerSnapshot[];
+};
+
 export type TransferMarketSnapshot = {
+  attractiveness_stars?: number;
   incoming_offers: TransferOfferSnapshot[];
+  incoming_poach_requests: PoachRequestSnapshot[];
   manager_departures_count: number;
   other_clubs: TransferMarketClubSnapshot[];
   outgoing_offers: TransferOfferSnapshot[];
+  outgoing_poach_requests: PoachRequestSnapshot[];
+  poachable_clubs: PoachableClubSnapshot[];
+  poach_setup_error?: string;
   setup_error?: string;
 };
 
@@ -532,6 +563,7 @@ export type SeasonStandingSnapshot = {
   fixture_points_against: number;
   fixture_points_for: number;
   losses: number;
+  manager_match_points?: number;
   match_points: number;
   participant: SeasonParticipantSnapshot;
   participant_id: string;
@@ -551,6 +583,7 @@ export type ManagerStandingSnapshot = {
   season_match_points: number;
   season_score: number;
   squad_stars: number;
+  stage_score: number;
   status: string;
 };
 

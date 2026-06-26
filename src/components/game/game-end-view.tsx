@@ -45,6 +45,7 @@ export function GameEndView({
           ranking.map((club) => ({
             club_id: club.club_id,
             club_name: club.club_name,
+            manager_name: club.manager_name,
             prestige_points: club.prestige_points,
             continental_wins: club.continental_wins,
             season_rank: club.season_rank,

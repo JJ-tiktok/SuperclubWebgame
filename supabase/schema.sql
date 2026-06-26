@@ -203,6 +203,7 @@ create table public.club_players (
   acquired_at timestamptz not null default now(),
   seasons_at_club int not null default 1,
   stars_at_acquisition numeric(3,1) not null,
+  unavailable_until_season int,
   unique (club_id, player_id),
   check (custom_name is null or char_length(custom_name) <= 32)
 );
@@ -335,6 +336,35 @@ create trigger transfer_offers_normalize_offered_player
 before insert or update on public.transfer_offers
 for each row
 execute function public.normalize_transfer_offer_offered_player();
+
+create table public.poach_requests (
+  id uuid primary key default gen_random_uuid(),
+  game_id uuid not null references public.games(id) on delete cascade,
+  season_number int not null,
+  from_club_id uuid not null references public.clubs(id) on delete cascade,
+  to_club_id uuid not null references public.clubs(id) on delete cascade,
+  target_club_player_id uuid not null references public.club_players(id) on delete cascade,
+  target_player_id uuid not null references public.players(id) on delete restrict,
+  cash_amount bigint not null default 0 check (cash_amount >= 0),
+  status text not null default 'open' check (status in ('open', 'accepted', 'declined', 'cancelled')),
+  created_at timestamptz not null default now(),
+  resolved_at timestamptz,
+  check (from_club_id <> to_club_id)
+);
+
+create unique index poach_requests_open_buyer_target_unique
+  on public.poach_requests (from_club_id, target_club_player_id)
+  where status = 'open';
+
+create unique index poach_requests_season_pair_unique
+  on public.poach_requests (game_id, season_number, from_club_id, to_club_id)
+  where status in ('open', 'accepted', 'declined');
+
+create index poach_requests_game_season_idx
+  on public.poach_requests (game_id, season_number, created_at desc);
+
+create index poach_requests_to_club_season_idx
+  on public.poach_requests (to_club_id, season_number, created_at desc);
 
 create table public.game_changer_cards (
   id uuid primary key default gen_random_uuid(),
@@ -614,6 +644,7 @@ create table public.season_standings (
   draws int not null default 0,
   losses int not null default 0,
   match_points int not null default 0,
+  manager_match_points int not null default 0,
   third_points_for numeric(5,1) not null default 0,
   third_points_against numeric(5,1) not null default 0,
   fixture_points_for int not null default 0,
@@ -750,6 +781,7 @@ alter table public.staff_cards enable row level security;
 alter table public.club_staff enable row level security;
 alter table public.staff_offers enable row level security;
 alter table public.transfer_offers enable row level security;
+alter table public.poach_requests enable row level security;
 alter table public.game_changer_cards enable row level security;
 alter table public.club_game_changers enable row level security;
 alter table public.investments enable row level security;
@@ -954,6 +986,19 @@ using (
     where c.game_id = transfer_offers.game_id
       and c.clerk_user_id = public.requesting_clerk_user_id()
       and (c.id = transfer_offers.from_club_id or c.id = transfer_offers.to_club_id)
+  )
+);
+
+create policy "involved managers can read poach requests"
+on public.poach_requests for select
+to authenticated
+using (
+  exists (
+    select 1
+    from public.clubs c
+    where c.game_id = poach_requests.game_id
+      and c.clerk_user_id = public.requesting_clerk_user_id()
+      and (c.id = poach_requests.from_club_id or c.id = poach_requests.to_club_id)
   )
 );
 
@@ -1649,6 +1694,7 @@ grant select on public.players, public.decks, public.club_players, public.draft_
 grant select on public.staff_cards, public.club_staff, public.game_changer_cards, public.club_game_changers to authenticated;
 grant select, insert, update on public.staff_offers to authenticated;
 grant select on public.transfer_offers to authenticated;
+grant select on public.poach_requests to authenticated;
 grant select on public.investments, public.auctions, public.bids, public.matches, public.lineups, public.match_events, public.transactions to authenticated;
 grant select on public.cpu_teams, public.cpu_lineups, public.season_participants, public.fixtures, public.season_standings to authenticated;
 grant select on public.continental_cpu_teams, public.continental_cpu_lineups, public.continental_tournaments, public.continental_participants, public.continental_fixtures to authenticated;
@@ -1802,6 +1848,15 @@ begin
       and tablename = 'transfer_offers'
   ) then
     alter publication supabase_realtime add table public.transfer_offers;
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'poach_requests'
+  ) then
+    alter publication supabase_realtime add table public.poach_requests;
   end if;
 
   if not exists (

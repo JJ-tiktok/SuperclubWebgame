@@ -13,10 +13,15 @@ import { getTotalSkillValue, type PlayerCardData, type PlayerCardPosition } from
 
 type LineupCard = PlayerCardData & {
   injured?: boolean;
+  unavailable?: boolean;
   lockedDefault?: boolean;
   sourceZone?: string;
   lineupSlot?: number | null;
 };
+
+function isLineupPlayerBlocked(player?: Pick<LineupCard, "injured" | "lockedDefault" | "unavailable">) {
+  return Boolean(player?.injured || player?.unavailable || player?.lockedDefault);
+}
 
 type FormationSlot = {
   id: string;
@@ -159,7 +164,7 @@ export function GameLineupBoard({
     const board = boardRef.current;
     const slot = slotById.get(fromSlotId);
     const player = cardById.get(playerId);
-    if (!board || !slot || player?.lockedDefault || player?.injured) {
+    if (!board || !slot || isLineupPlayerBlocked(player)) {
       return;
     }
 
@@ -182,7 +187,7 @@ export function GameLineupBoard({
   function startBenchDrag(event: PointerEvent<HTMLDivElement>, playerId: string) {
     const board = boardRef.current;
     const player = cardById.get(playerId);
-    if (!board || player?.lockedDefault || player?.injured) {
+    if (!board || isLineupPlayerBlocked(player)) {
       return;
     }
 
@@ -344,7 +349,7 @@ export function GameLineupBoard({
             const playerId = assignments[slot.id];
             const player = playerId ? cardById.get(playerId) : undefined;
             const isDragged = drag?.fromSlotId === slot.id;
-            const offPosPenalty = player && !player.injured
+            const offPosPenalty = player && !isLineupPlayerBlocked(player)
               ? getPositionPenalty(player.positions.length ? player.positions : ["MID"], slot.zone)
               : 0;
             const isOffPosition = isFinite(offPosPenalty) ? offPosPenalty > 0 : true;
@@ -361,7 +366,7 @@ export function GameLineupBoard({
               >
                 {player && !isDragged ? (
                   <div
-                    className={cn("relative", player.lockedDefault || player.injured ? "cursor-default" : "cursor-grab active:cursor-grabbing")}
+                    className={cn("relative", isLineupPlayerBlocked(player) ? "cursor-default" : "cursor-grab active:cursor-grabbing")}
                     onPointerDown={(event) => startDrag(event, slot.id, player.id)}
                   >
                     {captainId && player.id === captainId ? (
@@ -411,7 +416,7 @@ export function GameLineupBoard({
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
             {benchCards.map((player) => (
               <div
-                className={cn("touch-none", player.injured ? "cursor-not-allowed" : "cursor-grab active:cursor-grabbing")}
+                className={cn("touch-none", isLineupPlayerBlocked(player) ? "cursor-not-allowed" : "cursor-grab active:cursor-grabbing")}
                 key={player.id}
                 onPointerDown={(event) => startBenchDrag(event, player.id)}
               >
@@ -725,7 +730,7 @@ function assignCard(
 ) {
   const slots = slotIdsByZone[zone] ?? [];
 
-  if (card.injured) {
+  if (isLineupPlayerBlocked(card)) {
     return;
   }
 
@@ -794,12 +799,18 @@ function LineupPlayerCard({
   const penaltyLabel = !isFinite(offPosPenalty) || offPosPenalty >= 10 ? "GK" : `-${offPosPenalty}★`;
 
   return (
-    <div className={cn("relative", player.injured ? "opacity-55 grayscale" : "")}>
-      <PlayerCard disabled={player.injured} player={player} selected={selected} showArchetypes={showArchetypes} variant={variant} />
+    <div className={cn("relative", isLineupPlayerBlocked(player) ? "opacity-55 grayscale" : "")}>
+      <PlayerCard disabled={isLineupPlayerBlocked(player)} player={player} selected={selected} showArchetypes={showArchetypes} variant={variant} />
       {player.injured ? (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-md bg-black/45">
           <span className="rounded bg-rose-500 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-white shadow-lg">
             Verletzt
+          </span>
+        </div>
+      ) : player.unavailable ? (
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-md bg-black/45">
+          <span className="rounded bg-amber-500 px-2 py-1 text-[10px] font-black uppercase tracking-wide text-white shadow-lg">
+            Gesperrt
           </span>
         </div>
       ) : null}
@@ -818,7 +829,7 @@ function getLineupPayload(assignments: Record<string, string>, cardById: Map<str
   return formationSlots.flatMap((slot, index) => {
     const card = cardById.get(assignments[slot.id] ?? "");
 
-    if (!card || card.lockedDefault || card.injured) {
+    if (!card || isLineupPlayerBlocked(card)) {
       return [];
     }
 
@@ -870,7 +881,7 @@ function getFormationCounts(assignments: Record<string, string>, playerById: Map
 }
 
 function canUseSlot(player: LineupCard) {
-  return !player.injured;
+  return !isLineupPlayerBlocked(player);
 }
 
 function clamp(value: number, min: number, max: number) {

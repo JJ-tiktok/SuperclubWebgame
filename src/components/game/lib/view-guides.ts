@@ -98,7 +98,7 @@ export const VIEW_GUIDES: Record<GameView, ViewGuideConfig> = {
   table: {
     title: "Tabelle",
     summary:
-      "Liga- und Managerwertung: kosmetische Ligatabelle, Manager-Score aus Kader + Saisonpunkten sowie das Positionsboard nach Prestige.",
+      "Liga- und Managerwertung: kosmetische Ligatabelle, Rang nach Siegpunkten (Manager-Spiele), Stufen aus Kader + Siegpunkte sowie Positionsboard.",
     tips: [
       "Manager-Rang bestimmt Praemien und Sponsoring-Optionen.",
       "Die Ligatabelle spiegelt Match-Ergebnisse der Saison wider.",

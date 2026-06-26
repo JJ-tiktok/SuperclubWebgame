@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   getClubOverviewLoadProfileForView,
   shouldLoadClubOverviewForView,
+  shouldLoadHallOfFameSnapshot,
   shouldLoadScoutingForView,
 } from "@/lib/lobby/snapshot-load-policy";
 
@@ -20,6 +21,13 @@ describe("off-season snapshot loading", () => {
     assert.equal(shouldLoadClubOverviewForView("season", "table"), false);
   });
 
+  it("loads club overview and squad on dashboard across phases", () => {
+    assert.equal(shouldLoadClubOverviewForView("season", "dashboard"), true);
+    assert.equal(shouldLoadClubOverviewForView("draft", "dashboard"), true);
+    const profile = getClubOverviewLoadProfileForView("season", "dashboard");
+    assert.equal(profile.loadSquad, true);
+  });
+
   it("loads checklist-related club overview slices on every off_season view", () => {
     for (const view of ["training", "scouting", "grounds", "squad", "table", "settings"] as const) {
       const profile = getClubOverviewLoadProfileForView("off_season", view);
@@ -35,5 +43,13 @@ describe("off-season snapshot loading", () => {
     const profile = getClubOverviewLoadProfileForView("off_season", "grounds");
     assert.equal(profile.loadSquad, true);
     assert.equal(profile.loadSponsorContracts, true);
+  });
+
+  it("loads squad for hall_of_fame view", () => {
+    assert.equal(shouldLoadHallOfFameSnapshot("hall_of_fame"), true);
+    assert.equal(shouldLoadHallOfFameSnapshot("dashboard"), false);
+    assert.equal(shouldLoadClubOverviewForView("season", "hall_of_fame"), true);
+    const profile = getClubOverviewLoadProfileForView("season", "hall_of_fame");
+    assert.equal(profile.loadSquad, true);
   });
 });

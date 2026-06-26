@@ -36,7 +36,8 @@ import {
   hasContinentalQualifiers,
   isContinentalTournamentComplete,
 } from "@/app/games/actions/continental";
-import { getNextLobbyPhase, getSettingsForNextPhase, isInvestmentPhase } from "@/lib/lobby/phases";
+import { getNextLobbyPhase, getSettingsForNextPhase, isInvestmentPhase, shouldAdvanceSeason } from "@/lib/lobby/phases";
+import { incrementPlayerTenureForGame } from "@/lib/lobby/player-tenure";
 import {
   hasActiveTrainingLock,
   loadClubSponsorContracts,
@@ -476,6 +477,7 @@ export async function makeDraftPickAction(formData: FormData) {
     player_id: playerId,
     current_stars: player.base_stars,
     current_zone: "bench",
+    stars_at_acquisition: player.base_stars,
   });
 
   if (insertError) {
@@ -1081,6 +1083,7 @@ export async function buyScoutedPlayerAction(formData: FormData) {
     current_stars: newSigningStars,
     current_zone: "bench",
     player_id: draw.player_id,
+    stars_at_acquisition: newSigningStars,
   });
 
   if (insertClubPlayerError) {
@@ -1801,15 +1804,15 @@ export async function acceptTransferOfferAction(formData: FormData) {
       .returns<Array<{ id: string; money: number | string }>>(),
     supabase
       .from("club_players")
-      .select("id, club_id, player_id")
+      .select("id, club_id, player_id, current_stars")
       .eq("id", offer.target_club_player_id)
-      .maybeSingle<{ club_id: string; id: string; player_id: string }>(),
+      .maybeSingle<{ club_id: string; current_stars: number | string; id: string; player_id: string }>(),
     offer.offered_club_player_id
       ? supabase
           .from("club_players")
-          .select("id, club_id, player_id")
+          .select("id, club_id, player_id, current_stars")
           .eq("id", offer.offered_club_player_id)
-          .maybeSingle<{ club_id: string; id: string; player_id: string }>()
+          .maybeSingle<{ club_id: string; current_stars: number | string; id: string; player_id: string }>()
       : Promise.resolve({ data: null, error: null }),
     getClubSquadCount(supabase, offer.from_club_id),
     getClubSquadCount(supabase, offer.to_club_id),
@@ -1881,10 +1884,12 @@ export async function acceptTransferOfferAction(formData: FormData) {
         club_id: offer.from_club_id,
         current_zone: "bench",
         lineup_slot: null,
+        seasons_at_club: 1,
+        stars_at_acquisition: Math.trunc(Number(targetPlayer.current_stars)),
       })
       .eq("id", offer.target_club_player_id)
       .eq("club_id", offer.to_club_id),
-    offer.offered_club_player_id
+    offer.offered_club_player_id && offeredPlayerResult.data
       ? supabase
           .from("club_players")
           .update({
@@ -1892,6 +1897,8 @@ export async function acceptTransferOfferAction(formData: FormData) {
             club_id: offer.to_club_id,
             current_zone: "bench",
             lineup_slot: null,
+            seasons_at_club: 1,
+            stars_at_acquisition: Math.trunc(Number(offeredPlayerResult.data.current_stars)),
           })
           .eq("id", offer.offered_club_player_id)
           .eq("club_id", offer.from_club_id)
@@ -2756,6 +2763,7 @@ async function insertNlzTalentForClub(supabase: SupabaseServiceClient, gameId: s
     current_stars: seed.base_stars,
     current_zone: "bench",
     player_id: player.id,
+    stars_at_acquisition: seed.base_stars,
   });
 
   if (clubPlayerError) {
@@ -2870,6 +2878,10 @@ export async function advancePhaseAction(formData: FormData) {
     if (!complete) {
       redirect(`/games/${roomCode}?view=continental`);
     }
+  }
+
+  if (shouldAdvanceSeason(game.phase, nextPhase)) {
+    await incrementPlayerTenureForGame(supabase, gameId);
   }
 
   if (nextPhase === "champions_league") {
@@ -5995,6 +6007,7 @@ async function resolveDeadlineAuction(
     current_stars: deadlineStars,
     current_zone: "bench",
     player_id: auction.player_id,
+    stars_at_acquisition: deadlineStars,
   });
 
   if (insertPlayerError) {

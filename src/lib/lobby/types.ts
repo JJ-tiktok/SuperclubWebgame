@@ -245,6 +245,8 @@ export type ClubPlayerSnapshot = {
   injured: boolean;
   lineup_slot?: number | null;
   acquired_at?: string;
+  seasons_at_club?: number;
+  stars_at_acquisition?: number;
   player: DraftPlayerRow;
 };
 
@@ -601,6 +603,12 @@ export type SeasonFixtureSnapshot = {
 
 export type SeasonZoneBoostSnapshot = Record<"ATT" | "DEF" | "MID", number>;
 
+export type OpponentTopPlayerSnapshot = {
+  name: string;
+  position?: string;
+  stars: number;
+};
+
 export type OpponentLockedLineupSnapshot = {
   fixture_id: string;
   opponent_club_id: string;
@@ -619,6 +627,8 @@ export type SeasonSnapshot = {
   current_matchday: number;
   fixtures: SeasonFixtureSnapshot[];
   manager_standings: ManagerStandingSnapshot[];
+  /** Top-rated players per human club — visible on matchday for player recognition. */
+  opponent_top_players_by_club_id?: Record<string, OpponentTopPlayerSnapshot[]>;
   /** Active next_match zone deltas per human club — visible to all managers on the matchday. */
   next_match_zone_boosts_by_club_id?: Record<string, SeasonZoneBoostSnapshot>;
   opponent_locked_lineups?: OpponentLockedLineupSnapshot[];
@@ -690,6 +700,34 @@ export type LobbySnapshot = {
   club_overview: ClubOverviewSnapshot | null;
   transfer_market: TransferMarketSnapshot | null;
   match_news: MatchNewsSnapshot[];
+  hall_of_fame: HallOfFameSnapshot | null;
+};
+
+export type HallOfFameCategoryId = "tenure" | "training" | "development" | "skill_max";
+
+export type HallOfFameEntry = {
+  rank: number;
+  club_player_id: string;
+  club_id: string;
+  club_name: string;
+  club_color?: string;
+  display_name: string;
+  position?: string;
+  custom_name?: string | null;
+  current_stars: number;
+  metric_value: number;
+  metric_label: string;
+};
+
+export type HallOfFameCategorySnapshot = {
+  id: HallOfFameCategoryId;
+  label: string;
+  entries: HallOfFameEntry[];
+};
+
+export type HallOfFameSnapshot = {
+  own_club: HallOfFameCategorySnapshot[];
+  league: HallOfFameCategorySnapshot[];
 };
 
 export type SavedGameSummary = {

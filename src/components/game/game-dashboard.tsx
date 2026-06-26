@@ -6,6 +6,7 @@ import {
   ArrowLeft,
   ArrowLeftRight,
   ArrowUpRight,
+  Award,
   Banknote,
   Building2,
   CalendarDays,
@@ -111,6 +112,8 @@ import {
 } from "@/components/game/lib/dashboard-helpers";
 import { ContinentalView } from "@/components/game/continental/continental-view";
 import { OpponentIntelPanel } from "@/components/game/opponent-intel-panel";
+import { PlayerHighlightsPanel } from "@/components/game/player-highlights-panel";
+import { HallOfFameView } from "@/components/game/hall-of-fame-view";
 import {
   canUpgradeEndgameFacility,
   ENDGAME_FACILITY_LABELS,
@@ -226,6 +229,7 @@ const mainMenu: Array<{ id: GameView; label: string; icon: typeof Home }> = [
   { id: "matchday", label: "Spieltagsuebersicht", icon: CalendarDays },
   { id: "transfer", label: "Transfermarkt", icon: ShoppingCart },
   { id: "table", label: "Tabelle", icon: Trophy },
+  { id: "hall_of_fame", label: "Hall of Fame", icon: Award },
   { id: "settings", label: "Settings", icon: Settings },
 ];
 
@@ -742,6 +746,10 @@ function DashboardView({
           <Metric icon={ListOrdered} label="Am Zug" value={currentTurnClub?.club_name ?? getTurnFallback(snapshot.game.phase, isHost)} detail={snapshot.game.phase} />
         </div>
       </Panel>
+
+      {snapshot.club_overview?.squad?.length ? (
+        <PlayerHighlightsPanel roomCode={snapshot.game.room_code} squad={snapshot.club_overview.squad} />
+      ) : null}
 
       <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
         <Panel className="border-[var(--club-border)] bg-zinc-950/85">
@@ -4087,6 +4095,11 @@ function FixtureCard({
     ownSide === "home" ? away.display_name : ownSide === "away" ? home.display_name : "";
   const liveOpponentLineup =
     snapshot.season?.opponent_locked_lineups?.find((entry) => entry.fixture_id === fixture.id)?.lineup ?? null;
+  const topPlayersByClubId = snapshot.season?.opponent_top_players_by_club_id ?? {};
+  const homeTopPlayers =
+    home.kind === "human" && home.club_id ? topPlayersByClubId[home.club_id] ?? [] : [];
+  const awayTopPlayers =
+    away.kind === "human" && away.club_id ? topPlayersByClubId[away.club_id] ?? [] : [];
 
   function handleLockClick() {
     if (hasLineupWarning) {
@@ -4119,6 +4132,7 @@ function FixtureCard({
               powerSummary={home.club_id === ownClub?.id && fixture.home_lineup_locked ? ownPowerSummary : null}
               score={fixture.home_score}
               thirdPoints={fixture.home_third_points}
+              topPlayers={homeTopPlayers}
               zoneBoosts={homeDisplayZoneBoosts}
             />
             <FixtureSideCard
@@ -4128,6 +4142,7 @@ function FixtureCard({
               powerSummary={away.club_id === ownClub?.id && fixture.away_lineup_locked ? ownPowerSummary : null}
               score={fixture.away_score}
               thirdPoints={fixture.away_third_points}
+              topPlayers={awayTopPlayers}
               zoneBoosts={awayDisplayZoneBoosts}
             />
           </div>
@@ -4918,6 +4933,10 @@ function renderView(
 
   if (view === "table") {
     return <TableView ownClub={props.ownClub} snapshot={props.snapshot} />;
+  }
+
+  if (view === "hall_of_fame") {
+    return <HallOfFameView hallOfFame={props.snapshot.hall_of_fame} roomCode={props.snapshot.game.room_code} />;
   }
 
   return null;

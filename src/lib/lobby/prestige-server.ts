@@ -76,6 +76,7 @@ type ClubPlayerDbRow = {
     base_stars?: number | string | null;
     position?: string;
     display_name?: string;
+    region?: string | null;
   };
 };
 

@@ -359,6 +359,7 @@ export type TrainingEventSnapshot = {
   dice_roll: number;
   game_phase: string;
   guaranteed_bonus_used: boolean;
+  nlz_guaranteed_used: boolean;
   id: string;
   player_id: string;
   season_number: number;

@@ -1,4 +1,4 @@
-import { computePlayerMarketValues, resolvePlayerPotentialCeiling } from "@/lib/lobby/player-market";
+import { computeCatalogPlayerMarketValues } from "@/lib/lobby/player-market";
 import type { PlayerArchetype } from "@/lib/lobby/types";
 
 const YOUTH_FIRST_NAMES = [
@@ -59,13 +59,11 @@ export function buildYouthPlayerSeed(random = Math.random) {
   const archetype = pickRandom(ARCHETYPES, random);
   const contentKey = `nlz-${Date.now()}-${Math.floor(random() * 1_000_000)}`;
 
-  const potentialCeiling = resolvePlayerPotentialCeiling({
-    baseStars: 1,
-    currentStars: 1,
-    potentialStars: 5,
-    skillMax: 6,
+  const market = computeCatalogPlayerMarketValues({
+    base_stars: 1,
+    potential_stars: 5,
+    skill_max: 6,
   });
-  const market = computePlayerMarketValues({ potentialCeiling, stars: 1 });
   const chemistry = rollYouthPlayerChemistry(random);
 
   return {

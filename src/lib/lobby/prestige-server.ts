@@ -10,7 +10,7 @@ import {
   getPrestigeTarget,
   getStrongestElevenPlayerIds,
   incrementQualifiedTransferSales,
-  incrementTalentschmiedeForPlayer,
+  syncTalentschmiedeState,
   isNlzPlayerAtMax,
   isPhilosophyFulfilled,
   isPrestigeEnabled,
@@ -61,9 +61,12 @@ type SponsorContractRow = {
 type ClubPlayerDbRow = {
   id: string;
   club_id: string;
+  player_id: string;
+  custom_name?: string | null;
   current_stars: number | string;
   seasons_at_club?: number | null;
   current_zone: string;
+  injured: boolean;
   lineup_slot: number | null;
   player: {
     id: string;
@@ -276,7 +279,7 @@ async function loadClubSquad(supabase: ServiceClient, clubId: string): Promise<C
   const { data, error } = await supabase
     .from("club_players")
     .select(
-      "id, club_id, current_stars, seasons_at_club, current_zone, lineup_slot, custom_name, player:players(id, display_name, position, metadata, skill_max, potential_stars, base_stars)",
+      "id, club_id, player_id, current_stars, seasons_at_club, current_zone, injured, lineup_slot, custom_name, player:players(id, display_name, position, metadata, skill_max, potential_stars, base_stars, region)",
     )
     .eq("club_id", clubId)
     .returns<ClubPlayerDbRow[]>();
@@ -288,19 +291,22 @@ async function loadClubSquad(supabase: ServiceClient, clubId: string): Promise<C
   return (data ?? []).map((row) => ({
     id: row.id,
     club_id: row.club_id,
+    player_id: row.player_id,
     current_stars: Number(row.current_stars),
     seasons_at_club: Number(row.seasons_at_club ?? 1),
     current_zone: row.current_zone,
+    injured: row.injured,
     lineup_slot: row.lineup_slot,
-    custom_name: null,
+    custom_name: row.custom_name ?? null,
     player: {
       id: row.player.id,
       display_name: row.player.display_name ?? "Spieler",
       position: row.player.position ?? "MID",
       metadata: row.player.metadata ?? null,
-      skill_max: row.player.skill_max ?? null,
-      potential_stars: row.player.potential_stars ?? null,
-      base_stars: row.player.base_stars ?? null,
+      skill_max: row.player.skill_max != null ? Number(row.player.skill_max) : null,
+      potential_stars: Number(row.player.potential_stars ?? 0),
+      base_stars: Number(row.player.base_stars ?? 0),
+      region: row.player.region ?? null,
     },
   }));
 }
@@ -538,11 +544,7 @@ export async function processPrestigeAtSeasonEnd(
     }
 
     const squad = await loadClubSquad(supabase, club.id);
-    for (const player of squad) {
-      if (isNlzPlayerAtMax(player)) {
-        state = incrementTalentschmiedeForPlayer(state, player.id);
-      }
-    }
+    state = syncTalentschmiedeState(state, squad);
 
     const youthRefs = await loadExistingAwardRefs(supabase, club.id, PRESTIGE_CATEGORY.youth_max);
     let youthAwardsThisSeason = 0;

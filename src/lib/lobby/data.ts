@@ -61,7 +61,7 @@ import {
   type ScoutingPendingEffect,
 } from "@/lib/lobby/scouting";
 import { computeTrainingExtraPlayers, isOffseasonPendingScopeActive } from "@/lib/lobby/offseason-pending-effects";
-import { getTrainingStatus, parseTrainingEvent } from "@/lib/lobby/training";
+import { getTrainingStatus, parseTrainingEvent, filterTrainingEventsForWindow } from "@/lib/lobby/training";
 import { isClubStatusOverrideActive, resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
 import {
   buildClubSponsorOverview,
@@ -93,7 +93,7 @@ import { getTransferOfferCreatorClubId, getTransferOfferResponderClubId } from "
 import { getClubPlayerDisplayName, getClubPlayerDisplayNameFromRow } from "@/lib/lobby/player-names";
 import { normalizeSeasonsAtClub } from "@/lib/lobby/player-tenure";
 
-const CLUB_PLAYER_SNAPSHOT_SELECT = `id, club_id, player_id, custom_name, current_stars, current_zone, injured, lineup_slot, acquired_at, seasons_at_club, stars_at_acquisition, player:players(${DRAFT_PLAYER_SELECT})`;
+const CLUB_PLAYER_SNAPSHOT_SELECT = `id, club_id, player_id, custom_name, current_stars, current_zone, injured, lineup_slot, acquired_at, seasons_at_club, stars_at_acquisition, purchase_price, player:players(${DRAFT_PLAYER_SELECT})`;
 
 const GAME_SELECT_LEGACY =
   "id, room_code, phase, host_clerk_user_id, current_turn_club_id, settings, save_name, save_status, save_version, last_saved_at, last_saved_by_clerk_user_id, created_at, updated_at";
@@ -876,6 +876,29 @@ async function getPrestigeSnapshot(
 
   const winner = game.phase === "completed" ? resolvePrestigeWinner(clubRows) : null;
 
+  const talentschmiedeClubIds = clubRows
+    .filter((club) => club.philosophy_id === "talentschmiede")
+    .map((club) => club.club_id);
+  const squadsByClubId = new Map<string, ClubPlayerSnapshot[]>();
+
+  if (talentschmiedeClubIds.length > 0) {
+    const { data: squadRows, error: squadError } = await supabase
+      .from("club_players")
+      .select(CLUB_PLAYER_SNAPSHOT_SELECT)
+      .in("club_id", talentschmiedeClubIds)
+      .returns<ClubPlayerSnapshot[]>();
+
+    if (squadError) {
+      throw squadError;
+    }
+
+    for (const row of squadRows ?? []) {
+      const squad = squadsByClubId.get(row.club_id) ?? [];
+      squad.push(row);
+      squadsByClubId.set(row.club_id, squad);
+    }
+  }
+
   const prestigeClubs = clubRows
     .map((club) => {
       const philosophy = club.philosophy_id ? getPhilosophyById(club.philosophy_id) : null;
@@ -886,7 +909,9 @@ async function getPrestigeSnapshot(
         ...club,
         philosophy_label: philosophy?.label ?? null,
         philosophy_progress: club.philosophy_id
-          ? getPhilosophyProgress(club.philosophy_id as never, state)
+          ? getPhilosophyProgress(club.philosophy_id as never, state, {
+              squad: squadsByClubId.get(club.club_id),
+            })
           : null,
         awards: [] as PrestigeSnapshot["clubs"][number]["awards"],
       };
@@ -1071,9 +1096,19 @@ function normalizeTransferOfferStatus(status: string): TransferOfferSnapshot["st
   return "open";
 }
 
+function normalizePurchasePrice(value: unknown): number | null {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+
+  return parsed;
+}
+
 function normalizeClubPlayerRow(row: ClubPlayerSnapshot): ClubPlayerSnapshot {
   return {
     ...row,
+    purchase_price: normalizePurchasePrice(row.purchase_price),
     seasons_at_club: normalizeSeasonsAtClub(row.seasons_at_club),
     stars_at_acquisition: normalizeStarsAtAcquisition(row.stars_at_acquisition, row.current_stars, row.player.base_stars),
   };
@@ -1813,10 +1848,12 @@ async function getClubOverviewSnapshot(
     };
   }
 
-  const trainingEvents = (trainingTransactions ?? [])
-    .map(parseTrainingEvent)
-    .filter((event): event is NonNullable<ReturnType<typeof parseTrainingEvent>> => Boolean(event))
-    .filter((event) => event.season_number === seasonNumber);
+  const trainingEvents = filterTrainingEventsForWindow(
+    (trainingTransactions ?? [])
+      .map(parseTrainingEvent)
+      .filter((event): event is NonNullable<ReturnType<typeof parseTrainingEvent>> => Boolean(event)),
+    { gamePhase: game.phase, seasonNumber },
+  );
   const squadStars = profile.loadSquad
     ? (clubPlayers ?? []).reduce((total, owned) => total + Number(owned.current_stars), 0)
     : Number(club.squad_stars ?? 0);

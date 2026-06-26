@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { saveGameAction, setReadyAction, startGameAction } from "@/app/lobby/actions";
 import { PhilosophySelectionPanel } from "@/components/lobby/philosophy-selection-panel";
+import { DevAdminMenu } from "@/components/dev/dev-admin-menu";
 import { ClubBadge } from "@/components/game/club-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";

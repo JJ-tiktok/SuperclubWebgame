@@ -258,6 +258,7 @@ export type ClubPlayerSnapshot = {
   acquired_at?: string;
   seasons_at_club?: number;
   stars_at_acquisition?: number;
+  purchase_price?: number | null;
   player: DraftPlayerRow;
 };
 
@@ -735,7 +736,12 @@ export type PrestigeClubSnapshot = {
   philosophy_id?: string | null;
   philosophy_label?: string | null;
   philosophy_fulfilled?: boolean;
-  philosophy_progress?: { current: number; target: number; label: string } | null;
+  philosophy_progress?: {
+    current: number;
+    target: number;
+    label: string;
+    slots?: Array<{ club_player_id: string; display_name: string } | null>;
+  } | null;
   season_rank?: number | null;
   awards: PrestigeAwardSnapshot[];
 };

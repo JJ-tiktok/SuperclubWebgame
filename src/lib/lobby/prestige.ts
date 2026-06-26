@@ -1,8 +1,9 @@
 import type { ClubStatus } from "@/lib/game/types";
+import { getClubPlayerDisplayName } from "@/lib/lobby/player-names";
 import { SPONSOR_PRESTIGE_LABELS } from "@/lib/lobby/sponsor-deals";
 import { getPrestigeTierRank } from "@/lib/lobby/sponsoring";
 import { isNlzOriginPlayer } from "@/lib/lobby/youth-generator";
-import type { ClubPlayerSnapshot, LobbyClub } from "@/lib/lobby/types";
+import type { ClubPlayerSnapshot, DraftPlayerRow, LobbyClub } from "@/lib/lobby/types";
 
 export const DEFAULT_PRESTIGE_TARGET = 100;
 export const TRAINING_STARS_SEASON_CAP = 12;
@@ -35,7 +36,7 @@ export const PHILOSOPHIES: PhilosophyDefinition[] = [
     id: "talentschmiede",
     label: "Talentschmiede",
     description: "Entwickle Jugendspieler aus der Akademie zu Vollendung.",
-    goal: "4 Jugendspieler auf Max-Wert entwickeln",
+    goal: "4 Academy-Talente auf Max-Wert entwickeln",
     reward: 15,
   },
   {
@@ -226,6 +227,7 @@ export type PrestigeState = {
   talentschmiede_count?: number;
   season_start_squad_stars?: Record<string, number>;
   talentschmiede_player_ids?: string[];
+  talentschmiede_players?: Array<{ club_player_id: string; display_name: string }>;
 };
 
 export type FacilityKey =
@@ -297,6 +299,23 @@ export function normalizePrestigeState(value: unknown): PrestigeState {
       ? raw.facilities_at_max.filter((entry): entry is string => typeof entry === "string")
       : [],
     talentschmiede_count: Number(raw.talentschmiede_count ?? 0) || 0,
+    talentschmiede_player_ids: Array.isArray(raw.talentschmiede_player_ids)
+      ? raw.talentschmiede_player_ids.filter((entry): entry is string => typeof entry === "string")
+      : [],
+    talentschmiede_players: Array.isArray(raw.talentschmiede_players)
+      ? raw.talentschmiede_players
+          .filter(
+            (entry): entry is { club_player_id: string; display_name: string } =>
+              Boolean(entry) &&
+              typeof entry === "object" &&
+              typeof (entry as { club_player_id?: unknown }).club_player_id === "string" &&
+              typeof (entry as { display_name?: unknown }).display_name === "string",
+          )
+          .map((entry) => ({
+            club_player_id: entry.club_player_id,
+            display_name: entry.display_name,
+          }))
+      : [],
     season_start_squad_stars:
       raw.season_start_squad_stars && typeof raw.season_start_squad_stars === "object"
         ? Object.fromEntries(
@@ -373,9 +392,25 @@ export function getFacilitiesAtMax(
   return (Object.keys(FACILITY_MAX_LEVELS) as FacilityKey[]).filter((key) => isFacilityAtMax(club, key));
 }
 
+export function isAcademyOriginPlayer(player: Pick<DraftPlayerRow, "metadata" | "region">): boolean {
+  if (!isNlzOriginPlayer(player.metadata)) {
+    return false;
+  }
+
+  if (player.region && player.region !== "academy") {
+    return false;
+  }
+
+  return true;
+}
+
 export function hasReachedPlayerSkillMax(player: ClubPlayerSnapshot): boolean {
   const skillMax = Number(player.player.skill_max ?? player.player.potential_stars ?? player.current_stars);
   return Math.trunc(Number(player.current_stars)) >= Math.trunc(skillMax);
+}
+
+export function isAcademyPlayerAtMax(player: ClubPlayerSnapshot): boolean {
+  return isAcademyOriginPlayer(player.player) && hasReachedPlayerSkillMax(player);
 }
 
 export function isNlzPlayerAtMax(player: ClubPlayerSnapshot): boolean {
@@ -409,11 +444,29 @@ export type PhilosophyProgress = {
   current: number;
   target: number;
   label: string;
+  slots?: Array<{ club_player_id: string; display_name: string } | null>;
 };
+
+export function getTalentschmiedePhilosophyProgress(
+  state: PrestigeState,
+  squad?: ClubPlayerSnapshot[],
+): PhilosophyProgress {
+  const synced = squad ? syncTalentschmiedeState(state, squad) : state;
+  const tracked = synced.talentschmiede_players ?? [];
+  const slots = Array.from({ length: 4 }, (_, index) => tracked[index] ?? null);
+
+  return {
+    current: tracked.length,
+    target: 4,
+    label: "Academy-Talente auf Max",
+    slots,
+  };
+}
 
 export function getPhilosophyProgress(
   philosophyId: PhilosophyId | null | undefined,
   state: PrestigeState,
+  context: { squad?: ClubPlayerSnapshot[] } = {},
 ): PhilosophyProgress | null {
   if (!philosophyId) {
     return null;
@@ -421,7 +474,7 @@ export function getPhilosophyProgress(
 
   switch (philosophyId) {
     case "talentschmiede":
-      return { current: state.talentschmiede_count ?? 0, target: 4, label: "Jugendspieler auf Max" };
+      return getTalentschmiedePhilosophyProgress(state, context.squad);
     case "transfergenie":
       return { current: state.qualified_transfer_sales ?? 0, target: 5, label: "Qualifizierte Verkäufe" };
     case "serienmeister":
@@ -451,7 +504,7 @@ export function isPhilosophyFulfilled(
 ): boolean {
   switch (philosophyId) {
     case "talentschmiede":
-      return (state.talentschmiede_count ?? 0) >= 4;
+      return getTalentschmiedePhilosophyProgress(state).current >= 4;
     case "transfergenie":
       return (state.qualified_transfer_sales ?? 0) >= 5;
     case "serienmeister":
@@ -512,17 +565,54 @@ export function addSponsorPrestigeToState(state: PrestigeState, points: number):
   };
 }
 
-export function incrementTalentschmiedeForPlayer(state: PrestigeState, clubPlayerId: string): PrestigeState {
-  const tracked = new Set(state.talentschmiede_player_ids ?? []);
-  if (tracked.has(clubPlayerId)) {
-    return state;
+export function syncTalentschmiedeState(state: PrestigeState, squad: ClubPlayerSnapshot[]): PrestigeState {
+  const playersById = new Map<string, { club_player_id: string; display_name: string }>();
+
+  for (const entry of state.talentschmiede_players ?? []) {
+    playersById.set(entry.club_player_id, entry);
   }
-  tracked.add(clubPlayerId);
+
+  for (const id of state.talentschmiede_player_ids ?? []) {
+    if (playersById.has(id)) {
+      continue;
+    }
+
+    const onSquad = squad.find((player) => player.id === id);
+    if (onSquad && isAcademyPlayerAtMax(onSquad)) {
+      playersById.set(id, {
+        club_player_id: id,
+        display_name: getClubPlayerDisplayName(onSquad),
+      });
+    }
+  }
+
+  for (const player of squad) {
+    if (!isAcademyPlayerAtMax(player) || playersById.has(player.id)) {
+      continue;
+    }
+
+    playersById.set(player.id, {
+      club_player_id: player.id,
+      display_name: getClubPlayerDisplayName(player),
+    });
+  }
+
+  const players = Array.from(playersById.values());
+
   return {
     ...state,
-    talentschmiede_player_ids: Array.from(tracked),
-    talentschmiede_count: (state.talentschmiede_count ?? 0) + 1,
+    talentschmiede_players: players,
+    talentschmiede_player_ids: players.map((player) => player.club_player_id),
+    talentschmiede_count: players.length,
   };
+}
+
+export function incrementTalentschmiedeForPlayer(state: PrestigeState, player: ClubPlayerSnapshot): PrestigeState {
+  if (!isAcademyPlayerAtMax(player)) {
+    return state;
+  }
+
+  return syncTalentschmiedeState(state, [player]);
 }
 
 export function incrementQualifiedTransferSales(state: PrestigeState): PrestigeState {
@@ -601,9 +691,13 @@ export function getStrongestElevenPlayerIds(squad: ClubPlayerSnapshot[]): Set<st
   );
 }
 
-export const MIN_TRANSFER_PROFIT = 10_000_000;
+export const MIN_TRANSFER_PROFIT = 9_000_000;
 
 export function isQualifiedTransferProfit(salePrice: number, purchasePrice: number | null | undefined): boolean {
   const purchase = Number(purchasePrice ?? 0);
+  if (purchase <= 0) {
+    return false;
+  }
+
   return salePrice - purchase >= MIN_TRANSFER_PROFIT;
 }

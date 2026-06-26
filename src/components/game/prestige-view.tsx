@@ -9,7 +9,33 @@ import { PrestigeEarningGuide } from "@/components/game/prestige-earning-guide";
 import { ViewGuidePanel } from "@/components/game/shared/view-guide-panel";
 import { formatPrestigeAwardLabel } from "@/lib/lobby/prestige";
 import type { LobbySnapshot, PrestigeAwardSnapshot, PrestigeSnapshot } from "@/lib/lobby/types";
+import type { PhilosophyProgress } from "@/lib/lobby/prestige";
 import { cn } from "@/lib/utils";
+
+function PhilosophyProgressSlots({ progress }: { progress: PhilosophyProgress }) {
+  if (!progress.slots?.length) {
+    return null;
+  }
+
+  return (
+    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+      {progress.slots.map((slot, index) => (
+        <div
+          key={`${slot?.club_player_id ?? "open"}-${index}`}
+          className={cn(
+            "rounded-md border px-3 py-2",
+            slot ? "border-emerald-900/60 bg-emerald-950/20" : "border-zinc-800 bg-zinc-900/30",
+          )}
+        >
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">Academy-Talent {index + 1}</p>
+          <p className={cn("mt-1 text-sm font-medium", slot ? "text-emerald-200" : "text-zinc-600")}>
+            {slot?.display_name ?? "Noch offen"}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 function ClubAwardsList({ awards }: { awards: PrestigeAwardSnapshot[] }) {
   if (awards.length === 0) {
@@ -140,12 +166,17 @@ export function PrestigeView({
                   />
                 </div>
                 {club.philosophy_label ? (
-                  <p className="mt-2 text-xs text-zinc-500">
-                    Philosophie: {club.philosophy_label}
-                    {club.philosophy_progress
-                      ? ` (${club.philosophy_progress.current}/${club.philosophy_progress.target} ${club.philosophy_progress.label})`
-                      : ""}
-                  </p>
+                  <div className="mt-2">
+                    <p className="text-xs text-zinc-500">
+                      Philosophie: {club.philosophy_label}
+                      {club.philosophy_progress
+                        ? ` (${club.philosophy_progress.current}/${club.philosophy_progress.target} ${club.philosophy_progress.label})`
+                        : ""}
+                    </p>
+                    {isExpanded && club.philosophy_progress ? (
+                      <PhilosophyProgressSlots progress={club.philosophy_progress} />
+                    ) : null}
+                  </div>
                 ) : null}
                 {isExpanded ? <ClubAwardsList awards={club.awards} /> : null}
               </div>
@@ -169,10 +200,13 @@ export function PrestigeView({
             <div className="space-y-2">
               <p className="font-medium text-zinc-100">{ownClub.philosophy_label}</p>
               {ownClub.philosophy_progress ? (
-                <p className="text-sm text-zinc-400">
-                  Fortschritt: {ownClub.philosophy_progress.current}/{ownClub.philosophy_progress.target}{" "}
-                  {ownClub.philosophy_progress.label}
-                </p>
+                <>
+                  <p className="text-sm text-zinc-400">
+                    Fortschritt: {ownClub.philosophy_progress.current}/{ownClub.philosophy_progress.target}{" "}
+                    {ownClub.philosophy_progress.label}
+                  </p>
+                  <PhilosophyProgressSlots progress={ownClub.philosophy_progress} />
+                </>
               ) : null}
             </div>
           ) : (

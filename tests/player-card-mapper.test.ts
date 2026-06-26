@@ -49,9 +49,9 @@ describe("player card mapper", () => {
       }),
     );
 
-    assert.equal(card.market.transferFee, 10);
-    assert.equal(card.market.scoutingFee, 5);
-    assert.equal(getCatalogMinimumBidFromPlayer(catalogPlayer({ base_stars: 1, minimum_bid: 30_000_000 })), 10_000_000);
+    assert.equal(card.market.transferFee, 26);
+    assert.equal(card.market.scoutingFee, 13);
+    assert.equal(getCatalogMinimumBidFromPlayer(catalogPlayer({ base_stars: 1, minimum_bid: 30_000_000 })), 26_000_000);
   });
 
   it("values owned players by current stars after training", () => {
@@ -60,8 +60,8 @@ describe("player card mapper", () => {
     const card = mapOwnedPlayerToCardData(owned);
 
     assert.equal(card.skill.current, 3);
-    assert.equal(card.market.transferFee, 32);
-    assert.equal(card.market.scoutingFee, 16);
+    assert.equal(card.market.transferFee, 38);
+    assert.equal(card.market.scoutingFee, 19);
   });
 
   it("applies remaining potential for low-star talents", () => {
@@ -69,8 +69,8 @@ describe("player card mapper", () => {
     const card = mapOwnedPlayerToCardData(ownedPlayer(player, { current_stars: 1 }));
 
     assert.equal(card.skill.potential, 6);
-    assert.equal(card.market.transferFee, 20);
-    assert.equal(card.market.scoutingFee, 10);
+    assert.equal(card.market.transferFee, 30);
+    assert.equal(card.market.scoutingFee, 15);
   });
 
   it("keeps card.market aligned with getClubPlayerMarketValues", () => {
@@ -81,7 +81,7 @@ describe("player card mapper", () => {
 
     assert.equal(getCardTransferMoney(card.market), market.minimumBid);
     assert.equal(getCardScoutingMoney(card.market), market.scoutingPrice);
-    assert.equal(getOwnedCardTransferMillions(card), 52);
+    assert.equal(getOwnedCardTransferMillions(card), 54);
   });
 
   it("uses potential ceiling for skill.max on owned cards", () => {
@@ -98,7 +98,7 @@ describe("player card mapper", () => {
     const card = mapOwnedPlayerToCardData(ownedPlayer(player, { current_stars: 1 }));
 
     assert.equal(card.skill.max, 3);
-    assert.equal(card.market.transferFee, 14);
-    assert.equal(card.market.scoutingFee, 7);
+    assert.equal(card.market.transferFee, 18);
+    assert.equal(card.market.scoutingFee, 9);
   });
 });

@@ -5,6 +5,8 @@ import {
   capTrainingStarsForPhilosophy,
   checkTraditionsverein,
   getPhilosophyProgress,
+  getTalentschmiedePhilosophyProgress,
+  isAcademyPlayerAtMax,
   isPhilosophyFulfilled,
   isQualifiedTransferProfit,
   normalizePrestigeState,
@@ -13,6 +15,7 @@ import {
   shouldTriggerFinalSeason,
   sponsorPointsForTier,
   sumTrainingStarsForSeason,
+  syncTalentschmiedeState,
 } from "@/lib/lobby/prestige";
 import { getNextLobbyPhase, isFinalSeason, shouldAdvanceSeason } from "@/lib/lobby/phases";
 import type { ClubPlayerSnapshot } from "@/lib/lobby/types";
@@ -77,10 +80,17 @@ describe("training stars", () => {
 });
 
 describe("transfer profit qualification", () => {
-  it("requires at least 10m profit and ignores free acquisitions", () => {
+  it("requires at least 9m profit and rejects free acquisitions", () => {
     assert.equal(isQualifiedTransferProfit(15_000_000, 4_000_000), true);
-    assert.equal(isQualifiedTransferProfit(15_000_000, 6_000_000), false);
+    assert.equal(isQualifiedTransferProfit(12_000_000, 4_000_000), false);
+    assert.equal(isQualifiedTransferProfit(13_000_000, 4_000_000), true);
     assert.equal(isQualifiedTransferProfit(5_000_000, 0), false);
+    assert.equal(isQualifiedTransferProfit(20_000_000, null), false);
+  });
+
+  it("qualifies a full 1-star to 4-star development path at scouting prices", () => {
+    assert.equal(isQualifiedTransferProfit(20_000_000, 11_000_000), true);
+    assert.equal(isQualifiedTransferProfit(17_000_000, 11_000_000), false);
   });
 });
 
@@ -121,6 +131,86 @@ describe("philosophy fulfillment", () => {
   it("reports philosophy progress", () => {
     const progress = getPhilosophyProgress("vereinsbauer", normalizePrestigeState({ facilities_at_max: ["training", "stadium"] }));
     assert.deepEqual(progress, { current: 2, target: 3, label: "Max-Einrichtungen" });
+  });
+});
+
+describe("talentschmiede philosophy", () => {
+  function academyPlayer(
+    id: string,
+    currentStars: number,
+    overrides: Partial<ClubPlayerSnapshot["player"]> = {},
+  ): ClubPlayerSnapshot {
+    return player({
+      id,
+      current_stars: currentStars,
+      player: {
+        id: `player-${id}`,
+        display_name: id,
+        position: "MID",
+        metadata: { nlz_origin: true },
+        region: "academy",
+        skill_max: 6,
+        potential_stars: 5,
+        base_stars: 1,
+        ...overrides,
+      },
+    });
+  }
+
+  it("only counts academy origin players at true skill max", () => {
+    const squad = [
+      academyPlayer("academy-max", 6),
+      academyPlayer("academy-growing", 4),
+      player({
+        id: "draft-max",
+        current_stars: 6,
+        player: {
+          id: "player-draft-max",
+          display_name: "Draft Max",
+          position: "MID",
+          metadata: null,
+          region: "europe",
+          skill_max: 6,
+          potential_stars: 6,
+          base_stars: 6,
+        },
+      }),
+    ];
+
+    const synced = syncTalentschmiedeState(normalizePrestigeState({}), squad);
+    assert.equal(synced.talentschmiede_count, 1);
+    assert.equal(synced.talentschmiede_players?.[0]?.display_name, "academy-max");
+  });
+
+  it("preserves tracked academy players across syncs", () => {
+    const squad = [academyPlayer("academy-max", 6)];
+    const first = syncTalentschmiedeState(normalizePrestigeState({}), squad);
+    const second = syncTalentschmiedeState(first, squad);
+
+    assert.equal(second.talentschmiede_count, 1);
+    assert.deepEqual(second.talentschmiede_player_ids, ["academy-max"]);
+  });
+
+  it("normalizes inflated legacy counts without tracked players", () => {
+    const progress = getTalentschmiedePhilosophyProgress(
+      normalizePrestigeState({ talentschmiede_count: 3 }),
+      [],
+    );
+
+    assert.equal(progress.current, 0);
+    assert.equal(progress.slots?.filter(Boolean).length, 0);
+  });
+
+  it("exposes four academy slots with player names", () => {
+    const squad = [academyPlayer("talent-a", 6), academyPlayer("talent-b", 6)];
+    const progress = getTalentschmiedePhilosophyProgress(normalizePrestigeState({}), squad);
+
+    assert.equal(progress.current, 2);
+    assert.equal(progress.slots?.length, 4);
+    assert.equal(progress.slots?.[0]?.display_name, "talent-a");
+    assert.equal(progress.slots?.[2], null);
+    assert.equal(isAcademyPlayerAtMax(academyPlayer("talent-a", 6)), true);
+    assert.equal(isPhilosophyFulfilled("talentschmiede", syncTalentschmiedeState(normalizePrestigeState({}), squad)), false);
   });
 });
 

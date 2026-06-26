@@ -120,17 +120,21 @@ import {
 } from "@/lib/lobby/scouting";
 import {
   canTrainOwnedPlayer,
+  applyNlzTrainingGuarantee,
+  filterTrainingEventsForWindow,
   getTrainingStatus,
   parseTrainingEvent,
   resolveTrainingAttempt,
   type TrainingEventMetadata,
 } from "@/lib/lobby/training";
 import {
+  computeCatalogPlayerMarketValues,
   computePlayerMarketValues,
   getClubPlayerMarketValues,
+  resolvePlayerMarketMax,
   resolvePlayerPotentialCeiling,
+  resolvePlayerSkillDisplayMax,
   syncOwnedPlayerRowMarketValues,
-  syncPlayerRowMarketValues,
 } from "@/lib/lobby/player-market";
 import {
   canAcceptTransferOffer,
@@ -461,7 +465,11 @@ export async function makeDraftPickAction(formData: FormData) {
   }
 
   const [{ data: player, error: playerError }, squadCounts] = await Promise.all([
-    supabase.from("players").select("id, base_stars").eq("id", playerId).single<{ id: string; base_stars: number }>(),
+    supabase
+      .from("players")
+      .select("id, base_stars, potential_stars, skill_max")
+      .eq("id", playerId)
+      .single<{ id: string; base_stars: number; potential_stars: number | string; skill_max: number | string | null }>(),
     getSquadCounts(
       supabase,
       (clubs ?? []).map((club) => club.id),
@@ -480,11 +488,14 @@ export async function makeDraftPickAction(formData: FormData) {
     throw new Error("Dein Draftkader ist bereits voll.");
   }
 
+  const draftPurchasePrice = computeCatalogPlayerMarketValues(player).scoutingPrice;
+
   const { error: insertError } = await supabase.from("club_players").insert({
     club_id: ownClub.id,
-    player_id: playerId,
     current_stars: player.base_stars,
     current_zone: "bench",
+    player_id: playerId,
+    purchase_price: draftPurchasePrice,
     stars_at_acquisition: player.base_stars,
   });
 
@@ -637,29 +648,39 @@ export async function trainPlayerAction(formData: FormData) {
   }
 
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
-  const { data: transactionRows, error: transactionsError } = await supabase
-    .from("transactions")
-    .select("id, created_at, metadata")
-    .eq("game_id", gameId)
-    .eq("club_id", ownedPlayer.club_id)
-    .eq("reason", "training")
-    .returns<Array<{ id: string; created_at: string; metadata: unknown }>>();
+  // These two reads are independent: run them in parallel to save a round-trip.
+  // The training history is scoped to the current season (matching the snapshot
+  // loader) so it stays O(1) instead of scanning the whole club history.
+  const [{ data: transactionRows, error: transactionsError }, { data: trainStaffRows }] = await Promise.all([
+    supabase
+      .from("transactions")
+      .select("id, created_at, metadata")
+      .eq("game_id", gameId)
+      .eq("club_id", ownedPlayer.club_id)
+      .eq("reason", "training")
+      .contains("metadata", { season_number: seasonNumber })
+      .order("created_at", { ascending: false })
+      .limit(80)
+      .returns<Array<{ id: string; created_at: string; metadata: unknown }>>(),
+    supabase
+      .from("club_staff")
+      .select("card:staff_cards(effects)")
+      .eq("club_id", ownedPlayer.club_id)
+      .returns<Array<{ card: { effects: Array<Record<string, unknown>> } }>>(),
+  ]);
 
   if (transactionsError) {
     throw transactionsError;
   }
 
-  const { data: trainStaffRows } = await supabase
-    .from("club_staff")
-    .select("card:staff_cards(effects)")
-    .eq("club_id", ownedPlayer.club_id)
-    .returns<Array<{ card: { effects: Array<Record<string, unknown>> } }>>();
   const trainStaffEffects = (trainStaffRows ?? []).flatMap((s) => s.card?.effects ?? []);
 
-  const trainingEvents = (transactionRows ?? [])
-    .map(parseTrainingEvent)
-    .filter((event): event is NonNullable<ReturnType<typeof parseTrainingEvent>> => Boolean(event))
-    .filter((event) => event.season_number === seasonNumber && event.game_phase === game.phase);
+  const trainingEvents = filterTrainingEventsForWindow(
+    (transactionRows ?? [])
+      .map(parseTrainingEvent)
+      .filter((event): event is NonNullable<ReturnType<typeof parseTrainingEvent>> => Boolean(event)),
+    { gamePhase: game.phase, seasonNumber },
+  );
 
   if (isOffseasonPendingEffectWindow(game.phase)) {
     await transitionPendingEffectsToOffseason(supabase, gameId);
@@ -684,7 +705,12 @@ export async function trainPlayerAction(formData: FormData) {
     extraPlayers,
   });
   const currentStars = Math.trunc(Number(ownedPlayer.current_stars));
-  const skillMax = Math.trunc(Number(ownedPlayer.player.skill_max ?? currentStars));
+  const skillMax = resolvePlayerSkillDisplayMax({
+    baseStars: ownedPlayer.player.base_stars,
+    currentStars,
+    potentialStars: ownedPlayer.player.potential_stars,
+    skillMax: ownedPlayer.player.skill_max,
+  });
   const eligibility = canTrainOwnedPlayer({
     alreadyTrained: trainingEvents.some((event) => event.club_player_id === ownedPlayer.id),
     attemptsUsed: trainingStatus.attempts_used,
@@ -699,27 +725,27 @@ export async function trainPlayerAction(formData: FormData) {
   }
 
   const diceRoll = Math.floor(Math.random() * 6) + 1;
-  const potentialStars = Math.trunc(Number(ownedPlayer.player.potential_stars ?? skillMax));
+  const potentialCeiling = resolvePlayerPotentialCeiling({
+    baseStars: ownedPlayer.player.base_stars,
+    currentStars,
+    potentialStars: ownedPlayer.player.potential_stars,
+    skillMax: ownedPlayer.player.skill_max,
+  });
   const nlzGuaranteed =
     (ownedPlayer.club.youth_academy_level ?? 0) >= 3 &&
     isNlzOriginPlayer(ownedPlayer.player.metadata) &&
-    currentStars < potentialStars;
+    currentStars < potentialCeiling;
 
-  const resolution = nlzGuaranteed
-    ? {
-        afterStars: Math.min(currentStars + 1, skillMax),
-        beforeStars: currentStars,
-        diceRoll,
-        guaranteedBonusUsed: false,
-        success: true,
-      }
-    : resolveTrainingAttempt({
-        currentStars,
-        diceRoll,
-        guaranteedBonusAvailable: trainingStatus.guaranteed_bonus_available,
-        skillMax,
-        trainingLevel: ownedPlayer.club.training_level,
-      });
+  const resolution = applyNlzTrainingGuarantee(
+    resolveTrainingAttempt({
+      currentStars,
+      diceRoll,
+      guaranteedBonusAvailable: trainingStatus.guaranteed_bonus_available,
+      skillMax,
+      trainingLevel: ownedPlayer.club.training_level ?? 1,
+    }),
+    { enabled: nlzGuaranteed, skillMax },
+  );
   const metadata: TrainingEventMetadata = {
     after_stars: resolution.afterStars,
     before_stars: resolution.beforeStars,
@@ -727,6 +753,7 @@ export async function trainPlayerAction(formData: FormData) {
     dice_roll: resolution.diceRoll,
     game_phase: game.phase,
     guaranteed_bonus_used: resolution.guaranteedBonusUsed,
+    nlz_guaranteed_used: resolution.nlzGuaranteedUsed,
     player_id: ownedPlayer.player_id,
     season_number: seasonNumber,
     success: resolution.success,
@@ -749,14 +776,9 @@ export async function trainPlayerAction(formData: FormData) {
       : new Map<string, { squad_size: number; squad_stars: number }>();
 
   if (resolution.afterStars !== resolution.beforeStars) {
-    await syncPlayerRowMarketValues(supabase, ownedPlayer.player_id, {
-      potentialCeiling: resolvePlayerPotentialCeiling({
-        baseStars: ownedPlayer.player.base_stars,
-        currentStars: resolution.afterStars,
-        potentialStars: ownedPlayer.player.potential_stars,
-        skillMax: ownedPlayer.player.skill_max,
-      }),
-      stars: resolution.afterStars,
+    await syncOwnedPlayerRowMarketValues(supabase, ownedPlayer.player_id, {
+      current_stars: resolution.afterStars,
+      player: ownedPlayer.player,
     });
   }
 
@@ -1031,14 +1053,14 @@ export async function buyScoutedPlayerAction(formData: FormData) {
 
   const ownDraws = draws.filter((item) => item.club_id === ownClub.id);
   const drawBaseStars = Number(draw.player.base_stars ?? 1);
-  const drawPotentialCeiling = resolvePlayerPotentialCeiling({
+  const drawMarketMax = resolvePlayerMarketMax({
     baseStars: drawBaseStars,
     currentStars: drawBaseStars,
     potentialStars: draw.player.potential_stars,
     skillMax: draw.player.skill_max,
   });
   const baseScoutingPrice = computePlayerMarketValues({
-    potentialCeiling: drawPotentialCeiling,
+    potentialCeiling: drawMarketMax,
     stars: drawBaseStars,
   }).scoutingPrice;
   const scoutingPendingEffects = buyPendingEffects.filter((eff) =>
@@ -1101,14 +1123,9 @@ export async function buyScoutedPlayerAction(formData: FormData) {
 
   const scoutingSquadStats = await syncClubSquadCache(supabase, ownClub.id);
 
-  await syncPlayerRowMarketValues(supabase, draw.player_id, {
-    potentialCeiling: resolvePlayerPotentialCeiling({
-      baseStars: draw.player.base_stars,
-      currentStars: newSigningStars,
-      potentialStars: draw.player.potential_stars,
-      skillMax: draw.player.skill_max,
-    }),
-    stars: newSigningStars,
+  await syncOwnedPlayerRowMarketValues(supabase, draw.player_id, {
+    current_stars: newSigningStars,
+    player: draw.player,
   });
 
   const { error: clubError } = await supabase
@@ -1825,9 +1842,16 @@ export async function acceptTransferOfferAction(formData: FormData) {
       .returns<Array<{ id: string; money: number | string }>>(),
     supabase
       .from("club_players")
-      .select("id, club_id, player_id, current_stars")
+      .select("id, club_id, player_id, current_stars, purchase_price, player:players(metadata)")
       .eq("id", offer.target_club_player_id)
-      .maybeSingle<{ club_id: string; current_stars: number | string; id: string; player_id: string }>(),
+      .maybeSingle<{
+        club_id: string;
+        current_stars: number | string;
+        id: string;
+        player: { metadata?: Record<string, unknown> | null } | null;
+        player_id: string;
+        purchase_price?: number | string | null;
+      }>(),
     offer.offered_club_player_id
       ? supabase
           .from("club_players")
@@ -1934,6 +1958,16 @@ export async function acceptTransferOfferAction(formData: FormData) {
   const mutationError = mutationResults.find((result) => result.error)?.error;
   if (mutationError) {
     throw mutationError;
+  }
+
+  if (isPrestigeEnabled(game.settings)) {
+    await recordQualifiedTransferSale(
+      supabase,
+      offer.to_club_id,
+      Number(offer.cash_amount),
+      targetPlayer.purchase_price == null ? null : Number(targetPlayer.purchase_price),
+      targetPlayer.player?.metadata ?? null,
+    );
   }
 
   await syncClubSquadCache(supabase, [offer.from_club_id, offer.to_club_id]);
@@ -2115,7 +2149,7 @@ export async function initializeDeadlineDayAction(formData: FormData) {
     current_bid_club_id: index === 0 ? firstClubId : null,
     game_id: gameId,
     minimum_bid: computePlayerMarketValues({
-      potentialCeiling: resolvePlayerPotentialCeiling({
+      potentialCeiling: resolvePlayerMarketMax({
         baseStars: player.base_stars,
         currentStars: player.base_stars,
         potentialStars: player.potential_stars,
@@ -2647,7 +2681,10 @@ export async function resolveFixtureAction(formData: FormData) {
     userId,
   });
 
-  await autoSimulateCpuOnlyFixtures(supabase, gameId, game, userId);
+  await autoSimulateCpuOnlyFixtures(supabase, gameId, game, userId, {
+    matchday: fixture.matchday,
+    seasonNumber: fixture.season_number,
+  });
   await emitGameEvent(supabase, {
     actorClerkUserId: userId,
     gameId,
@@ -2976,7 +3013,13 @@ export async function advancePhaseAction(formData: FormData) {
 
   // Auto-simulate CPU-vs-CPU fixtures when entering the season phase
   if (nextPhase === "season" || nextPhase === "prematch") {
-    await autoSimulateCpuOnlyFixtures(supabase, gameId, { ...game, phase: nextPhase, room_code: roomCode }, userId);
+    await autoSimulateCpuOnlyFixtures(
+      supabase,
+      gameId,
+      { ...game, phase: nextPhase, room_code: roomCode, settings: nextSettings },
+      userId,
+      { seasonNumber: Number(nextSettings?.seasonNumber ?? 1) },
+    );
   }
 
   await emitGameEvent(supabase, {
@@ -3128,12 +3171,18 @@ async function syncClubSquadCache(supabase: SupabaseServiceClient, clubIdsInput:
 type FixtureActionRow = {
   away_cpu_lineup_id?: string | null;
   away_lineup_locked: boolean;
+  away_locked_att?: number | null;
+  away_locked_def?: number | null;
+  away_locked_mid?: number | null;
   away_participant_id: string;
   away_ready_for_next_third: boolean;
   current_third: number;
   game_id: string;
   home_cpu_lineup_id?: string | null;
   home_lineup_locked: boolean;
+  home_locked_att?: number | null;
+  home_locked_def?: number | null;
+  home_locked_mid?: number | null;
   home_participant_id: string;
   home_ready_for_next_third: boolean;
   id: string;
@@ -3446,8 +3495,13 @@ async function resolveFixtureServer(params: {
   participants: { away: FixtureParticipantRow; home: FixtureParticipantRow };
   supabase: SupabaseServiceClient;
   userId: string;
+  resolveOptions?: {
+    skipHealInjuries?: boolean;
+    skipStandingsRebuild?: boolean;
+    skipTouchSave?: boolean;
+  };
 }) {
-  const { fixture, game, participants, supabase, userId } = params;
+  const { fixture, game, participants, supabase, userId, resolveOptions } = params;
 
   // Apply next_match pending effects (zone deltas, staff disable) before resolving CPU-only fixtures.
   const { consumedIds: preMatchConsumed, updatedPartial, staffDisabled } = await injectNextMatchEffects(supabase, {
@@ -3554,37 +3608,124 @@ async function resolveFixtureServer(params: {
   }
 
   await consumePendingEffects(supabase, preMatchConsumed);
-  await healExpiredInjuries(supabase, fixture.game_id, fixture.matchday);
-  await rebuildSeasonStandings(supabase, fixture.game_id, fixture.season_number);
-  await touchGameSave(supabase, fixture.game_id, userId);
+  if (!resolveOptions?.skipHealInjuries) {
+    await healExpiredInjuries(supabase, fixture.game_id, fixture.matchday);
+  }
+  if (!resolveOptions?.skipStandingsRebuild) {
+    await rebuildSeasonStandings(supabase, fixture.game_id, fixture.season_number);
+  }
+  if (!resolveOptions?.skipTouchSave) {
+    await touchGameSave(supabase, fixture.game_id, userId);
+  }
 }
 
+type AutoSimulateCpuFixturesOptions = {
+  matchday?: number;
+  maxFixtures?: number;
+  seasonNumber?: number;
+};
+
 /**
- * Finds all pending CPU-vs-CPU fixtures in the game and resolves them automatically.
- * Called after any action that might complete a matchday, so no manual button press is needed.
+ * Finds pending CPU-vs-CPU fixtures and resolves them automatically.
+ * Scoped to the current season (and optionally matchday) so a single user
+ * action does not scan/simulate the entire game history.
  */
 async function autoSimulateCpuOnlyFixtures(
   supabase: SupabaseServiceClient,
   gameId: string,
   game: LobbyGame,
   userId: string,
+  options?: AutoSimulateCpuFixturesOptions,
 ) {
-  const { data: pendingFixtures } = await supabase
-    .from("fixtures")
-    .select("id, game_id, season_number, matchday, home_participant_id, away_participant_id, home_cpu_lineup_id, away_cpu_lineup_id, home_lineup_locked, away_lineup_locked, status, match_state, current_third, home_ready_for_next_third, away_ready_for_next_third, partial_result")
-    .eq("game_id", gameId)
-    .neq("status", "completed")
-    .returns<FixtureActionRow[]>();
+  const seasonNumber = options?.seasonNumber ?? Number(game.settings?.seasonNumber ?? 1);
+  const maxFixtures = options?.maxFixtures ?? 24;
 
-  for (const fixture of pendingFixtures ?? []) {
+  let query = supabase
+    .from("fixtures")
+    .select(
+      "id, game_id, season_number, matchday, home_participant_id, away_participant_id, home_cpu_lineup_id, away_cpu_lineup_id, home_lineup_locked, away_lineup_locked, home_locked_def, home_locked_mid, home_locked_att, away_locked_def, away_locked_mid, away_locked_att, status, match_state, current_third, home_ready_for_next_third, away_ready_for_next_third, partial_result",
+    )
+    .eq("game_id", gameId)
+    .eq("season_number", seasonNumber)
+    .neq("status", "completed")
+    .order("matchday", { ascending: true })
+    .limit(maxFixtures);
+
+  if (options?.matchday != null) {
+    query = query.eq("matchday", options.matchday);
+  }
+
+  const { data: pendingFixtures, error } = await query.returns<FixtureActionRow[]>();
+  if (error) {
+    throw error;
+  }
+
+  if (!pendingFixtures?.length) {
+    return;
+  }
+
+  const batchResolveOptions = {
+    skipHealInjuries: true,
+    skipStandingsRebuild: true,
+    skipTouchSave: true,
+  };
+
+  const resolvedFixtures: FixtureActionRow[] = [];
+  for (const fixture of pendingFixtures) {
     const participants = await getFixtureParticipants(supabase, fixture);
     if (participants.home.kind === "cpu" && participants.away.kind === "cpu") {
-      await resolveFixtureServer({ fixture, game, participants, supabase, userId });
+      await resolveFixtureServer({
+        fixture,
+        game,
+        participants,
+        supabase,
+        userId,
+        resolveOptions: batchResolveOptions,
+      });
+      resolvedFixtures.push(fixture);
     }
   }
+
+  if (resolvedFixtures.length === 0) {
+    return;
+  }
+
+  const maxMatchday = Math.max(...resolvedFixtures.map((fixture) => fixture.matchday));
+  const clubIds = await listClubIds(supabase, gameId);
+  await healExpiredInjuries(supabase, gameId, maxMatchday, clubIds);
+  await rebuildSeasonStandings(supabase, gameId, seasonNumber);
+  await touchGameSave(supabase, gameId, userId);
 }
 
-async function buildFixtureSide(supabase: SupabaseServiceClient, participant: FixtureParticipantRow, cpuLineupId?: string | null, opts: { suppressStaff?: boolean } = {}): Promise<FixtureSideInput> {
+function getLockedPowersFromFixture(
+  fixture: FixtureActionRow,
+  side: "away" | "home",
+): { ATT: number; DEF: number; MID: number } | null {
+  const locked = side === "home" ? fixture.home_lineup_locked : fixture.away_lineup_locked;
+  const def = side === "home" ? fixture.home_locked_def : fixture.away_locked_def;
+  const mid = side === "home" ? fixture.home_locked_mid : fixture.away_locked_mid;
+  const att = side === "home" ? fixture.home_locked_att : fixture.away_locked_att;
+
+  if (!locked || def == null || mid == null || att == null) {
+    return null;
+  }
+
+  return {
+    ATT: Number(att),
+    DEF: Number(def),
+    MID: Number(mid),
+  };
+}
+
+async function buildFixtureSide(
+  supabase: SupabaseServiceClient,
+  participant: FixtureParticipantRow,
+  cpuLineupId?: string | null,
+  opts: {
+    lockedPowers?: { ATT: number; DEF: number; MID: number } | null;
+    suppressStaff?: boolean;
+  } = {},
+): Promise<FixtureSideInput> {
   if (participant.kind === "cpu") {
     const { data, error } = await supabase
       .from("cpu_lineups")
@@ -3614,7 +3755,7 @@ async function buildFixtureSide(supabase: SupabaseServiceClient, participant: Fi
     throw new Error("Human participant without club.");
   }
 
-  const [{ data, error }, { data: staffData }] = await Promise.all([
+  const [{ data, error }, { data: staffData }, captainResult] = await Promise.all([
     supabase
       .from("club_players")
       .select("id, custom_name, current_stars, current_zone, lineup_slot, player:players(attacker_archetype, chemistry_left, chemistry_right, defender_archetype, display_name, position, eligible_positions)")
@@ -3645,6 +3786,13 @@ async function buildFixtureSide(supabase: SupabaseServiceClient, participant: Fi
       .select("staff_card:staff_cards(effects)")
       .eq("club_id", participant.club_id)
       .returns<Array<{ staff_card: { effects: Array<{ type: string; zone?: string; stars?: number }> } | null }>>(),
+    opts.suppressStaff
+      ? Promise.resolve({ data: null, error: null })
+      : supabase
+          .from("clubs")
+          .select("captain_club_player_id, captain_boost_rank")
+          .eq("id", participant.club_id)
+          .maybeSingle<{ captain_boost_rank: number | null; captain_club_player_id: string | null }>(),
   ]);
 
   if (error) {
@@ -3652,8 +3800,13 @@ async function buildFixtureSide(supabase: SupabaseServiceClient, participant: Fi
   }
 
   const staffEffects = opts.suppressStaff ? [] : (staffData ?? []).flatMap((s) => s.staff_card?.effects ?? []);
-  // Derby Day (opts.suppressStaff) also disables the captain boost.
-  const captain = opts.suppressStaff ? null : await loadClubCaptain(supabase, participant.club_id);
+  const captain =
+    opts.suppressStaff || !captainResult.data?.captain_club_player_id
+      ? null
+      : {
+          clubPlayerId: captainResult.data.captain_club_player_id,
+          boost: Math.max(0, Math.trunc(Number(captainResult.data.captain_boost_rank ?? 0))),
+        };
 
   const lineup = {
     ATT: getZoneIds(data ?? [], "ATT"),
@@ -3661,7 +3814,7 @@ async function buildFixtureSide(supabase: SupabaseServiceClient, participant: Fi
     GK: getZoneIds(data ?? [], "GK"),
     MID: getZoneIds(data ?? [], "MID"),
   };
-  const powers = calculateLineupPower(
+  const calculatedPowers = calculateLineupPower(
     (data ?? []).map((player) => ({
       id: player.id,
       chemistry_left: player.player?.chemistry_left,
@@ -3679,6 +3832,11 @@ async function buildFixtureSide(supabase: SupabaseServiceClient, participant: Fi
     staffEffects,
     captain,
   );
+  const powers = opts.lockedPowers ?? {
+    ATT: calculatedPowers.ATT.total,
+    DEF: calculatedPowers.DEF.total,
+    MID: calculatedPowers.MID.total,
+  };
 
   return {
     canReceiveEvents: true,
@@ -3686,9 +3844,9 @@ async function buildFixtureSide(supabase: SupabaseServiceClient, participant: Fi
     lineup,
     participantId: participant.id,
     powers: {
-      ATT: powers.ATT.total,
-      DEF: powers.DEF.total,
-      MID: powers.MID.total,
+      ATT: powers.ATT,
+      DEF: powers.DEF,
+      MID: powers.MID,
     },
     zone_players: (data ?? [])
       .filter((player) => ["ATT", "DEF", "GK", "MID"].includes(player.current_zone))
@@ -3814,7 +3972,7 @@ async function computeClubLockedPower(
   clubId: string,
   opts: { sponsoringEnabled?: boolean; staffDisabled?: boolean } = {},
 ): Promise<{ DEF: number; MID: number; ATT: number }> {
-  const [{ data: playerData }, { data: staffData }] = await Promise.all([
+  const [{ data: playerData }, { data: staffData }, { data: captainData }] = await Promise.all([
     supabase
       .from("club_players")
       .select("id, current_stars, current_zone, lineup_slot, injured, player:players(chemistry_left, chemistry_right, position, eligible_positions)")
@@ -3834,6 +3992,11 @@ async function computeClubLockedPower(
       .select("staff_card:staff_cards(effects)")
       .eq("club_id", clubId)
       .returns<Array<{ staff_card: { effects: Array<{ type: string; zone?: string; stars?: number; factor?: number }> } | null }>>(),
+    supabase
+      .from("clubs")
+      .select("captain_club_player_id, captain_boost_rank")
+      .eq("id", clubId)
+      .maybeSingle<{ captain_boost_rank: number | null; captain_club_player_id: string | null }>(),
   ]);
 
   const staffEffects = opts.staffDisabled ? [] : (staffData ?? []).flatMap((s) => s.staff_card?.effects ?? []);
@@ -3841,7 +4004,12 @@ async function computeClubLockedPower(
   const sponsorDefBonus = seasonEffects
     .filter((eff) => eff.effect_type === "sponsor_defense_bonus")
     .reduce((sum, eff) => sum + Number((eff.payload as { delta?: number })?.delta ?? 0), 0);
-  const captain = await loadClubCaptain(supabase, clubId);
+  const captain = captainData?.captain_club_player_id
+    ? {
+        clubPlayerId: captainData.captain_club_player_id,
+        boost: Math.max(0, Math.trunc(Number(captainData.captain_boost_rank ?? 0))),
+      }
+    : null;
   const powers = calculateLineupPower(
     (playerData ?? []).map((p) => ({
       id: p.id,
@@ -3942,13 +4110,19 @@ async function healExpiredInjuries(
   supabase: SupabaseServiceClient,
   gameId: string,
   currentMatchday: number,
+  clubIds?: string[],
 ): Promise<void> {
+  const ids = clubIds ?? (await listClubIds(supabase, gameId));
+  if (ids.length === 0) {
+    return;
+  }
+
   await supabase
     .from("club_players")
     .update({ injured: false, injured_until_matchday: null })
     .gt("injured_until_matchday", 0)
     .lte("injured_until_matchday", currentMatchday)
-    .in("club_id", await listClubIds(supabase, gameId));
+    .in("club_id", ids);
 }
 
 async function listClubIds(supabase: SupabaseServiceClient, gameId: string): Promise<string[]> {
@@ -4268,7 +4442,7 @@ export async function markReadyForNextThirdAction(formData: FormData) {
 
   const { data: fixture, error: fetchError } = await supabase
     .from("fixtures")
-    .select("id, game_id, season_number, matchday, home_participant_id, away_participant_id, home_cpu_lineup_id, away_cpu_lineup_id, home_lineup_locked, away_lineup_locked, status, match_state, current_third, home_ready_for_next_third, away_ready_for_next_third, partial_result")
+    .select("id, game_id, season_number, matchday, home_participant_id, away_participant_id, home_cpu_lineup_id, away_cpu_lineup_id, home_lineup_locked, away_lineup_locked, home_locked_def, home_locked_mid, home_locked_att, away_locked_def, away_locked_mid, away_locked_att, status, match_state, current_third, home_ready_for_next_third, away_ready_for_next_third, partial_result")
     .eq("id", fixtureId)
     .eq("game_id", gameId)
     .maybeSingle<FixtureActionRow>();
@@ -4282,7 +4456,13 @@ export async function markReadyForNextThirdAction(formData: FormData) {
     redirect(`/games/${roomCode}?view=matchday`);
   }
 
-  const side = await getHumanFixtureSide(supabase, fixture, ownClub.id);
+  const participants = await getFixtureParticipants(supabase, fixture);
+  const side =
+    participants.home.club_id === ownClub.id
+      ? ("home" as const)
+      : participants.away.club_id === ownClub.id
+        ? ("away" as const)
+        : null;
   if (!side) {
     throw new Error("Nicht dein Match.");
   }
@@ -4303,29 +4483,36 @@ export async function markReadyForNextThirdAction(formData: FormData) {
     (side === "away" ? true : refreshed?.away_ready_for_next_third ?? false);
 
   if (!bothReady) {
-    await touchGameSave(supabase, gameId, userId);
-    await emitGameEvent(supabase, {
-      actorClerkUserId: userId,
-      gameId,
-      payload: {
-        fixtureId,
-        fixturePatch: {
-          [readyField]: true,
+    await Promise.all([
+      touchGameSave(supabase, gameId, userId),
+      emitGameEvent(supabase, {
+        actorClerkUserId: userId,
+        gameId,
+        payload: {
+          fixtureId,
+          fixturePatch: {
+            [readyField]: true,
+          },
+          side,
         },
-        side,
-      },
-      type: "MATCH_THIRD_READY_CHANGED",
-    });
+        type: "MATCH_THIRD_READY_CHANGED",
+      }),
+    ]);
     revalidatePath(`/games/${roomCode}`);
     redirect(`/games/${roomCode}?view=matchday`);
   }
 
   // Both ready → simulate next third
-  const participants = await getFixtureParticipants(supabase, fixture);
   const derbyDay = await getFixtureDerbyDay(supabase, fixtureId);
   const [homeSide, awaySide] = await Promise.all([
-    buildFixtureSide(supabase, participants.home, fixture.home_cpu_lineup_id, { suppressStaff: derbyDay }),
-    buildFixtureSide(supabase, participants.away, fixture.away_cpu_lineup_id, { suppressStaff: derbyDay }),
+    buildFixtureSide(supabase, participants.home, fixture.home_cpu_lineup_id, {
+      suppressStaff: derbyDay,
+      lockedPowers: getLockedPowersFromFixture(fixture, "home"),
+    }),
+    buildFixtureSide(supabase, participants.away, fixture.away_cpu_lineup_id, {
+      suppressStaff: derbyDay,
+      lockedPowers: getLockedPowersFromFixture(fixture, "away"),
+    }),
   ]);
 
   const currentPartial = (refreshed?.partial_result ?? { thirds: [], pending_modifiers: [] }) as PartialResult;
@@ -4481,20 +4668,25 @@ export async function markReadyForNextThirdAction(formData: FormData) {
     }
     await healExpiredInjuries(supabase, gameId, fixture.matchday);
     await rebuildSeasonStandings(supabase, gameId, fixture.season_number);
-    await touchGameSave(supabase, gameId, userId);
-    await autoSimulateCpuOnlyFixtures(supabase, gameId, game, userId);
-    await emitGameEvent(supabase, {
-      actorClerkUserId: userId,
-      gameId,
-      payload: {
-        events,
-        fixtureId,
-        fixturePatch,
-        needsRefetch: true,
-        third,
-      },
-      type: "MATCH_THIRD_RESOLVED",
+    await autoSimulateCpuOnlyFixtures(supabase, gameId, game, userId, {
+      matchday: fixture.matchday,
+      seasonNumber: fixture.season_number,
     });
+    await Promise.all([
+      touchGameSave(supabase, gameId, userId),
+      emitGameEvent(supabase, {
+        actorClerkUserId: userId,
+        gameId,
+        payload: {
+          events,
+          fixtureId,
+          fixturePatch,
+          needsRefetch: true,
+          third,
+        },
+        type: "MATCH_THIRD_RESOLVED",
+      }),
+    ]);
   } else {
     const fixturePatch = {
       away_ready_for_next_third: false,
@@ -4506,19 +4698,21 @@ export async function markReadyForNextThirdAction(formData: FormData) {
       .from("fixtures")
       .update(fixturePatch)
       .eq("id", fixtureId);
-    await touchGameSave(supabase, gameId, userId);
-    await emitGameEvent(supabase, {
-      actorClerkUserId: userId,
-      gameId,
-      payload: {
-        events,
-        fixtureId,
-        fixturePatch,
-        needsRefetch: events.length > 0,
-        third,
-      },
-      type: "MATCH_THIRD_RESOLVED",
-    });
+    await Promise.all([
+      touchGameSave(supabase, gameId, userId),
+      emitGameEvent(supabase, {
+        actorClerkUserId: userId,
+        gameId,
+        payload: {
+          events,
+          fixtureId,
+          fixturePatch,
+          needsRefetch: events.length > 0,
+          third,
+        },
+        type: "MATCH_THIRD_RESOLVED",
+      }),
+    ]);
   }
 
   revalidatePath(`/games/${roomCode}`);
@@ -5185,13 +5379,19 @@ async function updateHumanClubRanks(
   participants: Array<{ club_id?: string | null; id: string; kind: string }>,
   standings: Array<{ participant_id: string; rank: number }>,
 ) {
-  for (const standing of standings) {
+  const updates = standings.flatMap((standing) => {
     const participant = participants.find((item) => item.id === standing.participant_id);
     if (!participant?.club_id || participant.kind !== "human") {
-      continue;
+      return [];
     }
 
-    await supabase.from("clubs").update({ season_rank: standing.rank }).eq("id", participant.club_id);
+    return [
+      supabase.from("clubs").update({ season_rank: standing.rank }).eq("id", participant.club_id),
+    ];
+  });
+
+  if (updates.length > 0) {
+    await Promise.all(updates);
   }
 }
 

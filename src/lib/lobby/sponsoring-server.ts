@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ClubStatus } from "@/lib/game/types";
-import { resolvePlayerPotentialCeiling, syncPlayerRowMarketValues } from "@/lib/lobby/player-market";
+import { syncOwnedPlayerRowMarketValues } from "@/lib/lobby/player-market";
 import { applyStatusTierUp } from "@/lib/game/rules";
 import { getSponsorDealById } from "@/lib/lobby/sponsor-deals";
 import {
@@ -483,15 +483,10 @@ async function boostPlayerStars(supabase: ServiceClient, clubPlayerId: string, s
     }>();
   const nextStars = Number(data?.current_stars ?? 0) + stars;
   await supabase.from("club_players").update({ current_stars: nextStars }).eq("id", clubPlayerId);
-  if (data?.player_id) {
-    await syncPlayerRowMarketValues(supabase, data.player_id, {
-      potentialCeiling: resolvePlayerPotentialCeiling({
-        baseStars: data.player?.base_stars,
-        currentStars: nextStars,
-        potentialStars: data.player?.potential_stars,
-        skillMax: data.player?.skill_max,
-      }),
-      stars: nextStars,
+  if (data?.player_id && data.player) {
+    await syncOwnedPlayerRowMarketValues(supabase, data.player_id, {
+      current_stars: nextStars,
+      player: data.player,
     });
   }
 }
@@ -515,14 +510,13 @@ async function boostPlayerPotential(supabase: ServiceClient, clubPlayerId: strin
   await supabase.from("players").update({ skill_max: newMax }).eq("id", data.player_id);
   const nextStars = Math.min(Number(data.current_stars ?? 0) + stars, newMax);
   await supabase.from("club_players").update({ current_stars: nextStars }).eq("id", clubPlayerId);
-  await syncPlayerRowMarketValues(supabase, data.player_id, {
-    potentialCeiling: resolvePlayerPotentialCeiling({
-      baseStars: data.player?.base_stars,
-      currentStars: nextStars,
-      potentialStars: data.player?.potential_stars,
-      skillMax: newMax,
-    }),
-    stars: nextStars,
+  await syncOwnedPlayerRowMarketValues(supabase, data.player_id, {
+    current_stars: nextStars,
+    player: {
+      base_stars: data.player?.base_stars,
+      potential_stars: data.player?.potential_stars,
+      skill_max: newMax,
+    },
   });
 }
 
@@ -541,15 +535,14 @@ async function maxPlayerToSkillMax(supabase: ServiceClient, clubPlayerId: string
     }>();
   const max = Number(data?.player?.skill_max ?? 0);
   await supabase.from("club_players").update({ current_stars: max }).eq("id", clubPlayerId);
-  if (data?.player_id) {
-    await syncPlayerRowMarketValues(supabase, data.player_id, {
-      potentialCeiling: resolvePlayerPotentialCeiling({
-        baseStars: data.player?.base_stars,
-        currentStars: max,
-        potentialStars: data.player?.potential_stars,
-        skillMax: max,
-      }),
-      stars: max,
+  if (data?.player_id && data.player) {
+    await syncOwnedPlayerRowMarketValues(supabase, data.player_id, {
+      current_stars: max,
+      player: {
+        base_stars: data.player.base_stars,
+        potential_stars: data.player.potential_stars,
+        skill_max: max,
+      },
     });
   }
 }

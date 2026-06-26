@@ -1,4 +1,4 @@
-import { computePlayerMarketValues, resolvePlayerPotentialCeiling } from "@/lib/lobby/player-market";
+import { computePlayerMarketValues, resolvePlayerMarketMax } from "@/lib/lobby/player-market";
 import type { Club, ClubPlayer, Lineup, PlayerCard, StaffCard } from "./types";
 
 const MILLION = 1_000_000;
@@ -12,7 +12,7 @@ export const samplePlayers: PlayerCard[] = Array.from({ length: 80 }, (_, index)
   const baseStars = (index % 6) + 1;
   const potentialStars = index % 4 === 0 ? 2 : index % 3 === 0 ? 1 : 0;
   const market = computePlayerMarketValues({
-    potentialCeiling: resolvePlayerPotentialCeiling({
+    potentialCeiling: resolvePlayerMarketMax({
       baseStars,
       currentStars: baseStars,
       potentialStars,

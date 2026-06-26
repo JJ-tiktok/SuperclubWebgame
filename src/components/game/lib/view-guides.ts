@@ -98,7 +98,7 @@ export const VIEW_GUIDES: Record<GameView, ViewGuideConfig> = {
   table: {
     title: "Tabelle",
     summary:
-      "Liga- und Managerwertung: kosmetische Ligatabelle, Manager-Score aus Kader + Saisonpunkten sowie das Positionsboard nach Prestige.",
+      "Liga- und Managerwertung: kosmetische Ligatabelle, Rang nach Siegpunkten (Manager-Spiele), Stufen aus Kader + Siegpunkte sowie Positionsboard.",
     tips: [
       "Manager-Rang bestimmt Praemien und Sponsoring-Optionen.",
       "Die Ligatabelle spiegelt Match-Ergebnisse der Saison wider.",
@@ -206,6 +206,19 @@ export const VIEW_GUIDES: Record<GameView, ViewGuideConfig> = {
       { id: "race", label: "Prestige-Rennen", description: "Fortschritt und Aufschluesselung" },
       { id: "philosophy", label: "Philosophie", description: "Dein Langzeitziel" },
       { id: "history", label: "Historie", description: "Deine vergebenen Punkte" },
+    ],
+  },
+  game_end: {
+    title: "Spielende",
+    summary:
+      "Die finale Saison ist vorbei. Hier siehst du den Sieger und die endgueltige Prestige-Wertung aller Manager.",
+    tips: [
+      "Bei Gleichstand entscheiden Continental-Cup-Siege, Tabellenplatz und Vereinsname.",
+      "Ueber Prestige kannst du die detaillierte Punktehistorie einsehen.",
+    ],
+    sections: [
+      { id: "winner", label: "Sieger", description: "Gewinner des Prestige-Rennens" },
+      { id: "ranking", label: "Endstand", description: "Finale Prestige-Rangliste" },
     ],
   },
   settings: {

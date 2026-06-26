@@ -70,6 +70,7 @@ export type ManagerScoreRow = {
   rank: number;
   season_score: number;
   squad_stars: number;
+  stage_score: number;
   status: string;
 };
 

@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   calculateManagerScore,
+  calculateManagerStandingScore,
+  calculateManagerStageScore,
   calculateChemistryBonus,
   checkSeasonResult,
   getDraftPickOrder,
   getFinanceSummary,
   getManagerScoreBand,
+  isManagerVsManagerFixture,
   resolveAuction,
   resolveMatch,
   validateFormation,
@@ -24,11 +27,27 @@ describe("Superclub rules", () => {
     assert.equal(calculateManagerScore(34, 9), 43);
   });
 
+  it("calculates manager standing score from manager match points only", () => {
+    assert.equal(calculateManagerStandingScore(9), 9);
+    assert.equal(calculateManagerStandingScore(9.7), 9);
+  });
+
+  it("calculates manager stage score from squad stars and manager match points", () => {
+    assert.equal(calculateManagerStageScore(24, 9), 33);
+  });
+
   it("maps manager score bands to status and attractiveness", () => {
     assert.deepEqual(getManagerScoreBand(20), { attractivenessStars: 3, status: "newly_promoted" });
     assert.deepEqual(getManagerScoreBand(40), { attractivenessStars: 4, status: "established" });
     assert.deepEqual(getManagerScoreBand(60), { attractivenessStars: 5, status: "mid_table" });
     assert.deepEqual(getManagerScoreBand(80), { attractivenessStars: 6, status: "title_contender" });
+  });
+
+  it("counts manager match points only for human-vs-human fixtures", () => {
+    assert.equal(isManagerVsManagerFixture("human", "human"), true);
+    assert.equal(isManagerVsManagerFixture("human", "cpu"), false);
+    assert.equal(isManagerVsManagerFixture("cpu", "human"), false);
+    assert.equal(isManagerVsManagerFixture("cpu", "cpu"), false);
   });
 
   it("rotates the draft starter by round instead of using a snake draft", () => {

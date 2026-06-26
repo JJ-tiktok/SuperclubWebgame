@@ -61,7 +61,7 @@ export function shouldLoadPrestigeSnapshot(view: string, settings?: { prestige_e
   if (settings?.prestige_enabled === false) {
     return false;
   }
-  return view === "prestige" || view === "dashboard";
+  return view === "prestige" || view === "dashboard" || view === "game_end";
 }
 
 export function getClubOverviewLoadProfileForView(phase: LobbyPhase, view: string): ClubOverviewLoadProfile {

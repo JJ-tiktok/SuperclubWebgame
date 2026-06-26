@@ -78,6 +78,12 @@ import {
   recruitStaffResolveAction,
 } from "@/app/games/actions/staff";
 import {
+  acceptPoachRequestAction,
+  cancelPoachRequestAction,
+  createPoachRequestAction,
+  declinePoachRequestAction,
+} from "@/app/games/actions/poach";
+import {
   acceptTransferOfferAction,
   cancelTransferOfferAction,
   counterTransferOfferAction,
@@ -116,6 +122,8 @@ import { OpponentIntelPanel } from "@/components/game/opponent-intel-panel";
 import { PlayerHighlightsPanel } from "@/components/game/player-highlights-panel";
 import { HallOfFameView } from "@/components/game/hall-of-fame-view";
 import { PrestigeView } from "@/components/game/prestige-view";
+import { FinalSeasonBanner } from "@/components/game/final-season-banner";
+import { GameEndView } from "@/components/game/game-end-view";
 import { LobbySetupView } from "@/components/lobby/lobby-setup-view";
 import {
   canUpgradeEndgameFacility,
@@ -166,7 +174,7 @@ import {
 import { canUpgradeFacility, getStaffRecruitBlockReason, getStaffRecruitHint, getStaffRecruitReasonLabel, getUpgradeCost, getUpgradeReasonLabel, type UpgradeAction } from "@/lib/lobby/investments";
 import { isOffseasonPendingScopeActive } from "@/lib/lobby/offseason-pending-effects";
 import { calculateLineupPower, getCaptainBoostExtra } from "@/lib/lobby/lineup-power";
-import { getPhaseLabel, isInvestmentPhase } from "@/lib/lobby/phases";
+import { getPhaseLabel, isFinalSeason, isInvestmentPhase } from "@/lib/lobby/phases";
 import { isQualifiedTransferProfit } from "@/lib/lobby/prestige";
 import { buildSeasonEndSummaryModel } from "@/lib/lobby/season-end-summary";
 import { isClubStatusOverrideActive, resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
@@ -202,12 +210,14 @@ import {
   getClubPlayerDisplayName,
 } from "@/lib/lobby/player-names";
 import { MANAGER_TRANSFER_DEPARTURE_LIMIT } from "@/lib/lobby/transfers";
+import { isPlayerUnavailableForSeason } from "@/lib/lobby/poach";
 import type {
   ClubPlayerSnapshot,
   CpuStrengthTier,
   DraftPlayerRow,
   LobbyClub,
   LobbySnapshot,
+  PoachRequestSnapshot,
   SeasonFixtureSnapshot,
   StaffOfferSnapshot,
   TransferOfferSnapshot,
@@ -262,7 +272,7 @@ export function GameDashboard(props: GameDashboardProps) {
 
 function GameDashboardContent({ activeView, currentUserId, snapshot }: GameDashboardProps) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const view = normalizeView(activeView);
+  const view = normalizeView(activeView, snapshot.game.phase);
   const ownClub = snapshot.clubs.find((club) => club.clerk_user_id === currentUserId);
   const theme = getClubTheme(ownClub);
   const isHost = snapshot.game.host_clerk_user_id === currentUserId;
@@ -336,6 +346,7 @@ function GameDashboardContent({ activeView, currentUserId, snapshot }: GameDashb
             snapshot={snapshot}
             startState={startState}
           />
+          <FinalSeasonBanner game={snapshot.game} />
           {snapshot.game.phase === "off_season" && ownClub ? (
             <OffSeasonChecklist ownClub={ownClub} snapshot={snapshot} />
           ) : null}
@@ -398,6 +409,15 @@ function AppSidebar({
         </div>
 
         <div className="mt-5 space-y-1">
+          {snapshot.game.phase === "completed" ? (
+            <MenuLink
+              active={activeView === "game_end"}
+              badge="Sieger"
+              collapsed={collapsed}
+              game={snapshot.game.room_code}
+              item={{ id: "game_end", label: "Spielende", icon: Crown }}
+            />
+          ) : null}
           {mainMenu.map((item) => (
             <MenuLink active={activeView === item.id} collapsed={collapsed} game={snapshot.game.room_code} item={item} key={item.id} />
           ))}
@@ -608,6 +628,7 @@ function GameHeader({
   startState: ReturnType<typeof canStartLobby>;
 }) {
   const seasonNumber = Number(snapshot.game.settings?.seasonNumber ?? 1);
+  const finalSeasonActive = isFinalSeason(snapshot.game.settings) && snapshot.game.phase !== "completed";
 
   return (
     <header className="overflow-hidden rounded-lg border border-[var(--club-border)] bg-zinc-950/90 shadow-sm shadow-black/30">
@@ -620,6 +641,17 @@ function GameHeader({
             </span>
             <Badge tone="green">Room {snapshot.game.room_code}</Badge>
             <Badge>{snapshot.game.phase.toUpperCase()}</Badge>
+            {finalSeasonActive ? (
+              <Badge tone="amber" title="Letzte Saison des Spiels">
+                FINALE SAISON {seasonNumber}
+              </Badge>
+            ) : null}
+            {snapshot.game.settings.final_season_number && !finalSeasonActive && snapshot.game.phase !== "completed" ? (
+              <Badge tone="neutral" title="Finale Saison wurde ausgeloest">
+                Finale ab S{snapshot.game.settings.final_season_number}
+              </Badge>
+            ) : null}
+            {snapshot.game.phase === "completed" ? <Badge tone="green">Spiel beendet</Badge> : null}
             <Badge>{phaseDoneCount}/{phaseDoneTotal} fertig</Badge>
             <Badge>Save v{snapshot.game.save_version ?? 1}</Badge>
             <Badge tone={snapshot.game.settings.continental_cup_enabled === false ? "neutral" : "blue"}>
@@ -688,7 +720,16 @@ function GameHeader({
               </Button>
             </form>
           ) : null}
-          {snapshot.game.phase !== "lobby" && ownMember ? (
+          {snapshot.game.phase === "completed" ? (
+            <Link
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-lime-300 px-4 text-sm font-medium text-zinc-950 transition hover:bg-lime-200"
+              href={`/games/${snapshot.game.room_code}?view=game_end`}
+            >
+              <Crown size={16} aria-hidden />
+              Spielende
+            </Link>
+          ) : null}
+          {snapshot.game.phase !== "lobby" && snapshot.game.phase !== "completed" && ownMember ? (
             <form action={setPhaseDoneAction}>
               <input name="game_id" type="hidden" value={snapshot.game.id} />
               <input name="room_code" type="hidden" value={snapshot.game.room_code} />
@@ -698,7 +739,7 @@ function GameHeader({
               </Button>
             </form>
           ) : null}
-          {snapshot.game.phase !== "lobby" && isHost ? (
+          {snapshot.game.phase !== "lobby" && snapshot.game.phase !== "completed" && isHost ? (
             <form action={advancePhaseAction}>
               <input name="game_id" type="hidden" value={snapshot.game.id} />
               <input name="room_code" type="hidden" value={snapshot.game.room_code} />
@@ -918,7 +959,7 @@ function SeasonEndSummary({
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-xs font-medium uppercase text-zinc-500">Managerwertung</p>
-              <p className="mt-1 text-sm text-zinc-400">Top 3 aus Kadersternen + Saisonpunkten.</p>
+              <p className="mt-1 text-sm text-zinc-400">Top 3 nach Siegpunkten aus Spielen gegen andere Manager.</p>
             </div>
             <Badge>Top 3</Badge>
           </div>
@@ -940,7 +981,7 @@ function SeasonEndSummary({
                   <div className="min-w-0">
                     <p className="truncate font-semibold text-zinc-50">{standing.club_name}</p>
                     <p className="mt-0.5 text-xs text-zinc-500">
-                      {standing.squad_stars} Kader + {standing.season_match_points} Saisonpunkte
+                      {standing.season_match_points} Siegpunkte (Manager-Spiele)
                     </p>
                   </div>
                 </div>
@@ -1843,6 +1884,8 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
   const isReleaseMode = saleCheck.ok && saleCheck.mode === "release";
   const transfersBlocked = isOffseasonTransfersBlocked(overview.pending_effects ?? [], snapshot.game.phase);
   const managerDeparturesCount = transferMarket?.manager_departures_count ?? 0;
+  const seasonNumber = Number(snapshot.game.settings?.seasonNumber ?? 1);
+  const poachingEnabled = isOffseason && !transfersBlocked && !transferMarket?.poach_setup_error;
 
   return (
     <div className="space-y-4">
@@ -1916,6 +1959,7 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
               const salePayout = squadOverCapacity ? 0 : getCardScoutingMoney(card.market);
               const purchasePrice = owned.purchase_price ?? null;
               const poolProfit = purchasePrice != null ? salePayout - purchasePrice : null;
+              const isUnavailable = isPlayerUnavailableForSeason(seasonNumber, owned.unavailable_until_season);
               const poolProfitLabel =
                 poolProfit == null ? "—" : `${poolProfit > 0 ? "+" : ""}${formatMoney(poolProfit)}`;
               const poolProfitClassName =
@@ -1931,7 +1975,7 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
 
               return (
                 <div className="grid gap-3 rounded-lg border border-zinc-800 bg-zinc-900/55 p-3 sm:grid-cols-[132px_minmax(0,1fr)]" key={owned.id}>
-                  <PlayerCard disabled={owned.injured} player={card} showArchetypes={snapshot.game.settings.archetypes_enabled !== false} variant="draft" />
+                  <PlayerCard disabled={owned.injured || isUnavailable} player={card} showArchetypes={snapshot.game.settings.archetypes_enabled !== false} variant="draft" />
                   <div className="flex min-w-0 flex-col justify-between gap-3">
                     <div>
                       <div className="flex items-start justify-between gap-3">
@@ -1939,7 +1983,9 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
                           <p className="truncate text-base font-semibold text-zinc-50">{getClubPlayerDisplayName(owned)}</p>
                           <p className="mt-1 text-sm text-zinc-400">{positionLabel}</p>
                         </div>
-                        <Badge tone={owned.injured ? "red" : "green"}>{owned.injured ? "verletzt" : "fit"}</Badge>
+                        <Badge tone={isUnavailable ? "amber" : owned.injured ? "red" : "green"}>
+                          {isUnavailable ? "gesperrt (Saison)" : owned.injured ? "verletzt" : "fit"}
+                        </Badge>
                       </div>
                       <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-zinc-400 sm:grid-cols-3">
                         <SmallInfo label="Staerke" value={`${formatStars(currentStars)} / ${formatStars(maxStars)}`} />
@@ -2013,6 +2059,193 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
           )}
         </Panel>
       </div>
+
+      {transferMarket?.poach_setup_error ? (
+        <Panel className="border-amber-700 bg-amber-950/25">
+          <PanelHeader>
+            <div>
+              <PanelTitle>Abwerbungen nicht bereit</PanelTitle>
+              <PanelDescription>{transferMarket.poach_setup_error}</PanelDescription>
+            </div>
+            <Target size={18} className="text-amber-200" aria-hidden />
+          </PanelHeader>
+        </Panel>
+      ) : (
+        <>
+          <Panel className="border-zinc-800 bg-zinc-950/75" id="poaching">
+            <PanelHeader>
+              <div>
+                <PanelTitle>Abwerbung unzufriedener Spieler</PanelTitle>
+                <PanelDescription>
+                  Nur in der Offseason. Dein Vereinsstatus ({transferMarket?.attractiveness_stars ?? ownClub.attractiveness_stars ?? 3} Sterne) erlaubt Abwerbungen von Spielern, die beim Gegner ueber seinem Status liegen.
+                </PanelDescription>
+              </div>
+              <Target size={18} className="text-[var(--club-color)]" aria-hidden />
+            </PanelHeader>
+            {!poachingEnabled ? (
+              <div className="rounded-md border border-dashed border-zinc-800 bg-zinc-900/45 p-4 text-sm text-zinc-500">
+                Abwerbungen sind aktuell nicht moeglich.
+              </div>
+            ) : !transferMarket || transferMarket.poachable_clubs.length === 0 ? (
+              <div className="rounded-md border border-dashed border-zinc-800 bg-zinc-900/45 p-4 text-sm text-zinc-500">
+                Aktuell keine abwerbbaren Spieler bei anderen Managern.
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {transferMarket.poachable_clubs.map((entry) => (
+                  <div className="rounded-md border border-zinc-800 bg-zinc-900/55 p-3" key={entry.club.id}>
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="font-semibold text-zinc-100">{entry.club.club_name}</p>
+                        <p className="text-xs text-zinc-500">{entry.club.manager_name} · Status {entry.attractiveness_stars} Sterne</p>
+                      </div>
+                    </div>
+                    <div className="grid gap-3 lg:grid-cols-2">
+                      {entry.players.map((player) => (
+                        <div className="rounded-md border border-zinc-800 bg-zinc-950/70 p-3" key={player.id}>
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="font-medium text-zinc-100">{getClubPlayerDisplayName(player)}</p>
+                              <p className="text-xs text-zinc-500">{formatStars(Number(player.current_stars))} Sterne</p>
+                            </div>
+                          </div>
+                          <form action={createPoachRequestAction} className="mt-3 flex flex-wrap items-end gap-2">
+                            <input name="game_id" type="hidden" value={snapshot.game.id} />
+                            <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                            <input name="target_club_player_id" type="hidden" value={player.id} />
+                            <label className="text-xs text-zinc-400">
+                              Gebot (Mio.)
+                              <input
+                                className="mt-1 block w-24 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-100"
+                                defaultValue={2}
+                                min={1}
+                                name="cash_amount_millions"
+                                step={1}
+                                type="number"
+                              />
+                            </label>
+                            <Button size="sm" type="submit" variant="outline">
+                              Abwerben
+                            </Button>
+                          </form>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Panel>
+
+          <div className="grid gap-4 xl:grid-cols-2">
+            <Panel className="border-zinc-800 bg-zinc-950/75" id="poach-incoming">
+              <PanelHeader>
+                <div>
+                  <PanelTitle>Eingehende Abwerbungen</PanelTitle>
+                  <PanelDescription>Ablehnung sperrt den Spieler fuer die kommende Saison auf der Bank.</PanelDescription>
+                </div>
+                <Gavel size={18} className="text-[var(--club-color)]" aria-hidden />
+              </PanelHeader>
+              {!transferMarket || transferMarket.incoming_poach_requests.length === 0 ? (
+                <div className="rounded-md border border-dashed border-zinc-800 bg-zinc-900/45 p-4 text-sm text-zinc-500">
+                  Keine eingehenden Abwerbungen.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {transferMarket.incoming_poach_requests.map((request) => (
+                    <PoachRequestCard direction="incoming" key={request.id} request={request} snapshot={snapshot} />
+                  ))}
+                </div>
+              )}
+            </Panel>
+            <Panel className="border-zinc-800 bg-zinc-950/75" id="poach-outgoing">
+              <PanelHeader>
+                <div>
+                  <PanelTitle>Ausgehende Abwerbungen</PanelTitle>
+                  <PanelDescription>Offene Anfragen an schwaecher eingestufte Vereine.</PanelDescription>
+                </div>
+                <Target size={18} className="text-[var(--club-color)]" aria-hidden />
+              </PanelHeader>
+              {!transferMarket || transferMarket.outgoing_poach_requests.length === 0 ? (
+                <div className="rounded-md border border-dashed border-zinc-800 bg-zinc-900/45 p-4 text-sm text-zinc-500">
+                  Keine ausgehenden Abwerbungen.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {transferMarket.outgoing_poach_requests.map((request) => (
+                    <PoachRequestCard direction="outgoing" key={request.id} request={request} snapshot={snapshot} />
+                  ))}
+                </div>
+              )}
+            </Panel>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function PoachRequestCard({
+  direction,
+  request,
+  snapshot,
+}: {
+  direction: "incoming" | "outgoing";
+  request: PoachRequestSnapshot;
+  snapshot: LobbySnapshot;
+}) {
+  const targetPlayer = request.target_club_player;
+  const targetName = targetPlayer ? getClubPlayerDisplayName(targetPlayer) : "Spieler";
+  const counterparty = direction === "incoming" ? request.from_club.club_name : request.to_club.club_name;
+
+  return (
+    <div className="rounded-md border border-zinc-800 bg-zinc-900/60 p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="font-semibold text-zinc-100">{targetName}</p>
+          <p className="mt-1 text-sm text-zinc-400">
+            {direction === "incoming" ? "Anfrage von" : "Anfrage an"} {counterparty}
+          </p>
+          <p className="mt-1 text-sm text-zinc-500">Gebot: {formatMoney(request.cash_amount)}</p>
+        </div>
+        {targetPlayer ? (
+          <Badge tone="blue">{formatStars(Number(targetPlayer.current_stars))} Sterne</Badge>
+        ) : null}
+      </div>
+      {direction === "incoming" ? (
+        <div className="mt-3 space-y-2">
+          <p className="text-xs text-amber-300">
+            Bei Ablehnung sitzt der Spieler die kommende Saison gesperrt auf der Bank.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <form action={acceptPoachRequestAction}>
+              <input name="game_id" type="hidden" value={snapshot.game.id} />
+              <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+              <input name="request_id" type="hidden" value={request.id} />
+              <Button size="sm" type="submit" variant="primary">
+                Annehmen
+              </Button>
+            </form>
+            <form action={declinePoachRequestAction}>
+              <input name="game_id" type="hidden" value={snapshot.game.id} />
+              <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+              <input name="request_id" type="hidden" value={request.id} />
+              <Button size="sm" type="submit" variant="outline">
+                Ablehnen
+              </Button>
+            </form>
+          </div>
+        </div>
+      ) : (
+        <form action={cancelPoachRequestAction} className="mt-3">
+          <input name="game_id" type="hidden" value={snapshot.game.id} />
+          <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+          <input name="request_id" type="hidden" value={request.id} />
+          <Button size="sm" type="submit" variant="outline">
+            Zurueckziehen
+          </Button>
+        </form>
+      )}
     </div>
   );
 }
@@ -2552,7 +2785,13 @@ function LineupView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; sna
     );
   }
 
-  const lineupCards = getSortedSquadPlayers(overview.squad).map(mapOwnedPlayerToLineupCardData);
+  const lineupCards = getSortedSquadPlayers(overview.squad).map((owned) => {
+    const seasonNumber = Number(snapshot.game.settings?.seasonNumber ?? 1);
+    return {
+      ...mapOwnedPlayerToLineupCardData(owned),
+      unavailable: isPlayerUnavailableForSeason(seasonNumber, owned.unavailable_until_season),
+    };
+  });
   const hasGoalkeeper = lineupCards.some((card) => card.positions.includes("GK"));
   const staffEffects = (overview.staff ?? []).flatMap(
     (s) => s.card.effects as Array<{ type: string; zone?: string; stars?: number }>,
@@ -2816,7 +3055,7 @@ function FacilityUpgradePanel({
   const investmentClubStatus = resolveClubInvestmentStatus(
     ownClub,
     seasonNumber,
-    managerStanding?.season_score,
+    managerStanding?.stage_score,
   );
 
   const LEVELS = [1, 2, 3, 4] as const;
@@ -3598,12 +3837,25 @@ function SquadPanel({
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {sortedSquad.map((owned) => {
             const card = mapOwnedPlayerToCardData(owned);
+            const seasonNumber = Number(snapshot?.game.settings?.seasonNumber ?? 1);
+            const isUnavailable = isPlayerUnavailableForSeason(seasonNumber, owned.unavailable_until_season);
 
             return (
               <div className="rounded-lg border border-zinc-800 bg-zinc-900/45 p-2" key={owned.id}>
-                <PlayerCard disabled={owned.injured} player={card} showArchetypes={archetypesEnabled} variant="draft" />
+                <PlayerCard disabled={owned.injured || isUnavailable} player={card} showArchetypes={archetypesEnabled} variant="draft" />
                 <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-zinc-400">
-                  <SmallInfo label="Status" value={owned.current_zone === "bench" ? "Nicht aufgestellt" : "Aufgestellt"} />
+                  <SmallInfo
+                    label="Status"
+                    value={
+                      isUnavailable
+                        ? "Gesperrt (Saison)"
+                        : owned.injured
+                          ? "Verletzt"
+                          : owned.current_zone === "bench"
+                            ? "Nicht aufgestellt"
+                            : "Aufgestellt"
+                    }
+                  />
                   <SmallInfo label="Zone" value={owned.current_zone} />
                 </div>
                 {ownClub && snapshot ? (
@@ -4462,7 +4714,7 @@ function TableView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
         club_color: clubColorById.get(s.club_id) ?? null,
         club_id: s.club_id,
         club_name: s.club_name,
-        season_score: s.season_score,
+        season_score: s.stage_score,
       }))
     : snapshot.clubs.map((c) => ({
         club_color: c.club_color ?? null,
@@ -4548,7 +4800,7 @@ function TableView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
             <PanelTitle>Superclub-Positionsboard</PanelTitle>
             <PanelDescription>
               {hasActiveSeason
-                ? "Position = Kadersterne + Saisonpunkte. Zu Beginn jeder Saison startet man bei den Kadernsternen."
+                ? "Position = Kadersterne + Siegpunkte aus Spielen gegen andere Manager."
                 : "Noch keine laufende Saison. Positionen basieren auf den aktuellen Kadernsternen."}
             </PanelDescription>
           </div>
@@ -4695,7 +4947,9 @@ function TableView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
             <PanelHeader>
               <div>
                 <PanelTitle>Managerwertung</PanelTitle>
-                <PanelDescription>Kernwertung: Kadersterne plus erspielte Saisonpunkte.</PanelDescription>
+                <PanelDescription>
+                  Rangliste nach Siegpunkten (nur Manager-Spiele). Status und Attraktivitaet aus Kadersterne + Siegpunkte.
+                </PanelDescription>
               </div>
               <Crown size={18} className="text-[var(--club-color)]" aria-hidden />
             </PanelHeader>
@@ -4706,8 +4960,8 @@ function TableView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
                     <th className="py-2 pr-3">#</th>
                     <th className="py-2 pr-3">Club</th>
                     <th className="py-2 pr-3">Kader</th>
-                    <th className="py-2 pr-3">Saisonpkt</th>
-                    <th className="py-2 pr-3">Score</th>
+                    <th className="py-2 pr-3">Siegpunkte</th>
+                    <th className="py-2 pr-3">Stufen-Score</th>
                     <th className="py-2 pr-3">Status</th>
                     <th className="py-2 pr-3">Attraktivitaet</th>
                   </tr>
@@ -4719,7 +4973,7 @@ function TableView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
                       <td className="py-3 pr-3 font-semibold text-zinc-50">{standing.club_name}</td>
                       <td className="py-3 pr-3">{formatStars(standing.squad_stars)}</td>
                       <td className="py-3 pr-3">{standing.season_match_points}</td>
-                      <td className="py-3 pr-3 text-base font-bold text-zinc-50">{standing.season_score}</td>
+                      <td className="py-3 pr-3 text-base font-bold text-zinc-50">{standing.stage_score}</td>
                       <td className="py-3 pr-3">
                         <Badge tone="blue">{getClubStatusLabel(standing.status)}</Badge>
                       </td>
@@ -5023,6 +5277,10 @@ function renderView(
         snapshot={props.snapshot}
       />
     );
+  }
+
+  if (view === "game_end") {
+    return <GameEndView ownClub={props.ownClub} snapshot={props.snapshot} />;
   }
 
   return null;

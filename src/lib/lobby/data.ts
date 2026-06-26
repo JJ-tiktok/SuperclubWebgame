@@ -48,10 +48,11 @@ import type {
   StaffOfferSnapshot,
   TransferMarketSnapshot,
   TransferOfferSnapshot,
+  PoachRequestSnapshot,
   HallOfFameSnapshot,
   PrestigeSnapshot,
 } from "./types";
-import { calculateManagerScore, getManagerScoreBand, getPlacementReward, getStadiumIncome, getTrainingCapacity } from "@/lib/game/rules";
+import { calculateManagerScore, calculateManagerStageScore, calculateManagerStandingScore, getManagerScoreBand, getPlacementReward, getStadiumIncome, getTrainingCapacity } from "@/lib/game/rules";
 import { getDeadlineAuctionCount } from "@/lib/lobby/deadline";
 import {
   computeOffseasonScoutingBaseCapacity,
@@ -90,10 +91,11 @@ import {
 import { isFinalSeason } from "@/lib/lobby/phases";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
 import { getTransferOfferCreatorClubId, getTransferOfferResponderClubId } from "@/lib/lobby/transfers";
+import { filterPoachablePlayersForBuyer } from "@/lib/lobby/poach";
 import { getClubPlayerDisplayName, getClubPlayerDisplayNameFromRow } from "@/lib/lobby/player-names";
 import { normalizeSeasonsAtClub } from "@/lib/lobby/player-tenure";
 
-const CLUB_PLAYER_SNAPSHOT_SELECT = `id, club_id, player_id, custom_name, current_stars, current_zone, injured, lineup_slot, acquired_at, seasons_at_club, stars_at_acquisition, purchase_price, player:players(${DRAFT_PLAYER_SELECT})`;
+const CLUB_PLAYER_SNAPSHOT_SELECT = `id, club_id, player_id, custom_name, current_stars, current_zone, injured, lineup_slot, acquired_at, seasons_at_club, stars_at_acquisition, unavailable_until_season, purchase_price, player:players(${DRAFT_PLAYER_SELECT})`;
 
 const GAME_SELECT_LEGACY =
   "id, room_code, phase, host_clerk_user_id, current_turn_club_id, settings, save_name, save_status, save_version, last_saved_at, last_saved_by_clerk_user_id, created_at, updated_at";
@@ -733,6 +735,14 @@ type TransferOfferRow = Omit<TransferOfferSnapshot, "cash_amount" | "from_club" 
   to_club: Pick<LobbyClub, "club_color" | "club_name" | "id"> | null;
 };
 
+type PoachRequestRow = Omit<PoachRequestSnapshot, "cash_amount" | "from_club" | "status" | "target_club_player" | "to_club"> & {
+  cash_amount: number | string;
+  from_club: Pick<LobbyClub, "club_color" | "club_name" | "id" | "manager_name"> | null;
+  status: string;
+  target_club_player?: ClubPlayerSnapshot | null;
+  to_club: Pick<LobbyClub, "club_color" | "club_name" | "id" | "manager_name"> | null;
+};
+
 async function getClubSquadsSnapshot(game: LobbyGame, clubs: LobbyClub[]): Promise<ClubSquadSnapshot[] | null> {
   const supabase = createSupabaseServiceClient();
 
@@ -986,10 +996,18 @@ async function getTransferMarketSnapshot(
     target_club_player:club_players!transfer_offers_target_club_player_id_fkey(id, club_id, player_id, custom_name, current_stars, current_zone, injured, lineup_slot, acquired_at, seasons_at_club, stars_at_acquisition, player:players(${DRAFT_PLAYER_SELECT})),
     offered_club_player:club_players!transfer_offers_offered_club_player_id_fkey(id, club_id, player_id, custom_name, current_stars, current_zone, injured, lineup_slot, acquired_at, seasons_at_club, stars_at_acquisition, player:players(${DRAFT_PLAYER_SELECT}))`;
 
+  const poachRequestSelect = `id, game_id, season_number, from_club_id, to_club_id, target_club_player_id, target_player_id,
+    cash_amount, status, created_at, resolved_at,
+    from_club:clubs!poach_requests_from_club_id_fkey(id, club_name, club_color, manager_name),
+    to_club:clubs!poach_requests_to_club_id_fkey(id, club_name, club_color, manager_name),
+    target_club_player:club_players!poach_requests_target_club_player_id_fkey(${CLUB_PLAYER_SNAPSHOT_SELECT})`;
+
   const [
     { data: otherPlayers, error: otherPlayersError },
     { data: offerRows, error: offersError },
     { data: acceptedRows, error: acceptedError },
+    poachRequestsResult,
+    poachHistoryResult,
   ] = await Promise.all([
     otherClubIds.length
       ? supabase
@@ -1016,14 +1034,34 @@ async function getTransferMarketSnapshot(
       .eq("status", "accepted")
       .or(`from_club_id.eq.${ownClub.id},to_club_id.eq.${ownClub.id}`)
       .returns<Array<{ from_club_id: string; offered_club_player_id: string | null; to_club_id: string }>>(),
+    supabase
+      .from("poach_requests")
+      .select(poachRequestSelect)
+      .eq("game_id", game.id)
+      .eq("season_number", seasonNumber)
+      .in("status", ["open", "accepted", "declined"])
+      .or(`from_club_id.eq.${ownClub.id},to_club_id.eq.${ownClub.id}`)
+      .order("created_at", { ascending: false })
+      .returns<PoachRequestRow[]>(),
+    supabase
+      .from("poach_requests")
+      .select("target_club_player_id, season_number")
+      .eq("game_id", game.id)
+      .eq("season_number", seasonNumber - 1)
+      .in("status", ["open", "accepted", "declined"])
+      .returns<Array<{ season_number: number; target_club_player_id: string }>>(),
   ]);
 
   if (isUndefinedTableError(offersError) || isUndefinedTableError(acceptedError)) {
     return {
+      attractiveness_stars: Number(ownClub.attractiveness_stars ?? 3),
       incoming_offers: [],
+      incoming_poach_requests: [],
       manager_departures_count: 0,
       other_clubs: [],
       outgoing_offers: [],
+      outgoing_poach_requests: [],
+      poachable_clubs: [],
       setup_error: "Manager-Transfers fehlen noch in Supabase. Bitte `supabase/manager_transfers_upgrade.sql` ausfuehren.",
     };
   }
@@ -1058,8 +1096,59 @@ async function getTransferMarketSnapshot(
     return count;
   }, 0);
 
+  const poachSetupError =
+    isUndefinedTableError(poachRequestsResult.error) || isUndefinedTableError(poachHistoryResult.error)
+      ? "Abwerbungen fehlen noch in Supabase. Bitte `supabase/poach_requests_upgrade.sql` ausfuehren."
+      : undefined;
+
+  if (poachRequestsResult.error && !isUndefinedTableError(poachRequestsResult.error)) {
+    throw poachRequestsResult.error;
+  }
+
+  if (poachHistoryResult.error && !isUndefinedTableError(poachHistoryResult.error)) {
+    throw poachHistoryResult.error;
+  }
+  const poachedLastSeasonIds = new Set(
+    (poachHistoryResult.data ?? []).map((row) => row.target_club_player_id),
+  );
+  const buyerAttractiveness = Number(ownClub.attractiveness_stars ?? 3);
+  const poachRequests = poachSetupError ? [] : (poachRequestsResult.data ?? []).map(normalizePoachRequestRow);
+  const poachableClubs = clubs
+    .filter((club) => club.id !== ownClub.id)
+    .map((club) => {
+      const sellerAttractiveness = Number(club.attractiveness_stars ?? 3);
+      const squad = otherPlayersByClubId.get(club.id) ?? [];
+      const players = filterPoachablePlayersForBuyer({
+        buyerAttractivenessStars: buyerAttractiveness,
+        currentSeason: seasonNumber,
+        players: squad.map((player) => ({
+          club_player_id: player.id,
+          current_stars: Number(player.current_stars),
+          unavailable_until_season: player.unavailable_until_season,
+          was_poached_last_season: poachedLastSeasonIds.has(player.id),
+        })),
+        sellerAttractivenessStars: sellerAttractiveness,
+      })
+        .map((candidate) => squad.find((player) => player.id === candidate.club_player_id))
+        .filter((player): player is ClubPlayerSnapshot => Boolean(player));
+
+      return {
+        attractiveness_stars: sellerAttractiveness,
+        club: {
+          club_color: club.club_color,
+          club_name: club.club_name,
+          id: club.id,
+          manager_name: club.manager_name,
+        },
+        players,
+      };
+    })
+    .filter((entry) => entry.players.length > 0);
+
   return {
+    attractiveness_stars: buyerAttractiveness,
     incoming_offers: offers.filter((offer) => getTransferOfferResponderClubId(offer) === ownClub.id),
+    incoming_poach_requests: poachRequests.filter((request) => request.to_club_id === ownClub.id && request.status === "open"),
     manager_departures_count: managerDeparturesCount,
     other_clubs: clubs
       .filter((club) => club.id !== ownClub.id)
@@ -1073,6 +1162,9 @@ async function getTransferMarketSnapshot(
         squad: otherPlayersByClubId.get(club.id) ?? [],
       })),
     outgoing_offers: offers.filter((offer) => getTransferOfferCreatorClubId(offer) === ownClub.id),
+    outgoing_poach_requests: poachRequests.filter((request) => request.from_club_id === ownClub.id && request.status === "open"),
+    poachable_clubs: poachableClubs,
+    poach_setup_error: poachSetupError,
   };
 }
 
@@ -1094,6 +1186,20 @@ function normalizeTransferOfferStatus(status: string): TransferOfferSnapshot["st
   }
 
   return "open";
+}
+
+function normalizePoachRequestRow(row: PoachRequestRow): PoachRequestSnapshot {
+  const status =
+    row.status === "accepted" || row.status === "declined" || row.status === "cancelled" ? row.status : "open";
+
+  return {
+    ...row,
+    cash_amount: Number(row.cash_amount ?? 0),
+    from_club: row.from_club ?? { club_color: null, club_name: "Club", id: row.from_club_id, manager_name: "Manager" },
+    status,
+    target_club_player: row.target_club_player ?? null,
+    to_club: row.to_club ?? { club_color: null, club_name: "Club", id: row.to_club_id, manager_name: "Manager" },
+  };
 }
 
 function normalizePurchasePrice(value: unknown): number | null {
@@ -1241,7 +1347,7 @@ async function getSeasonSnapshot(game: LobbyGame, viewerClub?: LobbyClub): Promi
     supabase
       .from("season_standings")
       .select(
-        `participant_id, season_number, played, wins, draws, losses, match_points, third_points_for, third_points_against,
+        `participant_id, season_number, played, wins, draws, losses, match_points, manager_match_points, third_points_for, third_points_against,
         fixture_points_for, fixture_points_against, rank,
         participant:season_participants(id, game_id, season_number, kind, club_id, cpu_team_id, display_name)`,
       )
@@ -1506,17 +1612,20 @@ async function getManagerStandings(game: LobbyGame, standings: SeasonStandingSna
       const clubId = standing.participant.club_id as string;
       const club = clubsById.get(clubId);
       const squadStars = Number(club?.squad_stars ?? starsByClubId.get(clubId) ?? 0);
-      const seasonScore = calculateManagerScore(squadStars, standing.match_points);
-      const band = getManagerScoreBand(seasonScore);
+      const managerMatchPoints = Number(standing.manager_match_points ?? standing.match_points ?? 0);
+      const seasonScore = calculateManagerStandingScore(managerMatchPoints);
+      const stageScore = calculateManagerStageScore(squadStars, managerMatchPoints);
+      const band = getManagerScoreBand(stageScore);
 
       return {
         attractiveness_stars: band.attractivenessStars,
         club_id: clubId,
         club_name: club?.club_name ?? standing.participant.display_name,
         rank: Number(club?.season_rank ?? 1),
-        season_match_points: Number(standing.match_points ?? 0),
+        season_match_points: managerMatchPoints,
         season_score: seasonScore,
         squad_stars: squadStars,
+        stage_score: stageScore,
         status: band.status,
       };
     })

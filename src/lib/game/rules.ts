@@ -228,6 +228,20 @@ export function calculateManagerScore(squadStars: number, seasonMatchPoints: num
   return Math.trunc(Number(squadStars) + Number(seasonMatchPoints));
 }
 
+/** Live ranking score for the manager table: only human-vs-human match points. */
+export function calculateManagerStandingScore(managerMatchPoints: number) {
+  return Math.trunc(Number(managerMatchPoints));
+}
+
+/** Stage score for status, attractiveness and positions board: squad stars + manager match points. */
+export function calculateManagerStageScore(squadStars: number, managerMatchPoints: number) {
+  return calculateManagerScore(squadStars, managerMatchPoints);
+}
+
+export function isManagerVsManagerFixture(homeKind: string, awayKind: string) {
+  return homeKind === "human" && awayKind === "human";
+}
+
 export function getManagerScoreBand(score: number): ManagerScoreBand {
   const normalizedScore = Math.trunc(Number(score));
 

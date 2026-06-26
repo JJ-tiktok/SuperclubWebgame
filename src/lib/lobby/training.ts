@@ -7,6 +7,7 @@ export type TrainingEventMetadata = {
   dice_roll: number;
   game_phase: string;
   guaranteed_bonus_used: boolean;
+  nlz_guaranteed_used?: boolean;
   player_id: string;
   season_number: number;
   success: boolean;
@@ -21,6 +22,7 @@ export type TrainingEventSnapshot = {
   dice_roll: number;
   game_phase: string;
   guaranteed_bonus_used: boolean;
+  nlz_guaranteed_used: boolean;
   id: string;
   player_id: string;
   season_number: number;
@@ -55,6 +57,7 @@ export function resolveTrainingAttempt(params: {
   const beforeStars = Math.trunc(params.currentStars);
   const skillMax = Math.trunc(params.skillMax);
   const trainingLevel = Math.max(1, Math.min(4, Math.trunc(params.trainingLevel)));
+  const maxStarsPerPlayer = getTrainingCapacity(trainingLevel).maxStarsPerPlayer;
   const diceRoll = Math.max(1, Math.min(6, Math.trunc(params.diceRoll)));
 
   if (beforeStars >= skillMax) {
@@ -67,7 +70,7 @@ export function resolveTrainingAttempt(params: {
     };
   }
 
-  const trainingCap = Math.min(beforeStars + trainingLevel, skillMax);
+  const trainingCap = Math.min(beforeStars + maxStarsPerPlayer, skillMax);
   const rolledTarget = Math.min(diceRoll, trainingCap);
   const rollSucceeded = rolledTarget > beforeStars;
 
@@ -84,6 +87,73 @@ export function resolveTrainingAttempt(params: {
     success: afterStars > beforeStars,
   };
 }
+
+/** NLZ-Akademie Level 3+: +1 Stern nur wenn der Wuerfelwurf keinen Fortschritt bringt. */
+export function applyNlzTrainingGuarantee(
+  resolution: TrainingResolution,
+  params: { enabled: boolean; skillMax: number },
+): TrainingResolution & { nlzGuaranteedUsed: boolean } {
+  if (!params.enabled || resolution.afterStars > resolution.beforeStars) {
+    return { ...resolution, nlzGuaranteedUsed: false };
+  }
+
+  const skillMax = Math.trunc(params.skillMax);
+  const nlzAfter = Math.min(resolution.beforeStars + 1, skillMax);
+
+  return {
+    ...resolution,
+    afterStars: nlzAfter,
+    nlzGuaranteedUsed: nlzAfter > resolution.beforeStars,
+    success: nlzAfter > resolution.beforeStars,
+  };
+}
+
+export function filterTrainingEventsForWindow(
+  events: TrainingEventSnapshot[],
+  params: { gamePhase: string; seasonNumber: number },
+): TrainingEventSnapshot[] {
+  return events.filter(
+    (event) => event.season_number === params.seasonNumber && event.game_phase === params.gamePhase,
+  );
+}
+
+export type TrainingEventPresentation = {
+  badgeTone: "amber" | "green" | "red";
+  detailSuffix: string;
+};
+
+/** Log-Zeile: Wuerfel-Erfolg vs. Level-4-Bonus vs. NLZ-Garantie unterscheiden. */
+export function getTrainingEventPresentation(event: TrainingEventPresentationInput): TrainingEventPresentation {
+  const beforeStars = Math.trunc(event.before_stars);
+  const afterStars = Math.trunc(event.after_stars);
+  const diceRoll = Math.trunc(event.dice_roll);
+  const improved = afterStars > beforeStars;
+
+  if (!improved) {
+    return { badgeTone: "red", detailSuffix: "" };
+  }
+
+  if (event.guaranteed_bonus_used) {
+    return { badgeTone: "amber", detailSuffix: " inkl. Bonus" };
+  }
+
+  if (event.nlz_guaranteed_used || event.nlzOrigin) {
+    return { badgeTone: "amber", detailSuffix: " inkl. NLZ-Garantie" };
+  }
+
+  if (diceRoll > beforeStars) {
+    return { badgeTone: "green", detailSuffix: "" };
+  }
+
+  return { badgeTone: "amber", detailSuffix: " inkl. Sonderregel" };
+}
+
+type TrainingEventPresentationInput = Pick<
+  TrainingEventSnapshot,
+  "after_stars" | "before_stars" | "dice_roll" | "guaranteed_bonus_used" | "nlz_guaranteed_used"
+> & {
+  nlzOrigin?: boolean;
+};
 
 export function getTrainingStatus(params: {
   events: TrainingEventSnapshot[];
@@ -155,6 +225,7 @@ export function parseTrainingEvent(row: {
     dice_roll: Number(metadata.dice_roll ?? 0),
     game_phase: typeof metadata.game_phase === "string" ? metadata.game_phase : "",
     guaranteed_bonus_used: Boolean(metadata.guaranteed_bonus_used),
+    nlz_guaranteed_used: Boolean(metadata.nlz_guaranteed_used),
     id: row.id,
     player_id: playerId,
     season_number: Number(metadata.season_number ?? 1),

@@ -11,6 +11,8 @@ export const DEFAULT_LOBBY_SETTINGS: LobbySettings = {
   continental_cup_enabled: true,
   sponsoring_enabled: true,
   archetypes_enabled: true,
+  prestige_enabled: true,
+  prestige_target: 100,
 };
 
 export function generateRoomCode(random = Math.random) {
@@ -72,6 +74,10 @@ export function canStartLobby(game: Pick<LobbyGame, "phase" | "host_clerk_user_i
     return { ok: false, error: "Alle Clubs muessen bereit sein." } as const;
   }
 
+  if (clubs.some((club) => !club.philosophy_id)) {
+    return { ok: false, error: "Alle Manager muessen eine Vereinsphilosophie waehlen." } as const;
+  }
+
   return { ok: true } as const;
 }
 
@@ -105,6 +111,11 @@ export function parseLobbySettings(input: Partial<Record<string, FormDataEntryVa
     input.archetypes_enabled,
     DEFAULT_LOBBY_SETTINGS.archetypes_enabled ?? true,
   );
+  const prestigeEnabled = parseBooleanSetting(
+    input.prestige_enabled,
+    DEFAULT_LOBBY_SETTINGS.prestige_enabled ?? true,
+  );
+  const prestigeTargetRaw = Number(input.prestige_target ?? DEFAULT_LOBBY_SETTINGS.prestige_target ?? 100);
   const cpuTeamIdsRaw = input.cpu_team_ids;
   let cpu_team_ids: string[] | undefined;
   if (typeof cpuTeamIdsRaw === "string" && cpuTeamIdsRaw.trim()) {
@@ -125,6 +136,11 @@ export function parseLobbySettings(input: Partial<Record<string, FormDataEntryVa
     continental_cup_enabled: continentalCupEnabled,
     sponsoring_enabled: sponsoringEnabled,
     archetypes_enabled: archetypesEnabled,
+    prestige_enabled: prestigeEnabled,
+    prestige_target:
+      Number.isFinite(prestigeTargetRaw) && prestigeTargetRaw > 0
+        ? Math.trunc(prestigeTargetRaw)
+        : (DEFAULT_LOBBY_SETTINGS.prestige_target ?? 100),
   } satisfies LobbySettings;
 
   if (cpu_team_ids && cpu_team_ids.length > 0) {

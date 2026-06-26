@@ -22,6 +22,7 @@ import {
   LineChart,
   ListOrdered,
   MapIcon,
+  Medal,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
@@ -114,6 +115,8 @@ import { ContinentalView } from "@/components/game/continental/continental-view"
 import { OpponentIntelPanel } from "@/components/game/opponent-intel-panel";
 import { PlayerHighlightsPanel } from "@/components/game/player-highlights-panel";
 import { HallOfFameView } from "@/components/game/hall-of-fame-view";
+import { PrestigeView } from "@/components/game/prestige-view";
+import { LobbySetupView } from "@/components/lobby/lobby-setup-view";
 import {
   canUpgradeEndgameFacility,
   ENDGAME_FACILITY_LABELS,
@@ -164,6 +167,7 @@ import { canUpgradeFacility, getStaffRecruitBlockReason, getStaffRecruitHint, ge
 import { isOffseasonPendingScopeActive } from "@/lib/lobby/offseason-pending-effects";
 import { calculateLineupPower, getCaptainBoostExtra } from "@/lib/lobby/lineup-power";
 import { getPhaseLabel, isInvestmentPhase } from "@/lib/lobby/phases";
+import { isQualifiedTransferProfit } from "@/lib/lobby/prestige";
 import { buildSeasonEndSummaryModel } from "@/lib/lobby/season-end-summary";
 import { isClubStatusOverrideActive, resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
 import { getManagerScoreBand, getPlacementReward, getScoutingCapacity, getStadiumIncome, getTrainingCapacity, MAX_SQUAD_SIZE } from "@/lib/game/rules";
@@ -181,7 +185,9 @@ import {
   SCOUTING_PILES,
 } from "@/lib/lobby/scouting";
 import { getClubTheme } from "@/lib/lobby/theme";
-import { canTrainOwnedPlayer } from "@/lib/lobby/training";
+import { canTrainOwnedPlayer, getTrainingEventPresentation } from "@/lib/lobby/training";
+import { resolvePlayerSkillDisplayMax } from "@/lib/lobby/player-market";
+import { isNlzOriginPlayer } from "@/lib/lobby/youth-generator";
 import {
   getCardScoutingMoney,
   getCardTransferMoney,
@@ -229,6 +235,7 @@ const mainMenu: Array<{ id: GameView; label: string; icon: typeof Home }> = [
   { id: "matchday", label: "Spieltagsuebersicht", icon: CalendarDays },
   { id: "transfer", label: "Transfermarkt", icon: ShoppingCart },
   { id: "table", label: "Tabelle", icon: Trophy },
+  { id: "prestige", label: "Prestige", icon: Medal },
   { id: "hall_of_fame", label: "Hall of Fame", icon: Award },
   { id: "settings", label: "Settings", icon: Settings },
 ];
@@ -332,12 +339,16 @@ function GameDashboardContent({ activeView, currentUserId, snapshot }: GameDashb
           {snapshot.game.phase === "off_season" && ownClub ? (
             <OffSeasonChecklist ownClub={ownClub} snapshot={snapshot} />
           ) : null}
-          {renderView(view, {
-            currentTurnClub,
-            isHost,
-            ownClub,
-            snapshot,
-          })}
+          {snapshot.game.phase === "lobby" ? (
+            <LobbySetupView ownClub={ownClub} snapshot={snapshot} />
+          ) : (
+            renderView(view, {
+              currentTurnClub,
+              isHost,
+              ownClub,
+              snapshot,
+            })
+          )}
         </section>
       </div>
       <GameEventsDock
@@ -723,6 +734,38 @@ function DashboardView({
       <ViewGuidePanel roomCode={snapshot.game.room_code} view="dashboard" />
       {snapshot.game.phase === "season_end" ? (
         <SeasonEndSummary isHost={isHost} ownClub={ownClub} snapshot={snapshot} />
+      ) : null}
+      {snapshot.prestige?.game_completed ? (
+        <Panel className="border-amber-700/60 bg-amber-950/30">
+          <PanelHeader>
+            <div>
+              <PanelTitle className="text-amber-100">Spiel beendet</PanelTitle>
+              <PanelDescription>
+                {snapshot.prestige.winner_club_name
+                  ? `${snapshot.prestige.winner_club_name} gewinnt mit ${snapshot.prestige.clubs.find((club) => club.club_id === snapshot.prestige?.winner_club_id)?.prestige_points ?? 0} Prestige.`
+                  : "Das Spiel ist abgeschlossen."}
+              </PanelDescription>
+            </div>
+            <Crown size={18} className="text-amber-300" aria-hidden />
+          </PanelHeader>
+        </Panel>
+      ) : snapshot.prestige?.enabled ? (
+        <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+          <PanelHeader>
+            <div>
+              <PanelTitle>Prestige-Fortschritt</PanelTitle>
+              <PanelDescription>
+                Ziel: {snapshot.prestige.target} Prestige
+                {snapshot.prestige.is_final_season ? " — finale Saison laeuft" : ""}
+              </PanelDescription>
+            </div>
+            <Medal size={18} className="text-[var(--club-color)]" aria-hidden />
+          </PanelHeader>
+          <p className="text-sm text-zinc-300">
+            Dein Verein: {snapshot.prestige.clubs.find((club) => club.club_id === ownClub?.id)?.prestige_points ?? 0} /{" "}
+            {snapshot.prestige.target} Prestige
+          </p>
+        </Panel>
       ) : null}
 
       <Panel className="border-[var(--club-border)] bg-zinc-950/85">
@@ -1294,7 +1337,7 @@ function TrainingView({
           <div>
             <PanelTitle>Trainingszentrum</PanelTitle>
             <PanelDescription>
-              1W6 je Spieler: Wurf wird zum neuen Level, begrenzt durch Trainingslevel und Spielermaximum.
+              1W6 je Spieler: Bei Erfolg wird der Wurf zum neuen Sternwert (begrenzt durch max. Steigerung und Skill-Maximum).
             </PanelDescription>
           </div>
           <Dumbbell size={18} className="text-[var(--club-color)]" aria-hidden />
@@ -1374,7 +1417,12 @@ function TrainingView({
                 .map((owned) => {
                 const card = mapOwnedPlayerToCardData(owned);
                 const currentStars = Math.trunc(Number(owned.current_stars));
-                const skillMax = Math.trunc(Number(owned.player.skill_max ?? card.skill.max));
+                const skillMax = resolvePlayerSkillDisplayMax({
+                  baseStars: owned.player.base_stars,
+                  currentStars,
+                  potentialStars: owned.player.potential_stars,
+                  skillMax: owned.player.skill_max,
+                });
                 const check = canTrainOwnedPlayer({
                   alreadyTrained: trainedClubPlayerIds.has(owned.id),
                   attemptsUsed: status.attempts_used,
@@ -1422,6 +1470,10 @@ function TrainingView({
             ) : (
               latestEvents.map((event) => {
                 const owned = overview.squad.find((player) => player.id === event.club_player_id);
+                const presentation = getTrainingEventPresentation({
+                  ...event,
+                  nlzOrigin: owned ? isNlzOriginPlayer(owned.player.metadata) : false,
+                });
 
                 return (
                   <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3" key={event.id}>
@@ -1430,11 +1482,11 @@ function TrainingView({
                         <p className="text-sm font-semibold text-zinc-100">{owned ? getClubPlayerDisplayName(owned) : "Spieler"}</p>
                         <p className="mt-1 text-xs text-zinc-500">{formatSavedAt(event.created_at)}</p>
                       </div>
-                      <Badge tone={event.success ? "green" : "red"}>Wurf {event.dice_roll}</Badge>
+                      <Badge tone={presentation.badgeTone}>Wurf {event.dice_roll}</Badge>
                     </div>
                     <p className="mt-2 text-xs text-zinc-400">
                       {formatStars(event.before_stars)} {"->"} {formatStars(event.after_stars)} Sterne
-                      {event.guaranteed_bonus_used ? " inkl. Bonus" : ""}
+                      {presentation.detailSuffix}
                     </p>
                   </div>
                 );
@@ -1452,7 +1504,7 @@ function TrainingView({
               ))}
             </div>
             <p className="mt-3 text-xs leading-relaxed text-zinc-500">
-              Jeder Wurf hat 16,7 Prozent. Fortschritt entsteht nur, wenn der Wurf ueber dem aktuellen Sternwert liegt und weder Skill-Max noch Trainingscap blockieren.
+              Jeder Wurf hat 16,7 Prozent. Fortschritt entsteht nur, wenn der Wurf ueber dem aktuellen Sternwert liegt; der neue Wert ist der Wurf, begrenzt durch max. Steigerung (+Trainingslevel) und Skill-Maximum. Ab Trainingslevel 4 rettet ein Bonus den ersten Fehlwurf (+1 Stern). NLZ-Talente mit Akademie Level 3+ erhalten bei einem Fehlwurf ebenfalls +1 Stern.
             </p>
           </div>
         </Panel>
@@ -1862,6 +1914,20 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
               const currentStars = Number(owned.current_stars);
               const maxStars = Number(owned.player.skill_max ?? card.skill.max);
               const salePayout = squadOverCapacity ? 0 : getCardScoutingMoney(card.market);
+              const purchasePrice = owned.purchase_price ?? null;
+              const poolProfit = purchasePrice != null ? salePayout - purchasePrice : null;
+              const poolProfitLabel =
+                poolProfit == null ? "—" : `${poolProfit > 0 ? "+" : ""}${formatMoney(poolProfit)}`;
+              const poolProfitClassName =
+                poolProfit == null
+                  ? "text-zinc-500"
+                  : isQualifiedTransferProfit(salePayout, purchasePrice)
+                    ? "text-lime-300"
+                    : poolProfit > 0
+                      ? "text-emerald-300"
+                      : poolProfit < 0
+                        ? "text-red-400"
+                        : "text-zinc-500";
 
               return (
                 <div className="grid gap-3 rounded-lg border border-zinc-800 bg-zinc-900/55 p-3 sm:grid-cols-[132px_minmax(0,1fr)]" key={owned.id}>
@@ -1875,14 +1941,16 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
                         </div>
                         <Badge tone={owned.injured ? "red" : "green"}>{owned.injured ? "verletzt" : "fit"}</Badge>
                       </div>
-                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-zinc-400">
+                      <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-zinc-400 sm:grid-cols-3">
                         <SmallInfo label="Staerke" value={`${formatStars(currentStars)} / ${formatStars(maxStars)}`} />
                         <SmallInfo label="Zone" value={owned.current_zone} />
+                        <SmallInfo label="Kaufpreis" value={purchasePrice != null ? formatMoney(purchasePrice) : "—"} />
                         <SmallInfo label="Transfer Value" value={formatMoney(getCardTransferMoney(card.market))} />
                         <SmallInfo
                           label={squadOverCapacity ? "Entlassung" : "Scouting Value"}
                           value={squadOverCapacity ? formatMoney(0) : formatMoney(getCardScoutingMoney(card.market))}
                         />
+                        <SmallInfo label="Pot. Gewinn" value={poolProfitLabel} valueClassName={poolProfitClassName} />
                       </div>
                     </div>
                     <form action={sellClubPlayerAction}>
@@ -3756,6 +3824,7 @@ function ClubCardsPanel({
             items={overview.game_changers
               .filter((gc) => gc.card.category === "secret_weapon" && !gc.used_at)
               .map((gameChanger) => ({
+                id: gameChanger.id,
                 detail: gameChanger.card.description || formatEffects(gameChanger.card.effects),
                 meta: "Geheimwaffe",
                 title: gameChanger.card.display_name,
@@ -3826,7 +3895,13 @@ function StaffMarketView({
   );
 }
 
-function CardList({ empty, items }: { empty: string; items: Array<{ detail: string; meta: string; title: string }> }) {
+function CardList({
+  empty,
+  items,
+}: {
+  empty: string;
+  items: Array<{ detail: string; id: string; meta: string; title: string }>;
+}) {
   if (items.length === 0) {
     return <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-4 text-sm text-zinc-400">{empty}</div>;
   }
@@ -3834,7 +3909,7 @@ function CardList({ empty, items }: { empty: string; items: Array<{ detail: stri
   return (
     <div className="space-y-2">
       {items.map((item) => (
-        <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3" key={`${item.title}-${item.meta}`}>
+        <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3" key={item.id}>
           <div className="flex items-start justify-between gap-3">
             <p className="font-semibold text-zinc-100">{item.title}</p>
             <Badge>{item.meta}</Badge>
@@ -4937,6 +5012,17 @@ function renderView(
 
   if (view === "hall_of_fame") {
     return <HallOfFameView hallOfFame={props.snapshot.hall_of_fame} roomCode={props.snapshot.game.room_code} />;
+  }
+
+  if (view === "prestige") {
+    return (
+      <PrestigeView
+        ownClubId={props.ownClub?.id}
+        prestige={props.snapshot.prestige}
+        roomCode={props.snapshot.game.room_code}
+        snapshot={props.snapshot}
+      />
+    );
   }
 
   return null;

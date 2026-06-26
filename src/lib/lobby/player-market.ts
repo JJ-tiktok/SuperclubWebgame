@@ -3,19 +3,21 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 const MILLION = 1_000_000;
 
 /**
- * Marktwert-Regeln (aktuell = club_players.current_stars, Restpotential = Deckel − aktuell):
- * - Transfer: aktuell × 10M + Restpotential × 2M
- * - Scouting: aktuell × 5M  + Restpotential × 1M
+ * Marktwert-Regeln (Current = aktuelle Sterne, Gap = Karten-Max − Current):
+ * - Transfer: Current × 10M + Gap × 4M
+ * - Scouting: Current × 5M  + Gap × 2M  (= Transfer / 2)
+ *
+ * Gewinn pro trainiertem Stern (Scouting-Kauf → Pool-Verkauf): +3M
  *
  * Beispiele:
- * - 5★, 0 Rest  → 50M / 25M
- * - 3★, 2 Rest  → 34M / 17M
- * - 5★, Deckel 6 → 52M / 26M
+ * - 5★, 0 Gap  → 50M / 25M
+ * - 3★, Gap 2  → 38M / 19M
+ * - 1★, Max 4★ → 22M / 11M
  */
 export const PLAYER_MARKET_STAR_TRANSFER_MILLIONS = 10;
 export const PLAYER_MARKET_STAR_SCOUTING_MILLIONS = 5;
-export const PLAYER_MARKET_POTENTIAL_TRANSFER_MILLIONS = 2;
-export const PLAYER_MARKET_POTENTIAL_SCOUTING_MILLIONS = 1;
+export const PLAYER_MARKET_POTENTIAL_TRANSFER_MILLIONS = 4;
+export const PLAYER_MARKET_POTENTIAL_SCOUTING_MILLIONS = 2;
 
 export type PlayerMarketInput = {
   stars: number;
@@ -25,13 +27,15 @@ export type PlayerMarketInput = {
   potentialCeiling?: number;
 };
 
-/** Potential-Deckel aus Karte: base + bonus, mindestens aktuell, hart gedeckelt durch skill_max. */
-export function resolvePlayerPotentialCeiling(params: {
+type PlayerSkillBounds = {
   baseStars?: number | string | null;
   currentStars?: number | string | null;
   potentialStars?: number | string | null;
   skillMax?: number | string | null;
-}): number {
+};
+
+/** Potential-Deckel aus Karte: base + bonus, mindestens aktuell, hart gedeckelt durch skill_max. */
+export function resolvePlayerPotentialCeiling(params: PlayerSkillBounds): number {
   const current = Math.max(0, Math.trunc(Number(params.currentStars ?? params.baseStars ?? 0)));
   const base = Math.max(0, Math.trunc(Number(params.baseStars ?? current)));
   const raw = Math.max(0, Math.trunc(Number(params.potentialStars ?? 0)));
@@ -43,72 +47,49 @@ export function resolvePlayerPotentialCeiling(params: {
 }
 
 /** Stern-Anzeige auf Karten: max(skill_max, Potential-Deckel). */
-export function resolvePlayerSkillDisplayMax(params: {
-  baseStars?: number | string | null;
-  currentStars?: number | string | null;
-  potentialStars?: number | string | null;
-  skillMax?: number | string | null;
-}): number {
+export function resolvePlayerSkillDisplayMax(params: PlayerSkillBounds): number {
   const potentialCeiling = resolvePlayerPotentialCeiling(params);
   const skillMax = Math.trunc(Number(params.skillMax ?? 0));
 
   return Math.max(skillMax > 0 ? skillMax : 5, potentialCeiling);
 }
 
-/**
- * Markt-Deckel fuer Vereinsspieler.
- * Liegt der Spieler noch unter base+potential, zaehlt dieses Deckel.
- * Hat er es erreicht, zaehlt zusaetzliches Trainingspotential bis skill_max
- * (entspricht den leeren Sternen auf der Karte).
- */
-export function resolvePlayerMarketCeiling(params: {
-  baseStars?: number | string | null;
-  currentStars?: number | string | null;
-  potentialStars?: number | string | null;
-  skillMax?: number | string | null;
-}): number {
-  const current = Math.max(0, Math.trunc(Number(params.currentStars ?? params.baseStars ?? 0)));
-  const potentialCeiling = resolvePlayerPotentialCeiling(params);
-  const skillMax = Math.trunc(Number(params.skillMax ?? 0));
+/** Markt-Deckel = angezeigtes Kartenmaximum (eine Quelle fuer Karte und Preis). */
+export function resolvePlayerMarketMax(params: PlayerSkillBounds): number {
+  return resolvePlayerSkillDisplayMax(params);
+}
 
-  if (current < potentialCeiling) {
-    return potentialCeiling;
-  }
-
-  if (skillMax > current) {
-    return skillMax;
-  }
-
-  return potentialCeiling;
+/** @deprecated Nutze resolvePlayerMarketMax. */
+export function resolvePlayerMarketCeiling(params: PlayerSkillBounds): number {
+  return resolvePlayerMarketMax(params);
 }
 
 export function getRemainingPotentialPoints(input: PlayerMarketInput): number {
   const stars = Math.max(0, Math.trunc(Number(input.stars)));
 
-  const ceiling =
+  const marketMax =
     input.potentialCeiling !== undefined
       ? Math.trunc(Number(input.potentialCeiling))
-      : resolvePlayerPotentialCeiling({
+      : resolvePlayerMarketMax({
           baseStars: input.baseStars ?? stars,
           currentStars: stars,
           potentialStars: input.potentialStars,
           skillMax: input.skillMax,
         });
 
-  return Math.max(0, ceiling - stars);
+  return Math.max(0, marketMax - stars);
 }
 
 export function computePlayerMarketValues(input: PlayerMarketInput) {
   const stars = Math.max(0, Math.trunc(Number(input.stars)));
   const remainingPotential = getRemainingPotentialPoints(input);
+  const minimumBid =
+    (stars * PLAYER_MARKET_STAR_TRANSFER_MILLIONS + remainingPotential * PLAYER_MARKET_POTENTIAL_TRANSFER_MILLIONS) *
+    MILLION;
 
   return {
-    minimumBid:
-      (stars * PLAYER_MARKET_STAR_TRANSFER_MILLIONS + remainingPotential * PLAYER_MARKET_POTENTIAL_TRANSFER_MILLIONS) *
-      MILLION,
-    scoutingPrice:
-      (stars * PLAYER_MARKET_STAR_SCOUTING_MILLIONS + remainingPotential * PLAYER_MARKET_POTENTIAL_SCOUTING_MILLIONS) *
-      MILLION,
+    minimumBid,
+    scoutingPrice: minimumBid / 2,
   };
 }
 
@@ -137,7 +118,7 @@ export function computeCatalogPlayerMarketValues(player: {
   skill_max?: number | string | null;
 }) {
   const currentStars = Math.max(0, Math.trunc(Number(player.base_stars ?? 0)));
-  const potentialCeiling = resolvePlayerPotentialCeiling({
+  const marketMax = resolvePlayerMarketMax({
     baseStars: currentStars,
     currentStars,
     potentialStars: player.potential_stars,
@@ -145,7 +126,7 @@ export function computeCatalogPlayerMarketValues(player: {
   });
 
   return computePlayerMarketValues({
-    potentialCeiling,
+    potentialCeiling: marketMax,
     stars: currentStars,
   });
 }
@@ -167,7 +148,7 @@ export function computeOwnedPlayerMarketValues(owned: {
   };
 }) {
   const currentStars = Math.max(0, Math.trunc(Number(owned.current_stars)));
-  const marketCeiling = resolvePlayerMarketCeiling({
+  const marketMax = resolvePlayerMarketMax({
     baseStars: owned.player.base_stars,
     currentStars,
     potentialStars: owned.player.potential_stars,
@@ -175,7 +156,7 @@ export function computeOwnedPlayerMarketValues(owned: {
   });
 
   return computePlayerMarketValues({
-    potentialCeiling: marketCeiling,
+    potentialCeiling: marketMax,
     stars: currentStars,
   });
 }
@@ -227,16 +208,11 @@ export async function syncOwnedPlayerRowMarketValues(
     };
   },
 ): Promise<void> {
-  const currentStars = Math.max(0, Math.trunc(Number(owned.current_stars)));
-  const marketCeiling = resolvePlayerMarketCeiling({
-    baseStars: owned.player.base_stars,
-    currentStars,
-    potentialStars: owned.player.potential_stars,
-    skillMax: owned.player.skill_max,
-  });
+  const market = computeOwnedPlayerMarketValues(owned);
 
-  await syncPlayerRowMarketValues(supabase, playerId, {
-    potentialCeiling: marketCeiling,
-    stars: currentStars,
-  });
+  const { error } = await supabase.from("players").update(toPlayerMarketColumns(market)).eq("id", playerId);
+
+  if (error) {
+    throw error;
+  }
 }

@@ -57,6 +57,13 @@ export function shouldLoadHallOfFameSnapshot(view: string): boolean {
   return view === "hall_of_fame";
 }
 
+export function shouldLoadPrestigeSnapshot(view: string, settings?: { prestige_enabled?: boolean } | null): boolean {
+  if (settings?.prestige_enabled === false) {
+    return false;
+  }
+  return view === "prestige" || view === "dashboard";
+}
+
 export function getClubOverviewLoadProfileForView(phase: LobbyPhase, view: string): ClubOverviewLoadProfile {
   const offseasonDashboard = isOffseasonDashboardView(phase, view);
   const offSeasonChecklist = needsOffSeasonChecklistSnapshot(phase);

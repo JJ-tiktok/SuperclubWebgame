@@ -6,6 +6,7 @@ import type { CSSProperties } from "react";
 import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { saveGameAction, setReadyAction, startGameAction } from "@/app/lobby/actions";
+import { PhilosophySelectionPanel } from "@/components/lobby/philosophy-selection-panel";
 import { DevAdminMenu } from "@/components/dev/dev-admin-menu";
 import { ClubBadge } from "@/components/game/club-badge";
 import { Badge } from "@/components/ui/badge";
@@ -82,7 +83,7 @@ export function LobbyRealtime({
     async function refreshClubs() {
       const { data, error } = await lobbySupabase
         .from("clubs")
-        .select("id, game_id, clerk_user_id, club_template_id, club_name, club_slogan, club_color, manager_name, money, points, is_ready, image_url, created_at")
+        .select("id, game_id, clerk_user_id, club_template_id, club_name, club_slogan, club_color, manager_name, money, points, is_ready, image_url, philosophy_id, philosophy_fulfilled, prestige_points, created_at")
         .eq("game_id", initialSnapshot.game.id)
         .order("created_at", { ascending: true })
         .returns<LobbyClub[]>();
@@ -290,6 +291,8 @@ export function LobbyRealtime({
         ) : null}
 
         {isHost ? <DevAdminMenu hostOnly isHost roomCode={game.room_code} variant="panel" /> : null}
+
+        <PhilosophySelectionPanel clubs={clubs} gameId={game.id} onStatus={setStatus} ownClub={ownClub} />
 
         <div className="grid gap-4 lg:grid-cols-[1fr_360px]">
           <Panel className="border-[var(--club-border)] bg-zinc-950/85">

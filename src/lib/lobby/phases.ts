@@ -17,11 +17,22 @@ export function getSeasonNumber(settings: Pick<LobbySettings, "seasonNumber"> | 
   return Number(settings?.seasonNumber ?? 1);
 }
 
+export function isFinalSeason(settings?: Pick<LobbySettings, "seasonNumber" | "final_season_number"> | null) {
+  const finalSeasonNumber = settings?.final_season_number;
+  if (!finalSeasonNumber) {
+    return false;
+  }
+  return getSeasonNumber(settings) === finalSeasonNumber;
+}
+
 export function getNextLobbyPhase(
   phase: LobbyPhase,
-  settings?: Pick<LobbySettings, "seasonNumber" | "continental_cup_enabled"> | null,
+  settings?: Pick<LobbySettings, "seasonNumber" | "continental_cup_enabled" | "final_season_number"> | null,
 ): LobbyPhase {
   if (phase === "season_end") {
+    if (isFinalSeason(settings)) {
+      return shouldRunContinentalCup(getSeasonNumber(settings), settings) ? "champions_league" : "completed";
+    }
     return shouldRunContinentalCup(getSeasonNumber(settings), settings) ? "champions_league" : "off_season";
   }
 
@@ -32,7 +43,7 @@ export function getNextLobbyPhase(
     off_season: "deadline_day",
     deadline_day: "season",
     season: "season_end",
-    champions_league: "off_season",
+    champions_league: isFinalSeason(settings) ? "completed" : "off_season",
     // Legacy fallbacks (until DB migration runs)
     offseason_finance: "off_season",
     offseason_training: "off_season",
@@ -46,6 +57,9 @@ export function getNextLobbyPhase(
 }
 
 export function shouldAdvanceSeason(previousPhase: LobbyPhase, nextPhase: LobbyPhase) {
+  if (nextPhase === "completed") {
+    return false;
+  }
   return (
     (previousPhase === "season_end" && nextPhase === "off_season") ||
     (previousPhase === "champions_league" && nextPhase === "off_season")

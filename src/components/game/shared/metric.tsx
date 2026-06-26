@@ -1,6 +1,7 @@
 "use client";
 
 import type { LucideIcon } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 /**
  * Compact KPI/metric tile used on the dashboard and several sub-views.
@@ -33,11 +34,19 @@ export function Metric({
 /**
  * Small label/value pair tile for dense info grids.
  */
-export function SmallInfo({ label, value }: { label: string; value: string }) {
+export function SmallInfo({
+  label,
+  value,
+  valueClassName,
+}: {
+  label: string;
+  value: string;
+  valueClassName?: string;
+}) {
   return (
     <div className="rounded-md border border-zinc-800 bg-zinc-950/50 p-2">
       <p className="font-medium uppercase text-zinc-500">{label}</p>
-      <p className="mt-1 truncate text-zinc-200">{value}</p>
+      <p className={cn("mt-1 truncate text-zinc-200", valueClassName)}>{value}</p>
     </div>
   );
 }

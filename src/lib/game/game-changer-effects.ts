@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { refreshOffseasonScoutingSnapshot } from "@/lib/lobby/scouting";
-import { resolvePlayerPotentialCeiling, syncPlayerRowMarketValues } from "@/lib/lobby/player-market";
+import { syncOwnedPlayerRowMarketValues } from "@/lib/lobby/player-market";
 import { cancelOpenSwapTransferOffersForClubPlayer } from "@/lib/lobby/transfers";
 import { getClubPlayerDisplayNameFromRow } from "@/lib/lobby/player-names";
 import { applyClubStatusDelta, normalizeClubStatus, resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
@@ -84,11 +84,12 @@ export type ThirdSummary = {
 // Choice descriptions for pending Game Changers
 // ---------------------------------------------------------------------------
 
-export type ChoiceType = "pick_player" | "pick_zone" | "accept_or_decline" | "pick_staff";
+export type ChoiceType = "pick_player" | "pick_zone" | "pick_release_players" | "accept_or_decline" | "pick_staff";
 
 export type PendingChoice =
   | { type: "pick_player"; effect_type: "player_potential_bonus"; stars: number; filter?: "owned" }
   | { type: "pick_zone"; effect_type: "next_match_zone_delta"; delta: number }
+  | { type: "pick_release_players"; effect_type: "force_release_stars"; stars: number }
   | { type: "accept_or_decline"; effect_type: "free_scouting_buy_next" }
   | { type: "pick_staff"; effect_type: "free_staff_offer" };
 
@@ -101,7 +102,25 @@ export function buildPendingChoice(effect: GameChangerEffect): PendingChoice | n
     return { type: "pick_zone", effect_type: "next_match_zone_delta", delta: effect.delta };
   }
 
+  if (effect.type === "force_release_stars") {
+    return { type: "pick_release_players", effect_type: "force_release_stars", stars: effect.stars };
+  }
+
   return null;
+}
+
+export function parseReleaseClubPlayerIds(payload?: Record<string, unknown>): string[] {
+  if (!payload || payload.type !== "pick_release_players" || !Array.isArray(payload.club_player_ids)) {
+    return [];
+  }
+
+  return payload.club_player_ids.filter((id): id is string => typeof id === "string" && id.length > 0);
+}
+
+export function sumReleasePlayerStars(
+  players: Array<{ current_stars: number | string }>,
+): number {
+  return players.reduce((total, player) => total + Math.trunc(Number(player.current_stars)), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -361,40 +380,54 @@ export async function applyImmediateEffect(
       if (!cp) return { applied: false };
       const newStars = Math.max(0, Number(cp.current_stars) - Math.max(1, Math.trunc(effect.stars)));
       await supabase.from("club_players").update({ current_stars: newStars }).eq("id", cp.id);
-      await syncPlayerRowMarketValues(supabase, cp.player_id, {
-        potentialCeiling: resolvePlayerPotentialCeiling({
-          baseStars: cp.player?.base_stars,
-          currentStars: newStars,
-          potentialStars: cp.player?.potential_stars,
-          skillMax: cp.player?.skill_max,
-        }),
-        stars: newStars,
-      });
+      if (cp.player) {
+        await syncOwnedPlayerRowMarketValues(supabase, cp.player_id, {
+          current_stars: newStars,
+          player: cp.player,
+        });
+      }
       return { applied: true, detail: `${getClubPlayerDisplayNameFromRow(cp)}: -${effect.stars} Stern` };
     }
 
     case "force_release_stars": {
       const target = Math.max(1, Math.trunc(effect.stars));
-      const { data: players } = await supabase
+      const selectedIds = parseReleaseClubPlayerIds(ctx.resolvedPayload);
+      if (selectedIds.length === 0) {
+        return { applied: false };
+      }
+
+      const { data: players, error } = await supabase
         .from("club_players")
         .select("id, custom_name, current_stars, player:players(display_name)")
         .eq("club_id", clubId)
-        .order("current_stars", { ascending: true })
+        .in("id", selectedIds)
         .returns<Array<{ custom_name?: string | null; id: string; current_stars: number | string; player: { display_name: string } | null }>>();
-      const sorted = (players ?? []).slice().sort((a, b) => Number(a.current_stars) - Number(b.current_stars));
-      const removed: Array<{ id: string; name: string; stars: number }> = [];
-      let removedStars = 0;
-      for (const row of sorted) {
-        if (removedStars >= target) break;
-        removed.push({ id: row.id, name: getClubPlayerDisplayNameFromRow(row), stars: Number(row.current_stars) });
-        removedStars += Number(row.current_stars);
+
+      if (error) {
+        return { applied: false, detail: error.message };
       }
-      if (removed.length === 0) return { applied: false };
-      const ids = removed.map((r) => r.id);
-      for (const id of ids) {
+
+      const rows = players ?? [];
+      if (rows.length !== selectedIds.length) {
+        return { applied: false, detail: "Ungueltige Spielerauswahl" };
+      }
+
+      const removedStars = sumReleasePlayerStars(rows);
+      if (removedStars < target) {
+        return { applied: false, detail: `Mindestens ${target} Sterne muessen entlassen werden` };
+      }
+
+      const removed = rows.map((row) => ({
+        id: row.id,
+        name: getClubPlayerDisplayNameFromRow(row),
+        stars: Math.trunc(Number(row.current_stars)),
+      }));
+
+      for (const id of selectedIds) {
         await cancelOpenSwapTransferOffersForClubPlayer(supabase, id, "expired");
       }
-      await supabase.from("club_players").delete().in("id", ids);
+
+      await supabase.from("club_players").delete().in("id", selectedIds);
       return { applied: true, detail: `Entlassen: ${removed.map((r) => r.name).join(", ")} (${removedStars} Sterne)` };
     }
 

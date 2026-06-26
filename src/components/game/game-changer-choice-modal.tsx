@@ -1,8 +1,9 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { resolveGameChangerChoiceAction } from "@/app/games/actions/game-changers";
 import { Button } from "@/components/ui/button";
+import { getClubPlayerDisplayName } from "@/lib/lobby/player-names";
 import { getCategoryStyle } from "@/lib/game/game-changer-ui";
 import type { ClubGameChangerSnapshot, ClubPlayerSnapshot } from "@/lib/lobby/types";
 
@@ -23,6 +24,7 @@ type Props = {
 
 export function GameChangerChoiceModal({ gameId, roomCode, choice, squad }: Props) {
   const payload = (choice.choice_payload ?? {}) as ChoicePayload;
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const sortedSquad = useMemo(
     () =>
@@ -32,7 +34,28 @@ export function GameChangerChoiceModal({ gameId, roomCode, choice, squad }: Prop
     [squad],
   );
 
+  const requiredStars = Math.max(1, Math.trunc(Number(payload.stars ?? 0)));
+  const selectedStars = useMemo(
+    () =>
+      sortedSquad
+        .filter((player) => selectedIds.has(player.id))
+        .reduce((total, player) => total + Math.trunc(Number(player.current_stars)), 0),
+    [selectedIds, sortedSquad],
+  );
+
   const style = getCategoryStyle(choice.card.category);
+
+  function togglePlayer(playerId: string) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(playerId)) {
+        next.delete(playerId);
+      } else {
+        next.add(playerId);
+      }
+      return next;
+    });
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -59,12 +82,72 @@ export function GameChangerChoiceModal({ gameId, roomCode, choice, squad }: Prop
                 value={cp.id}
                 className="flex w-full items-center justify-between rounded border border-zinc-700 bg-zinc-900 px-3 py-2 text-left text-sm text-zinc-100 hover:border-amber-500 hover:bg-zinc-800"
               >
-                <span className="font-medium">{cp.player?.display_name ?? "Spieler"}</span>
+                <span className="font-medium">{getClubPlayerDisplayName(cp)}</span>
                 <span className="text-xs text-zinc-400">
                   {cp.player?.position ?? ""} {Number(cp.current_stars)} Sterne
                 </span>
               </button>
             ))}
+          </form>
+        ) : payload.type === "pick_release_players" ? (
+          <form action={resolveGameChangerChoiceAction} className="mt-4">
+            <input type="hidden" name="game_id" value={gameId} />
+            <input type="hidden" name="room_code" value={roomCode} />
+            <input type="hidden" name="club_game_changer_id" value={choice.id} />
+            <input type="hidden" name="choice_type" value="pick_release_players" />
+
+            <p className="mb-3 text-sm text-zinc-300">
+              Waehle Spieler zum Entlassen. Mindestens{" "}
+              <span className="font-semibold text-zinc-100">{requiredStars} Sterne</span> gesamt.
+            </p>
+
+            <div className="max-h-72 space-y-2 overflow-y-auto">
+              {sortedSquad.length === 0 ? (
+                <p className="text-sm text-zinc-400">Kein Spieler verfuegbar.</p>
+              ) : (
+                sortedSquad.map((cp) => {
+                  const checked = selectedIds.has(cp.id);
+                  return (
+                    <label
+                      className={`flex cursor-pointer items-center justify-between rounded border px-3 py-2 text-sm transition ${
+                        checked
+                          ? "border-amber-500 bg-zinc-800 text-zinc-50"
+                          : "border-zinc-700 bg-zinc-900 text-zinc-100 hover:border-zinc-500"
+                      }`}
+                      key={cp.id}
+                    >
+                      <span className="flex min-w-0 items-center gap-3">
+                        <input
+                          checked={checked}
+                          className="h-4 w-4 shrink-0 accent-amber-500"
+                          name="club_player_id"
+                          onChange={() => togglePlayer(cp.id)}
+                          type="checkbox"
+                          value={cp.id}
+                        />
+                        <span className="truncate font-medium">{getClubPlayerDisplayName(cp)}</span>
+                      </span>
+                      <span className="shrink-0 pl-3 text-xs text-zinc-400">
+                        {cp.player?.position ?? ""} {Number(cp.current_stars)} Sterne
+                      </span>
+                    </label>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="mt-4 flex items-center justify-between gap-3">
+              <p className="text-sm text-zinc-400">
+                Ausgewaehlt:{" "}
+                <span className={selectedStars >= requiredStars ? "font-semibold text-emerald-400" : "font-semibold text-zinc-200"}>
+                  {selectedStars}
+                </span>{" "}
+                / {requiredStars} Sterne
+              </p>
+              <Button disabled={selectedStars < requiredStars || selectedIds.size === 0} type="submit">
+                Entlassen
+              </Button>
+            </div>
           </form>
         ) : payload.type === "pick_zone" ? (
           <form action={resolveGameChangerChoiceAction} className="mt-4 grid grid-cols-3 gap-2">

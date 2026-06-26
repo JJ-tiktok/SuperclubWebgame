@@ -1,4 +1,9 @@
 import type { PlayerCard } from "@/lib/game/types";
+import {
+  computePlayerMarketValues,
+  resolvePlayerSkillDisplayMax,
+  toCardMarketDisplay,
+} from "@/lib/lobby/player-market";
 import type { ArchetypeRole, ArchetypeSymbol, PlayerArchetype } from "@/lib/lobby/archetypes";
 
 export type PlayerAgeGroup = "talent" | "prime" | "veteran";
@@ -195,6 +200,18 @@ export function formatMarketValue(value: number, currency: string) {
 export function mapEnginePlayerToCardData(player: PlayerCard): PlayerCardData {
   const chemistryLeft = player.chemistry === "left" || player.chemistry === "both";
   const chemistryRight = player.chemistry === "right" || player.chemistry === "both";
+  const currentStars = Math.max(0, Math.trunc(player.baseStars));
+  const skillMax = resolvePlayerSkillDisplayMax({
+    baseStars: currentStars,
+    currentStars,
+    potentialStars: player.potentialStars,
+  });
+  const market = toCardMarketDisplay(
+    computePlayerMarketValues({
+      potentialCeiling: skillMax,
+      stars: currentStars,
+    }),
+  );
 
   return {
     ageGroup: "prime",
@@ -208,19 +225,15 @@ export function mapEnginePlayerToCardData(player: PlayerCard): PlayerCardData {
       symbol: "star",
     },
     id: player.id,
-    market: {
-      currency: "M",
-      scoutingFee: player.scoutingPrice / 1_000_000,
-      transferFee: player.minimumBid / 1_000_000,
-    },
+    market,
     name: player.name,
     position: player.position,
     positions: [player.position],
     role: player.region,
     skill: {
-      current: player.baseStars,
-      max: Math.max(5, player.baseStars + player.potentialStars),
-      potential: player.baseStars + player.potentialStars,
+      current: currentStars,
+      max: skillMax,
+      potential: Math.max(currentStars, currentStars + player.potentialStars),
       veteranFallback: null,
     },
   };

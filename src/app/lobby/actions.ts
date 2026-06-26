@@ -21,6 +21,8 @@ import {
   validateClubName,
   validateRoomCode,
 } from "@/lib/lobby/rules";
+import { isValidPhilosophyId } from "@/lib/lobby/prestige";
+import { selectPhilosophyForClub } from "@/lib/lobby/prestige-server";
 import type { ActionResult, LobbyClub, LobbyGame, LobbySettings } from "@/lib/lobby/types";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
 import { getServiceSupabaseConfigIssue } from "@/lib/supabase/config";
@@ -29,7 +31,7 @@ import { getErrorMessage, getSupabaseSetupHint } from "@/lib/supabase/errors";
 type SupabaseServiceClient = NonNullable<ReturnType<typeof createSupabaseServiceClient>>;
 
 const CLUB_SELECT =
-  "id, game_id, clerk_user_id, club_template_id, club_name, club_slogan, club_color, manager_name, money, points, is_ready, image_url, created_at";
+  "id, game_id, clerk_user_id, club_template_id, club_name, club_slogan, club_color, manager_name, money, points, is_ready, image_url, philosophy_id, philosophy_fulfilled, prestige_points, created_at";
 
 async function requireLobbyContext() {
   const { userId } = await auth();
@@ -444,6 +446,56 @@ export async function setReadyAction(gameId: string, ready: boolean): Promise<Ac
     return { ok: true };
   } catch (error) {
     return { ok: false, error: getSupabaseSetupHint(error) ?? getErrorMessage(error, "Bereit-Status konnte nicht geaendert werden.") };
+  }
+}
+
+export async function selectPhilosophyAction(gameId: string, philosophyId: string): Promise<ActionResult> {
+  try {
+    const { userId, supabase } = await requireLobbyContext();
+
+    if (!isValidPhilosophyId(philosophyId)) {
+      return { ok: false, error: "Ungueltige Vereinsphilosophie." };
+    }
+
+    const { data: game, error: gameError } = await supabase
+      .from("games")
+      .select("id, room_code, phase")
+      .eq("id", gameId)
+      .single<{ id: string; phase: string; room_code: string }>();
+
+    if (gameError) {
+      throw gameError;
+    }
+
+    if (game.phase !== "lobby") {
+      return { ok: false, error: "Philosophie kann nur in der Lobby gewaehlt werden." };
+    }
+
+    const { data: club, error: clubError } = await supabase
+      .from("clubs")
+      .select("id, philosophy_id")
+      .eq("game_id", gameId)
+      .eq("clerk_user_id", userId)
+      .maybeSingle<{ id: string; philosophy_id: string | null }>();
+
+    if (clubError) {
+      throw clubError;
+    }
+
+    if (!club) {
+      return { ok: false, error: "Kein Club gefunden." };
+    }
+
+    await selectPhilosophyForClub(supabase, gameId, club.id, philosophyId);
+    await touchGameSaveMetadata(supabase, gameId, userId);
+    revalidatePath(`/games/${game.room_code}/lobby`);
+    revalidatePath("/lobby");
+    return { ok: true, message: "Vereinsphilosophie gespeichert." };
+  } catch (error) {
+    return {
+      ok: false,
+      error: getSupabaseSetupHint(error) ?? getErrorMessage(error, "Philosophie konnte nicht gespeichert werden."),
+    };
   }
 }
 

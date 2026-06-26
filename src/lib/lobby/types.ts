@@ -30,6 +30,12 @@ export type LobbySettings = {
   sponsoring_enabled?: boolean;
   /** Archetype match effects and archetype UI helpers (default: enabled). */
   archetypes_enabled?: boolean;
+  /** Prestige win condition system (default: enabled). */
+  prestige_enabled?: boolean;
+  /** Prestige points needed to trigger final season (default: 100). */
+  prestige_target?: number;
+  /** Season number marked as final when endgame is triggered. */
+  final_season_number?: number;
 };
 
 export type ClubTemplate = {
@@ -94,6 +100,11 @@ export type LobbyClub = {
   squad_size?: number;
   is_ready: boolean;
   image_url?: string | null;
+  prestige_points?: number;
+  continental_wins?: number;
+  philosophy_id?: string | null;
+  philosophy_fulfilled?: boolean;
+  prestige_state?: Record<string, unknown> | null;
   created_at?: string;
 };
 
@@ -247,6 +258,7 @@ export type ClubPlayerSnapshot = {
   acquired_at?: string;
   seasons_at_club?: number;
   stars_at_acquisition?: number;
+  purchase_price?: number | null;
   player: DraftPlayerRow;
 };
 
@@ -347,6 +359,7 @@ export type TrainingEventSnapshot = {
   dice_roll: number;
   game_phase: string;
   guaranteed_bonus_used: boolean;
+  nlz_guaranteed_used: boolean;
   id: string;
   player_id: string;
   season_number: number;
@@ -701,6 +714,49 @@ export type LobbySnapshot = {
   transfer_market: TransferMarketSnapshot | null;
   match_news: MatchNewsSnapshot[];
   hall_of_fame: HallOfFameSnapshot | null;
+  prestige: PrestigeSnapshot | null;
+};
+
+export type PrestigeAwardSnapshot = {
+  id: string;
+  season_number: number;
+  category: string;
+  ref: string;
+  points: number;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
+
+export type PrestigeClubSnapshot = {
+  club_id: string;
+  club_name: string;
+  club_color?: string | null;
+  manager_name: string;
+  prestige_points: number;
+  continental_wins: number;
+  philosophy_id?: string | null;
+  philosophy_label?: string | null;
+  philosophy_fulfilled?: boolean;
+  philosophy_progress?: {
+    current: number;
+    target: number;
+    label: string;
+    slots?: Array<{ club_player_id: string; display_name: string } | null>;
+  } | null;
+  season_rank?: number | null;
+  awards: PrestigeAwardSnapshot[];
+};
+
+export type PrestigeSnapshot = {
+  enabled: boolean;
+  target: number;
+  final_season_number?: number | null;
+  is_final_season: boolean;
+  game_completed: boolean;
+  winner_club_id?: string | null;
+  winner_club_name?: string | null;
+  clubs: PrestigeClubSnapshot[];
+  own_awards: PrestigeAwardSnapshot[];
 };
 
 export type HallOfFameCategoryId = "tenure" | "training" | "development" | "skill_max";

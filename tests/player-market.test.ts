@@ -6,6 +6,7 @@ import {
   getClubPlayerMarketValues,
   getRemainingPotentialPoints,
   readSyncedPlayerMarketValues,
+  resolvePlayerMarketMax,
   resolvePlayerPotentialCeiling,
 } from "@/lib/lobby/player-market";
 
@@ -19,19 +20,24 @@ describe("player market values", () => {
 
   it("3 current stars with 2 remaining potential", () => {
     assert.deepEqual(computePlayerMarketValues({ potentialCeiling: 5, stars: 3 }), {
-      minimumBid: 34_000_000,
-      scoutingPrice: 17_000_000,
+      minimumBid: 38_000_000,
+      scoutingPrice: 19_000_000,
     });
   });
 
   it("5 current stars with ceiling 6 after partial training", () => {
     assert.deepEqual(computePlayerMarketValues({ potentialCeiling: 6, stars: 5 }), {
-      minimumBid: 52_000_000,
-      scoutingPrice: 26_000_000,
+      minimumBid: 54_000_000,
+      scoutingPrice: 27_000_000,
     });
   });
 
-  it("uses the gap between current stars and potential ceiling", () => {
+  it("always sets scouting to half of transfer", () => {
+    const market = computePlayerMarketValues({ potentialCeiling: 6, stars: 1 });
+    assert.equal(market.scoutingPrice, market.minimumBid / 2);
+  });
+
+  it("uses the gap between current stars and market max", () => {
     assert.equal(
       getRemainingPotentialPoints({
         baseStars: 3,
@@ -50,10 +56,16 @@ describe("player market values", () => {
         stars: 3,
       }),
       {
-        minimumBid: 36_000_000,
-        scoutingPrice: 18_000_000,
+        minimumBid: 42_000_000,
+        scoutingPrice: 21_000_000,
       },
     );
+  });
+
+  it("adds 3m scouting profit per trained star when bought and sold at scouting value", () => {
+    const buy = computePlayerMarketValues({ potentialCeiling: 4, stars: 1 });
+    const sell = computePlayerMarketValues({ potentialCeiling: 4, stars: 4 });
+    assert.equal(sell.scoutingPrice - buy.scoutingPrice, 9_000_000);
   });
 
   it("adds one remaining point when potential bonus allows growth", () => {
@@ -67,8 +79,8 @@ describe("player market values", () => {
         },
       }),
       {
-        minimumBid: 42_000_000,
-        scoutingPrice: 21_000_000,
+        minimumBid: 44_000_000,
+        scoutingPrice: 22_000_000,
       },
     );
   });
@@ -84,8 +96,8 @@ describe("player market values", () => {
         },
       }),
       {
-        minimumBid: 32_000_000,
-        scoutingPrice: 16_000_000,
+        minimumBid: 38_000_000,
+        scoutingPrice: 19_000_000,
       },
     );
   });
@@ -99,8 +111,8 @@ describe("player market values", () => {
         stars: 5,
       }),
       {
-        minimumBid: 52_000_000,
-        scoutingPrice: 26_000_000,
+        minimumBid: 54_000_000,
+        scoutingPrice: 27_000_000,
       },
     );
   });
@@ -117,6 +129,18 @@ describe("player market values", () => {
     );
   });
 
+  it("uses market max from skill display for owned players", () => {
+    assert.equal(
+      resolvePlayerMarketMax({
+        baseStars: 3,
+        currentStars: 3,
+        potentialStars: 0,
+        skillMax: 4,
+      }),
+      4,
+    );
+  });
+
   it("ignores stale synced database prices for owned players", () => {
     const market = getClubPlayerMarketValues({
       current_stars: 3,
@@ -130,8 +154,8 @@ describe("player market values", () => {
     });
 
     assert.deepEqual(market, {
-      minimumBid: 32_000_000,
-      scoutingPrice: 16_000_000,
+      minimumBid: 38_000_000,
+      scoutingPrice: 19_000_000,
     });
     assert.deepEqual(readSyncedPlayerMarketValues({ minimum_bid: 42_000_000, scouting_price: 21_000_000 }), {
       minimumBid: 42_000_000,
@@ -139,7 +163,7 @@ describe("player market values", () => {
     });
   });
 
-  it("values NLZ academy talents from current stars, not stored draft prices", () => {
+  it("values NLZ academy talents from current stars and market max", () => {
     assert.deepEqual(
       getClubPlayerMarketValues({
         current_stars: 1,
@@ -152,8 +176,8 @@ describe("player market values", () => {
         },
       }),
       {
-        minimumBid: 20_000_000,
-        scoutingPrice: 10_000_000,
+        minimumBid: 30_000_000,
+        scoutingPrice: 15_000_000,
       },
     );
   });
@@ -168,8 +192,8 @@ describe("player market values", () => {
       },
     });
 
-    assert.equal(market.minimumBid, 52_000_000);
-    assert.equal(market.scoutingPrice, 26_000_000);
+    assert.equal(market.minimumBid, 54_000_000);
+    assert.equal(market.scoutingPrice, 27_000_000);
   });
 
   it("computes catalog market values from base stars, not stored prices", () => {
@@ -182,8 +206,8 @@ describe("player market values", () => {
         skill_max: 5,
       }),
       {
-        minimumBid: 10_000_000,
-        scoutingPrice: 5_000_000,
+        minimumBid: 26_000_000,
+        scoutingPrice: 13_000_000,
       },
     );
 
@@ -192,6 +216,18 @@ describe("player market values", () => {
         base_stars: 2,
         potential_stars: 1,
         skill_max: 5,
+      }),
+      {
+        minimumBid: 32_000_000,
+        scoutingPrice: 16_000_000,
+      },
+    );
+
+    assert.deepEqual(
+      computeCatalogPlayerMarketValues({
+        base_stars: 1,
+        potential_stars: 3,
+        skill_max: 4,
       }),
       {
         minimumBid: 22_000_000,
@@ -211,8 +247,8 @@ describe("player market values", () => {
         },
       }),
       {
-        minimumBid: 14_000_000,
-        scoutingPrice: 7_000_000,
+        minimumBid: 18_000_000,
+        scoutingPrice: 9_000_000,
       },
     );
   });
@@ -228,8 +264,8 @@ describe("player market values", () => {
         },
       }),
       {
-        minimumBid: 32_000_000,
-        scoutingPrice: 16_000_000,
+        minimumBid: 34_000_000,
+        scoutingPrice: 17_000_000,
       },
     );
   });

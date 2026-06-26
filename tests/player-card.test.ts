@@ -106,8 +106,8 @@ describe("Player card rendering data", () => {
       skill_max: 5,
     } satisfies DraftPlayerRow);
 
-    assert.equal(card.market.transferFee, 10);
-    assert.equal(card.market.scoutingFee, 5);
+    assert.equal(card.market.transferFee, 26);
+    assert.equal(card.market.scoutingFee, 13);
     assert.equal(getCardSkillRating(card), 1);
   });
 

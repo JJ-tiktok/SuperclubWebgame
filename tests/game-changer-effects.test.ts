@@ -42,6 +42,11 @@ describe("Game Changer effects engine", () => {
     assert.deepEqual(choice, { type: "pick_zone", effect_type: "next_match_zone_delta", delta: 2 });
   });
 
+  it("returns a pick_release_players choice for force_release_stars", () => {
+    const choice = buildPendingChoice({ type: "force_release_stars", stars: 4 });
+    assert.deepEqual(choice, { type: "pick_release_players", effect_type: "force_release_stars", stars: 4 });
+  });
+
   it("maps next_match_* effects to pending scope next_match", () => {
     const eff: GameChangerEffect = { type: "next_match_lineup_locked" };
     assert.equal(effectToPendingScope(eff)?.scope, "next_match");

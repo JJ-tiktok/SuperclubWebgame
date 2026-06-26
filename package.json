@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx --test tests/**/*.test.ts"
+    "test": "tsx --test tests/**/*.test.ts",
+    "benchmark": "tsx scripts/benchmark-snapshot.ts",
+    "benchmark:matchday": "tsx scripts/benchmark-matchday.ts"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.4.1",

@@ -192,6 +192,22 @@ export const VIEW_GUIDES: Record<GameView, ViewGuideConfig> = {
       { id: "league", label: "Liga", description: "Beste Spieler aller Manager" },
     ],
   },
+  prestige: {
+    title: "Prestige",
+    summary:
+      "Das Prestige-Rennen zum Spielziel: 100 Punkte oder 2. Continental-Cup-Sieg loesen die finale Saison aus. Unter „So sammelst du Prestige“ findest du alle Quellen.",
+    tips: [
+      "Philosophien waehlst du in der Lobby vor dem Draft.",
+      "Im Prestige-Rennen kannst du pro Club die vergebenen Punkte aufklappen.",
+      "Continental-Cup-Sieg (+20) ersetzt den Finalisten-Bonus.",
+    ],
+    sections: [
+      { id: "rules", label: "Punktequellen", description: "Wie du Prestige sammelst" },
+      { id: "race", label: "Prestige-Rennen", description: "Fortschritt und Aufschluesselung" },
+      { id: "philosophy", label: "Philosophie", description: "Dein Langzeitziel" },
+      { id: "history", label: "Historie", description: "Deine vergebenen Punkte" },
+    ],
+  },
   settings: {
     title: "Einstellungen",
     summary:

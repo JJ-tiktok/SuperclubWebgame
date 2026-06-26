@@ -22,6 +22,7 @@ type GameStoreState = {
 };
 
 const listeners = new Set<() => void>();
+const refetchCountByReason: Record<string, number> = {};
 
 let state: GameStoreState = {
   presence: {},
@@ -101,6 +102,13 @@ export async function refetchGameSnapshot(params: {
   roomCode: string;
   view?: string;
 }) {
+  if (typeof process !== "undefined" && process.env.NEXT_PUBLIC_GAME_PERF_LOG === "1") {
+    refetchCountByReason[params.reason] = (refetchCountByReason[params.reason] ?? 0) + 1;
+    console.info(
+      `[game-snapshot-refetch] reason=${params.reason} view=${params.view ?? "dashboard"} count=${refetchCountByReason[params.reason]}`,
+    );
+  }
+
   const query = params.view ? `?view=${encodeURIComponent(params.view)}` : "";
   const response = await fetch(`/api/games/${encodeURIComponent(params.roomCode)}/snapshot${query}`, {
     cache: "no-store",

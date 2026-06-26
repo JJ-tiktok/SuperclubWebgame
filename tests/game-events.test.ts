@@ -526,6 +526,53 @@ describe("game live event store", () => {
     assert.equal(getGameStoreStateForTests().snapshot?.club_overview?.finance.squad_stars, 55);
   });
 
+  it("skips snapshot recovery for view-scoped events when the slice is not loaded", () => {
+    resetGameStoreForTests();
+    const base = snapshot();
+    base.scouting = null;
+    base.transfer_market = null;
+    base.deadline = null;
+    hydrateGameStore(base);
+
+    assert.equal(
+      applyGameEvent(event("SCOUTING_STATUS_CHANGED", 1, { clubId: "club-a", needsRefetch: true })).needsRefetch,
+      false,
+    );
+    assert.equal(getGameStoreStateForTests().seq, 1);
+
+    assert.equal(
+      applyGameEvent(event("TRANSFER_OFFER_CREATED", 2, { fromClubId: "club-a", toClubId: "club-b" })).needsRefetch,
+      false,
+    );
+    assert.equal(getGameStoreStateForTests().seq, 2);
+
+    assert.equal(
+      applyGameEvent(event("DEADLINE_INITIALIZED", 3, { auctionCount: 2 })).needsRefetch,
+      false,
+    );
+    assert.equal(getGameStoreStateForTests().seq, 3);
+  });
+
+  it("requests recovery for view-scoped events when the slice is loaded", () => {
+    resetGameStoreForTests();
+    const base = snapshot();
+    base.scouting = {
+      all_finished: false,
+      current_club_id: "club-a",
+      draws: [],
+      next_pending_club_id: "club-a",
+      sales_by_club_id: {},
+      status_by_club_id: {},
+    };
+    hydrateGameStore(base);
+
+    assert.equal(
+      applyGameEvent(event("SCOUTING_STATUS_CHANGED", 1, { clubId: "club-a", needsRefetch: true })).needsRefetch,
+      true,
+    );
+    assert.equal(getGameStoreStateForTests().seq, 1);
+  });
+
   it("requests recovery for event gaps and ignores stale events", () => {
     resetGameStoreForTests();
     hydrateGameStore(snapshot());

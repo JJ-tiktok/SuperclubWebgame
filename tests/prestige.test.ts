@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   addTrainingStarsToState,
+  applyPrestigeDeductionFloor,
   capTrainingStarsForPhilosophy,
   checkTraditionsverein,
   getPhilosophyProgress,
@@ -50,10 +51,18 @@ describe("prestige point catalog", () => {
 
   it("exposes core seasonal prestige values", () => {
     assert.equal(PRESTIGE_POINTS.league_champion, 10);
+    assert.equal(PRESTIGE_POINTS.manager_rank_last, -3);
     assert.equal(PRESTIGE_POINTS.continental_win, 20);
     assert.equal(PRESTIGE_POINTS.continental_finalist, 10);
     assert.equal(PRESTIGE_POINTS.facility_max, 5);
     assert.equal(PRESTIGE_POINTS.youth_max, 4);
+  });
+});
+
+describe("prestige deduction floor", () => {
+  it("never reduces prestige below zero", () => {
+    assert.equal(applyPrestigeDeductionFloor(1, PRESTIGE_POINTS.manager_rank_last), 0);
+    assert.equal(applyPrestigeDeductionFloor(100, PRESTIGE_POINTS.manager_rank_last), 97);
   });
 });
 

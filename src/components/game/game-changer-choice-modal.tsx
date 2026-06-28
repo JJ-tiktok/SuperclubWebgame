@@ -3,8 +3,9 @@
 import { useMemo, useState } from "react";
 import { resolveGameChangerChoiceAction } from "@/app/games/actions/game-changers";
 import { Button } from "@/components/ui/button";
-import { getClubPlayerDisplayName } from "@/lib/lobby/player-names";
 import { getCategoryStyle } from "@/lib/game/game-changer-ui";
+import { getOffseasonCardCandidates } from "@/lib/game/game-changer-effects";
+import { getClubPlayerDisplayName } from "@/lib/lobby/player-names";
 import type { ClubGameChangerSnapshot, ClubPlayerSnapshot } from "@/lib/lobby/types";
 
 type ChoicePayload = {
@@ -24,6 +25,10 @@ type Props = {
 
 export function GameChangerChoiceModal({ gameId, roomCode, choice, squad }: Props) {
   const payload = (choice.choice_payload ?? {}) as ChoicePayload;
+  const offseasonCandidates = useMemo(
+    () => (payload.type === "pick_offseason_card" ? getOffseasonCardCandidates(choice.choice_payload) : []),
+    [choice.choice_payload, payload.type],
+  );
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   const sortedSquad = useMemo(
@@ -43,7 +48,11 @@ export function GameChangerChoiceModal({ gameId, roomCode, choice, squad }: Prop
     [selectedIds, sortedSquad],
   );
 
-  const style = getCategoryStyle(choice.card.category);
+  const style = getCategoryStyle(
+    payload.type === "pick_offseason_card" && offseasonCandidates[0]
+      ? offseasonCandidates[0].category
+      : choice.card.category,
+  );
 
   function togglePlayer(playerId: string) {
     setSelectedIds((current) => {
@@ -62,10 +71,39 @@ export function GameChangerChoiceModal({ gameId, roomCode, choice, squad }: Prop
       <div className="absolute inset-0 bg-black/70" />
       <div className={`relative z-10 w-full max-w-md rounded-lg border-2 p-6 shadow-2xl ${style.bg} ${style.border}`}>
         <p className={`text-xs font-semibold uppercase tracking-wide ${style.accent}`}>{style.label} · Auswahl noetig</p>
-        <h2 className="mt-1 text-lg font-bold text-zinc-50">{choice.card.display_name}</h2>
-        <p className="mt-2 text-sm text-zinc-300">{choice.card.description}</p>
+        <h2 className="mt-1 text-lg font-bold text-zinc-50">
+          {payload.type === "pick_offseason_card" ? "Comeback-Bonus: Neue Impulse" : choice.card.display_name}
+        </h2>
+        <p className="mt-2 text-sm text-zinc-300">
+          {payload.type === "pick_offseason_card"
+            ? "Waehle eine von zwei Game-Changer-Karten (positive Ereignisse & Geheimwaffen)."
+            : choice.card.description}
+        </p>
 
-        {payload.type === "pick_player" ? (
+        {payload.type === "pick_offseason_card" ? (
+          <form action={resolveGameChangerChoiceAction} className="mt-4 space-y-2">
+            <input type="hidden" name="game_id" value={gameId} />
+            <input type="hidden" name="room_code" value={roomCode} />
+            <input type="hidden" name="club_game_changer_id" value={choice.id} />
+            <input type="hidden" name="choice_type" value="pick_offseason_card" />
+            {offseasonCandidates.map((candidate) => {
+              const candidateStyle = getCategoryStyle(candidate.category);
+              return (
+                <button
+                  key={candidate.card_id}
+                  type="submit"
+                  name="card_id"
+                  value={candidate.card_id}
+                  className={`flex w-full flex-col rounded border px-3 py-3 text-left transition hover:brightness-110 ${candidateStyle.bg} ${candidateStyle.border}`}
+                >
+                  <span className={`text-[11px] font-semibold uppercase ${candidateStyle.accent}`}>{candidateStyle.label}</span>
+                  <span className="mt-1 text-sm font-semibold text-zinc-50">{candidate.display_name}</span>
+                  <span className="mt-1 text-xs text-zinc-300">{candidate.description}</span>
+                </button>
+              );
+            })}
+          </form>
+        ) : payload.type === "pick_player" ? (
           <form action={resolveGameChangerChoiceAction} className="mt-4 max-h-72 space-y-2 overflow-y-auto">
             <input type="hidden" name="game_id" value={gameId} />
             <input type="hidden" name="room_code" value={roomCode} />

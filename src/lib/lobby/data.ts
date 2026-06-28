@@ -4,6 +4,7 @@ import { normalizeRoomCode } from "./rules";
 import { DRAFT_PLAYER_SELECT } from "./draft";
 import { mergeCarriedSecretWeapons } from "@/lib/lobby/club-game-changers";
 import { buildNextMatchZoneBoostsByClubId } from "@/lib/game/game-changer-effects";
+import { buildLastPlaceBonusSnapshot, isOffseasonCardChoicePayload } from "@/lib/lobby/last-place-bonus";
 import {
   buildLineupSnapshotFromPlayers,
   type LineupSnapshotClubPlayerRow,
@@ -1984,6 +1985,9 @@ async function getClubOverviewSnapshot(
 
   const allGameChangers = gameChangerRowsFinal ?? [];
   const pendingChoices = allGameChangers.filter((row) => row.status === "pending");
+  const pendingOffseasonCardChoice = pendingChoices.some((row) =>
+    isOffseasonCardChoicePayload(row.choice_payload),
+  );
 
   const sponsorContracts = isUndefinedTableError(sponsorContractsError)
     ? []
@@ -2050,6 +2054,7 @@ async function getClubOverviewSnapshot(
     ),
     nlz_archetype_respec_available:
       (club.youth_academy_level ?? 0) >= 2 && (club.nlz_archetype_respecs_used_season ?? 0) < 1,
+    last_place_bonus: buildLastPlaceBonusSnapshot(club.prestige_state, seasonNumber, pendingOffseasonCardChoice),
   };
 }
 

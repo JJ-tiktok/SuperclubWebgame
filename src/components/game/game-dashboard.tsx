@@ -83,6 +83,7 @@ import {
   createPoachRequestAction,
   declinePoachRequestAction,
 } from "@/app/games/actions/poach";
+import { claimLastPlaceBonusAction } from "@/app/games/actions/last-place-bonus";
 import {
   acceptTransferOfferAction,
   cancelTransferOfferAction,
@@ -351,6 +352,9 @@ function GameDashboardContent({ activeView, currentUserId, snapshot }: GameDashb
           {snapshot.game.phase === "off_season" && ownClub ? (
             <OffSeasonChecklist ownClub={ownClub} snapshot={snapshot} />
           ) : null}
+          {snapshot.game.phase === "off_season" && ownClub ? (
+            <LastPlaceBonusPanel ownClub={ownClub} snapshot={snapshot} />
+          ) : null}
           {snapshot.game.phase === "lobby" ? (
             <LobbySetupView ownClub={ownClub} snapshot={snapshot} />
           ) : (
@@ -536,6 +540,8 @@ function OffSeasonChecklist({ ownClub, snapshot }: { ownClub: LobbyClub; snapsho
     !overview?.sponsor_signing_allowed ||
     (overview?.available_sponsor_deals.length === 0 && (overview?.sponsor_history.length ?? 0) > 0);
 
+  const lastPlaceBonus = overview?.last_place_bonus;
+
   const items: Array<{ id: string; label: string; done: boolean; href: string; help: string }> = [
     {
       id: "training",
@@ -575,6 +581,19 @@ function OffSeasonChecklist({ ownClub, snapshot }: { ownClub: LobbyClub; snapsho
           },
         ]
       : []),
+    ...(lastPlaceBonus?.eligible || lastPlaceBonus?.pending_game_changer_choice
+      ? [
+          {
+            id: "comeback_bonus",
+            label: "Comeback-Bonus",
+            done: !lastPlaceBonus.eligible && !lastPlaceBonus.pending_game_changer_choice,
+            href: `/games/${snapshot.game.room_code}?view=dashboard#comeback-bonus`,
+            help: lastPlaceBonus.pending_game_changer_choice
+              ? "Game-Changer-Auswahl offen"
+              : "Bonus unten waehlen",
+          },
+        ]
+      : []),
   ];
 
   return (
@@ -603,6 +622,80 @@ function OffSeasonChecklist({ ownClub, snapshot }: { ownClub: LobbyClub; snapsho
           ))}
         </div>
       </div>
+    </Panel>
+  );
+}
+
+function LastPlaceBonusPanel({ ownClub, snapshot }: { ownClub: LobbyClub; snapshot: LobbySnapshot }) {
+  const bonus = snapshot.club_overview?.last_place_bonus;
+  if (!bonus) {
+    return null;
+  }
+
+  if (bonus.blocked_reason === "consecutive_last") {
+    return (
+      <Panel className="border-rose-800/60 bg-rose-950/20" id="comeback-bonus">
+        <div className="p-4">
+          <p className="text-xs font-medium uppercase text-rose-400">Comeback-Bonus</p>
+          <p className="mt-1 text-sm text-zinc-300">
+            Zweite Saison in Folge Letzter in der Managerwertung: kein Comeback-Bonus, aber weiterhin −3 Prestige.
+          </p>
+        </div>
+      </Panel>
+    );
+  }
+
+  if (!bonus.eligible && !bonus.pending_game_changer_choice) {
+    return null;
+  }
+
+  const moneyLabel = "5 Mio.";
+
+  return (
+    <Panel className="border-amber-700/60 bg-amber-950/20" id="comeback-bonus">
+      <PanelHeader>
+        <div>
+          <PanelTitle>Comeback-Bonus</PanelTitle>
+          <PanelDescription>
+            Du warst Letzter in der Managerwertung. Waehle einen einmaligen Off-Season-Bonus.
+          </PanelDescription>
+        </div>
+      </PanelHeader>
+      {bonus.pending_game_changer_choice ? (
+        <p className="px-4 pb-4 text-sm text-zinc-300">
+          Deine Game-Changer-Auswahl ist offen — waehle eine Karte im Dialog.
+        </p>
+      ) : (
+        <div className="grid gap-3 px-4 pb-4 md:grid-cols-3">
+          <form action={claimLastPlaceBonusAction}>
+            <input type="hidden" name="game_id" value={snapshot.game.id} />
+            <input type="hidden" name="room_code" value={snapshot.game.room_code} />
+            <input type="hidden" name="bonus_type" value="training" />
+            <Button className="h-auto w-full flex-col items-start gap-1 py-3" type="submit" variant="secondary">
+              <span className="font-semibold">Trainingslager</span>
+              <span className="text-xs font-normal text-zinc-400">+1 Trainingseinheit in dieser Off-Season</span>
+            </Button>
+          </form>
+          <form action={claimLastPlaceBonusAction}>
+            <input type="hidden" name="game_id" value={snapshot.game.id} />
+            <input type="hidden" name="room_code" value={snapshot.game.room_code} />
+            <input type="hidden" name="bonus_type" value="money" />
+            <Button className="h-auto w-full flex-col items-start gap-1 py-3" type="submit" variant="secondary">
+              <span className="font-semibold">Finanzspritze</span>
+              <span className="text-xs font-normal text-zinc-400">+{moneyLabel} aufs Vereinskonto</span>
+            </Button>
+          </form>
+          <form action={claimLastPlaceBonusAction}>
+            <input type="hidden" name="game_id" value={snapshot.game.id} />
+            <input type="hidden" name="room_code" value={snapshot.game.room_code} />
+            <input type="hidden" name="bonus_type" value="game_changer" />
+            <Button className="h-auto w-full flex-col items-start gap-1 py-3" type="submit" variant="secondary">
+              <span className="font-semibold">Neue Impulse</span>
+              <span className="text-xs font-normal text-zinc-400">2 Karten ziehen, 1 waehlen (Good News & Geheimwaffen)</span>
+            </Button>
+          </form>
+        </div>
+      )}
     </Panel>
   );
 }

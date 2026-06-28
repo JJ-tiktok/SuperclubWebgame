@@ -41,11 +41,23 @@ import {
   maybeTriggerFinalSeason,
   processContinentalPrestigeAtCupEnd,
   processPrestigeAtSeasonEnd,
+  processLastPlaceManagerAtSeasonEnd,
   recordQualifiedTransferSale,
   snapshotSeasonStartSquadStars,
 } from "@/lib/lobby/prestige-server";
-import { isPrestigeEnabled } from "@/lib/lobby/prestige";
+import { isPrestigeEnabled, normalizePrestigeState } from "@/lib/lobby/prestige";
 import { incrementPlayerTenureForGame } from "@/lib/lobby/player-tenure";
+import { isMarketPoolPlayer, playerMatchesScoutingPile } from "@/lib/lobby/player-pool";
+import {
+  applyLastPlaceMoneyBonus,
+  applyLastPlaceTrainingBonus,
+  canClaimLastPlaceBonus,
+  drawOffseasonGameChangerCandidates,
+  getOffseasonCardCandidates,
+  isOffseasonCardChoicePayload,
+  markLastPlaceBonusClaimed,
+  type LastPlaceBonusType,
+} from "@/lib/lobby/last-place-bonus";
 import {
   hasActiveTrainingLock,
   loadClubSponsorContracts,
@@ -117,6 +129,7 @@ import {
   isOffseasonPhase,
   isScoutingPileKey,
   sumStaffScoutingBonus,
+  type ScoutingPileKey,
 } from "@/lib/lobby/scouting";
 import {
   canTrainOwnedPlayer,
@@ -974,12 +987,13 @@ export async function drawScoutingPlayerAction(formData: FormData) {
     clubs,
     draws,
     gameId,
+    pileKey,
     seasonNumber,
     supabase,
   });
 
   if (!selectedPlayer) {
-    throw new Error("Kein verfuegbarer Spieler fuer Scouting gefunden.");
+    throw new Error(`Kein verfuegbarer Spieler in Region ${pileKey} fuer Scouting gefunden.`);
   }
 
   const { data: insertedDraw, error: insertError } = await supabase.from("scouting_draws").insert({
@@ -3270,6 +3284,12 @@ export async function advancePhaseAction(formData: FormData) {
       await processSponsorContractsAtSeasonEnd(supabase, gameId, Number(game.settings?.seasonNumber ?? 1));
     }
     await finalizeSeasonEnd(supabase, gameId, Number(game.settings?.seasonNumber ?? 1));
+    await processLastPlaceManagerAtSeasonEnd(
+      supabase,
+      gameId,
+      Number(game.settings?.seasonNumber ?? 1),
+      game.settings,
+    );
     if (isPrestigeEnabled(game.settings)) {
       await processPrestigeAtSeasonEnd(supabase, gameId, Number(game.settings?.seasonNumber ?? 1), game.settings);
     }
@@ -6164,10 +6184,11 @@ async function pickAvailableScoutingPlayer(params: {
   clubs: LobbyClub[];
   draws: ScoutingDrawSnapshot[];
   gameId: string;
+  pileKey: ScoutingPileKey;
   seasonNumber: number;
   supabase: SupabaseServiceClient;
 }) {
-  const { clubs, draws, supabase } = params;
+  const { clubs, draws, pileKey, supabase } = params;
   const clubIds = clubs.map((club) => club.id);
   const openPlayerIds = new Set(draws.filter((draw) => draw.status === "drawn").map((draw) => draw.player_id));
   const ownedPlayerIds = new Set<string>();
@@ -6191,13 +6212,21 @@ async function pickAvailableScoutingPlayer(params: {
   const { data: players, error: playersError } = await supabase
     .from("players")
     .select(DRAFT_PLAYER_SELECT)
+    .in("visibility", ["public", "room"])
+    .neq("region", "academy")
     .returns<DraftPlayerRow[]>();
 
   if (playersError) {
     throw playersError;
   }
 
-  const available = (players ?? []).filter((player) => !openPlayerIds.has(player.id) && !ownedPlayerIds.has(player.id));
+  const available = (players ?? []).filter(
+    (player) =>
+      isMarketPoolPlayer(player) &&
+      playerMatchesScoutingPile(player, pileKey) &&
+      !openPlayerIds.has(player.id) &&
+      !ownedPlayerIds.has(player.id),
+  );
 
   if (available.length === 0) {
     return null;
@@ -6512,7 +6541,12 @@ async function pickDeadlinePlayers(params: {
       .eq("game_id", gameId)
       .eq("season_number", seasonNumber)
       .returns<Array<{ player_id: string }>>(),
-    supabase.from("players").select(DRAFT_PLAYER_SELECT).returns<DraftPlayerRow[]>(),
+    supabase
+      .from("players")
+      .select(DRAFT_PLAYER_SELECT)
+      .in("visibility", ["public", "room"])
+      .neq("region", "academy")
+      .returns<DraftPlayerRow[]>(),
   ]);
 
   if (clubsError) {
@@ -6547,7 +6581,10 @@ async function pickDeadlinePlayers(params: {
     }
   }
 
-  const available = (players ?? []).filter((player) => !ownedPlayerIds.has(player.id) && !auctionPlayerIds.has(player.id));
+  const available = (players ?? []).filter(
+    (player) =>
+      isMarketPoolPlayer(player) && !ownedPlayerIds.has(player.id) && !auctionPlayerIds.has(player.id),
+  );
   return shuffle(available).slice(0, count);
 }
 
@@ -7451,6 +7488,62 @@ export async function resolveGameChangerChoiceAction(formData: FormData) {
       redirect(`/games/${roomCode}`);
     }
     detail = res.detail;
+  } else if (choiceType === "pick_offseason_card") {
+    const cardId = String(formData.get("card_id") || "");
+    if (!cardId) redirect(`/games/${roomCode}`);
+
+    const candidates = getOffseasonCardCandidates(cgc.choice_payload);
+    const chosen = candidates.find((candidate) => candidate.card_id === cardId);
+    if (!chosen) redirect(`/games/${roomCode}`);
+
+    const effects = parseEffects(chosen.effects);
+    resolvedPayload = { type: "pick_offseason_card", card_id: cardId };
+
+    const isLastPlaceBonus =
+      isOffseasonCardChoicePayload(cgc.choice_payload) && cgc.choice_payload.last_place_bonus === true;
+    if (isLastPlaceBonus) {
+      const nextState = markLastPlaceBonusClaimed(normalizePrestigeState(ownClub.prestige_state), seasonNumber);
+      await supabase.from("clubs").update({ prestige_state: nextState }).eq("id", ownClub.id);
+    }
+
+    const dispatchResult = await dispatchGameChangerEffects({
+      supabase,
+      clubId: ownClub.id,
+      clubGameChangerId: cgc.id,
+      effects,
+      ctx: {
+        seasonNumber,
+        matchday: 0,
+        gamePhase: game.phase,
+      },
+    });
+
+    detail = dispatchResult.details.join("; ") || chosen.display_name;
+
+    await supabase
+      .from("club_game_changers")
+      .update({
+        game_changer_card_id: cardId,
+        status: dispatchResult.status === "pending" ? "pending" : "resolved",
+        resolved_payload: dispatchResult.status === "pending" ? null : resolvedPayload,
+        used_at: dispatchResult.status === "pending" ? null : new Date().toISOString(),
+      })
+      .eq("id", cgc.id);
+
+    if (detail) {
+      await supabase.from("match_news").insert({
+        game_id: gameId,
+        club_id: ownClub.id,
+        category: chosen.category,
+        headline: `Comeback-Bonus: ${chosen.display_name}`,
+        detail,
+        club_game_changer_id: cgc.id,
+      });
+    }
+
+    await touchGameSave(supabase, gameId, userId);
+    revalidatePath(`/games/${roomCode}`);
+    redirect(`/games/${roomCode}`);
   } else if (choiceType === "pick_zone") {
     const zone = String(formData.get("zone") || "").toUpperCase();
     if (!["ATT", "MID", "DEF"].includes(zone)) redirect(`/games/${roomCode}`);
@@ -7486,6 +7579,81 @@ export async function resolveGameChangerChoiceAction(formData: FormData) {
       headline: `Game Changer aufgeloest: ${cgc!.game_changer_card!.display_name}`,
       detail,
     });
+  }
+
+  await touchGameSave(supabase, gameId, userId);
+  revalidatePath(`/games/${roomCode}`);
+  redirect(`/games/${roomCode}`);
+}
+
+export async function claimLastPlaceBonusAction(formData: FormData) {
+  const { userId } = await auth();
+  const gameId = String(formData.get("game_id") || "");
+  const roomCode = String(formData.get("room_code") || "");
+  const bonusType = String(formData.get("bonus_type") || "") as LastPlaceBonusType;
+  const supabase = createSupabaseServiceClient();
+
+  if (!userId || !gameId || !roomCode || !supabase) {
+    redirect(`/games/${roomCode}`);
+  }
+
+  const { ownClub, game } = await getGameClubContext(supabase, gameId, userId);
+  const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
+
+  if (!isOffseasonPhase(game.phase)) {
+    redirect(`/games/${roomCode}`);
+  }
+
+  const state = normalizePrestigeState(ownClub.prestige_state);
+  if (!canClaimLastPlaceBonus(state, seasonNumber)) {
+    redirect(`/games/${roomCode}`);
+  }
+
+  if (bonusType === "training") {
+    await applyLastPlaceTrainingBonus(supabase, ownClub.id, seasonNumber);
+    const nextState = markLastPlaceBonusClaimed(state, seasonNumber);
+    await supabase.from("clubs").update({ prestige_state: nextState }).eq("id", ownClub.id);
+  } else if (bonusType === "money") {
+    await applyLastPlaceMoneyBonus(supabase, gameId, ownClub.id, seasonNumber);
+    const nextState = markLastPlaceBonusClaimed(state, seasonNumber);
+    await supabase.from("clubs").update({ prestige_state: nextState }).eq("id", ownClub.id);
+  } else if (bonusType === "game_changer") {
+    const { data: existingPending } = await supabase
+      .from("club_game_changers")
+      .select("id, choice_payload")
+      .eq("club_id", ownClub.id)
+      .eq("status", "pending")
+      .limit(20)
+      .returns<Array<{ id: string; choice_payload: Record<string, unknown> | null }>>();
+
+    if ((existingPending ?? []).some((row) => isOffseasonCardChoicePayload(row.choice_payload))) {
+      redirect(`/games/${roomCode}`);
+    }
+
+    const candidates = await drawOffseasonGameChangerCandidates(supabase, 2);
+    if (candidates.length === 0) {
+      redirect(`/games/${roomCode}`);
+    }
+
+    const choicePayload = {
+      type: "pick_offseason_card",
+      candidates,
+      last_place_bonus: true,
+    };
+
+    const { error: insertError } = await supabase.from("club_game_changers").insert({
+      club_id: ownClub.id,
+      game_changer_card_id: candidates[0].card_id,
+      season_number: seasonNumber,
+      status: "pending",
+      choice_payload: choicePayload,
+    });
+
+    if (insertError) {
+      throw insertError;
+    }
+  } else {
+    redirect(`/games/${roomCode}`);
   }
 
   await touchGameSave(supabase, gameId, userId);

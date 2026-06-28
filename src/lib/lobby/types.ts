@@ -488,6 +488,13 @@ export type TransferMarketSnapshot = {
   setup_error?: string;
 };
 
+export type LastPlaceBonusSnapshot = {
+  eligible: boolean;
+  consecutive_last_seasons: number;
+  blocked_reason: "consecutive_last" | null;
+  pending_game_changer_choice: boolean;
+};
+
 export type ClubOverviewSnapshot = {
   season_number: number;
   sales_count: number;
@@ -512,6 +519,7 @@ export type ClubOverviewSnapshot = {
   sponsor_prestige_label: string;
   medical_heals_remaining?: number;
   nlz_archetype_respec_available?: boolean;
+  last_place_bonus?: LastPlaceBonusSnapshot | null;
 };
 
 export type SponsorContractOverviewSnapshot = {

@@ -16,6 +16,12 @@ import type { ContinentalParticipantSnapshot, ContinentalTournamentSnapshot, Lob
 import { cn } from "@/lib/utils";
 import { computeParticipantRecord, getOwnStatusHeadline } from "./continental-bracket-utils";
 
+const PRIZE_MILESTONES = [
+  { label: "Halbfinale", amount: CONTINENTAL_PRIZE_SEMIFINAL },
+  { label: "Finale", amount: CONTINENTAL_PRIZE_FINALIST },
+  { label: "Sieg", amount: CONTINENTAL_PRIZE_WINNER },
+] as const;
+
 export function ContinentalStatusBanner({
   continental,
   isHost,
@@ -59,9 +65,7 @@ export function ContinentalStatusBanner({
             <p className="text-xs font-medium uppercase tracking-wide text-emerald-400">Continental Cup</p>
             <PanelTitle className="mt-1">{headline}</PanelTitle>
             <PanelDescription className="mt-1">
-              Saison {continental.season_number} — Praemien bis {formatMoney(continental.prize_amount)} (HF{" "}
-              {formatMoney(CONTINENTAL_PRIZE_SEMIFINAL)} / Finale {formatMoney(CONTINENTAL_PRIZE_FINALIST)} / Sieg{" "}
-              {formatMoney(CONTINENTAL_PRIZE_WINNER)})
+              Saison {continental.season_number} — Prämien bis {formatMoney(continental.prize_amount)}
             </PanelDescription>
           </div>
         </div>
@@ -71,6 +75,18 @@ export function ContinentalStatusBanner({
             : `${completedCount}/${currentRoundFixtures.length} in ${getContinentalRoundLabel(continental.current_round)}`}
         </Badge>
       </PanelHeader>
+
+      <div className="mt-4 grid gap-2 sm:grid-cols-3">
+        {PRIZE_MILESTONES.map((milestone) => (
+          <div
+            className="rounded-md border border-zinc-800 bg-zinc-900/50 px-3 py-2 text-center"
+            key={milestone.label}
+          >
+            <p className="text-[10px] font-medium uppercase tracking-wide text-zinc-500">{milestone.label}</p>
+            <p className="mt-0.5 text-sm font-semibold text-amber-300">{formatMoney(milestone.amount)}</p>
+          </div>
+        ))}
+      </div>
 
       {record ? (
         <div className="mt-4 grid gap-3 sm:grid-cols-3">
@@ -101,7 +117,7 @@ export function ContinentalStatusBanner({
           <input name="game_id" type="hidden" value={snapshot.game.id} />
           <input name="room_code" type="hidden" value={snapshot.game.room_code} />
           <Button type="submit" variant="primary">
-            Naechste Runde starten
+            Nächste Runde starten
           </Button>
         </form>
       ) : null}
@@ -109,7 +125,9 @@ export function ContinentalStatusBanner({
       {continental.status === "completed" ? (
         <p className="mt-3 text-sm text-emerald-300">
           Turnier beendet.
-          {isHost ? " Nutze oben „Fortsetzen“, um in die Off-Season zu wechseln." : " Der Host kann oben „Fortsetzen“ waehlen."}
+          {isHost
+            ? " Nutze oben „Fortsetzen“, um in die Off-Season zu wechseln."
+            : " Der Host kann oben „Fortsetzen“ wählen."}
         </p>
       ) : null}
     </Panel>

@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import {
   buildSymmetricBracket,
   computeParticipantRecord,
+  didParticipantLoseFixture,
   findOwnCurrentFixture,
   getNextRoundFeedMatchIndex,
   sortManagersForDisplay,
@@ -126,6 +127,47 @@ describe("continental-bracket-utils", () => {
     const fixture = findOwnCurrentFixture(continental, "club-own");
     assert.equal(fixture?.round, 16);
     assert.equal(fixture?.id, "f-16-0");
+  });
+
+  it("shows the elimination fixture instead of the previous win when knocked out", () => {
+    const own = makeParticipant("p-own", "club-own", "Own FC");
+    const cpu32 = makeParticipant("p-cpu-32", null, "CPU 32");
+    const cpu16 = makeParticipant("p-cpu-16", null, "CPU 16");
+    own.eliminated_round = 16;
+
+    const continental = makeTournament({
+      current_round: 8,
+      status: "in_progress",
+      participants: [own, cpu32, cpu16],
+      fixtures: [
+        makeFixture(32, 0, own, cpu32, "completed", { home: 2, away: 0 }),
+        makeFixture(16, 0, own, cpu16, "completed", { home: 0, away: 2 }),
+      ],
+    });
+
+    const fixture = findOwnCurrentFixture(continental, "club-own");
+    assert.equal(fixture?.round, 16);
+    assert.equal(fixture?.id, "f-16-0");
+    assert.equal(didParticipantLoseFixture(fixture!, "p-own"), true);
+  });
+
+  it("shows the final for the tournament winner after completion", () => {
+    const own = makeParticipant("p-own", "club-own", "Own FC");
+    const cpuFinal = makeParticipant("p-cpu-final", null, "CPU Final");
+    const continental = makeTournament({
+      current_round: 2,
+      status: "completed",
+      winner_club_id: "club-own",
+      participants: [own, cpuFinal],
+      fixtures: [
+        makeFixture(32, 0, own, makeParticipant("p-cpu-32", null, "CPU 32"), "completed", { home: 2, away: 0 }),
+        makeFixture(2, 0, own, cpuFinal, "completed", { home: 3, away: 1 }),
+      ],
+    });
+
+    const fixture = findOwnCurrentFixture(continental, "club-own");
+    assert.equal(fixture?.round, 2);
+    assert.equal(fixture?.id, "f-2-0");
   });
 
   it("sorts own manager first then active managers alphabetically", () => {

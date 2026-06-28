@@ -2,16 +2,20 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   addTrainingStarsToState,
+  applyPrestigeDeductionFloor,
   capTrainingStarsForPhilosophy,
   checkTraditionsverein,
+  formatPrestigeAwardPoints,
   getPhilosophyProgress,
   getTalentschmiedePhilosophyProgress,
   isAcademyPlayerAtMax,
   isPhilosophyFulfilled,
   isQualifiedTransferProfit,
   normalizePrestigeState,
+  normalizePrestigeTotalFromAwards,
   PRESTIGE_POINTS,
   resolvePrestigeWinner,
+  sumPrestigeAwardPoints,
   shouldTriggerFinalSeason,
   sponsorPointsForTier,
   sumTrainingStarsForSeason,
@@ -50,10 +54,42 @@ describe("prestige point catalog", () => {
 
   it("exposes core seasonal prestige values", () => {
     assert.equal(PRESTIGE_POINTS.league_champion, 10);
+    assert.equal(PRESTIGE_POINTS.manager_rank_last, -3);
     assert.equal(PRESTIGE_POINTS.continental_win, 20);
     assert.equal(PRESTIGE_POINTS.continental_finalist, 10);
     assert.equal(PRESTIGE_POINTS.facility_max, 5);
     assert.equal(PRESTIGE_POINTS.youth_max, 4);
+  });
+});
+
+describe("prestige deduction floor", () => {
+  it("never reduces prestige below zero", () => {
+    assert.equal(applyPrestigeDeductionFloor(1, PRESTIGE_POINTS.manager_rank_last), 0);
+    assert.equal(applyPrestigeDeductionFloor(100, PRESTIGE_POINTS.manager_rank_last), 97);
+  });
+});
+
+describe("prestige award totals", () => {
+  it("sums positive and negative awards", () => {
+    assert.equal(
+      sumPrestigeAwardPoints([
+        { points: 3 },
+        { points: -3 },
+      ]),
+      0,
+    );
+  });
+
+  it("formats award points with explicit sign", () => {
+    assert.equal(formatPrestigeAwardPoints(3), "+3");
+    assert.equal(formatPrestigeAwardPoints(-3), "-3");
+    assert.equal(formatPrestigeAwardPoints(0), "0");
+  });
+
+  it("normalizes award sum to zero floor", () => {
+    assert.equal(normalizePrestigeTotalFromAwards(0), 0);
+    assert.equal(normalizePrestigeTotalFromAwards(-2), 0);
+    assert.equal(normalizePrestigeTotalFromAwards(5), 5);
   });
 });
 

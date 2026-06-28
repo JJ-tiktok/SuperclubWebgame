@@ -80,7 +80,9 @@ export function getClubOverviewLoadProfileForView(phase: LobbyPhase, view: strin
     ["grounds", "lineup", "training", "scouting", "transfer", "matchday", "continental"].includes(view);
 
   return {
-    loadGameChangers: ["grounds", "matchday", "continental"].includes(view),
+    // Dashboard during off-season: Comeback-Bonus „Neue Impulse“ pending choices + modal.
+    loadGameChangers:
+      ["grounds", "matchday", "continental"].includes(view) || offseasonDashboard || offSeasonChecklist,
     loadInvestments: offseasonDashboard || view === "grounds" || offSeasonChecklist,
     loadOpenStaffOffer: view === "grounds",
     loadPendingEffects,

@@ -80,8 +80,11 @@ export function sumTrainingCapacityFromPendingEffects(
     const delta = eff.payload.delta;
     if (delta === "double") {
       doubleTraining = true;
-    } else if (typeof delta === "number") {
-      pendingExtra += delta;
+    } else {
+      const numericDelta = Number(delta);
+      if (Number.isFinite(numericDelta)) {
+        pendingExtra += numericDelta;
+      }
     }
   }
   return { pendingExtra, doubleTraining };
@@ -105,5 +108,5 @@ export function computeTrainingExtraPlayers(params: {
           .filter((e) => e.type === "training_player_bonus")
           .reduce((sum, e) => sum + Number(e.players ?? 0), 0);
   const effectiveBase = doubleTraining ? params.baseCapacity * 2 : params.baseCapacity;
-  return Math.max(0, effectiveBase - params.baseCapacity + snapshotExtra + pendingExtra);
+  return effectiveBase - params.baseCapacity + snapshotExtra + pendingExtra;
 }

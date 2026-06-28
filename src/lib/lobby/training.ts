@@ -165,7 +165,7 @@ export function getTrainingStatus(params: {
 
   return {
     attempts_used: params.events.length,
-    capacity_players: capacity.players + (params.extraPlayers ?? 0),
+    capacity_players: Math.max(0, capacity.players + (params.extraPlayers ?? 0)),
     guaranteed_bonus_available: capacity.guaranteedStarForPlayers > 0 && !guaranteedBonusUsed,
     guaranteed_bonus_used: guaranteedBonusUsed,
     max_gain_per_player: capacity.maxStarsPerPlayer,

@@ -94,6 +94,7 @@ export const PRESTIGE_CATEGORY = {
   league_champion: "league_champion",
   league_runner_up: "league_runner_up",
   manager_rank_1: "manager_rank_1",
+  manager_rank_last: "manager_rank_last",
   continental_win: "continental_win",
   continental_finalist: "continental_finalist",
   sponsor_tier: "sponsor_tier",
@@ -108,6 +109,7 @@ export const PRESTIGE_POINTS = {
   league_champion: 10,
   league_runner_up: 4,
   manager_rank_1: 3,
+  manager_rank_last: -3,
   continental_win: 20,
   continental_finalist: 10,
   facility_max: 5,
@@ -144,7 +146,13 @@ export const PRESTIGE_EARNING_RULES: PrestigeEarningRule[] = [
     label: "Bester Manager",
     points: `+${PRESTIGE_POINTS.manager_rank_1}`,
     frequency: "pro Saison",
-    note: "Hoechster Manager-Score",
+    note: "Hoechster Manager-Score (nur Siegpunkte aus Manager-Spielen)",
+  },
+  {
+    label: "Schlechtester Manager",
+    points: `${PRESTIGE_POINTS.manager_rank_last}`,
+    frequency: "pro Saison",
+    note: "Letzter Platz Managerwertung (nur bei 2+ Managern)",
   },
   {
     label: "Continental Cup Sieg",
@@ -188,6 +196,7 @@ const PRESTIGE_AWARD_CATEGORY_LABELS: Record<string, string> = {
   [PRESTIGE_CATEGORY.league_champion]: "Liga-Meister",
   [PRESTIGE_CATEGORY.league_runner_up]: "Vizemeister",
   [PRESTIGE_CATEGORY.manager_rank_1]: "Bester Manager",
+  [PRESTIGE_CATEGORY.manager_rank_last]: "Schlechtester Manager",
   [PRESTIGE_CATEGORY.continental_win]: "Continental Cup Sieg",
   [PRESTIGE_CATEGORY.continental_finalist]: "Continental Cup Finale",
   [PRESTIGE_CATEGORY.sponsor_tier]: "Sponsorenziel",
@@ -195,6 +204,22 @@ const PRESTIGE_AWARD_CATEGORY_LABELS: Record<string, string> = {
   [PRESTIGE_CATEGORY.youth_max]: "Jugendtalent Max",
   [PRESTIGE_CATEGORY.philosophy]: "Vereinsphilosophie",
 };
+
+export function sumPrestigeAwardPoints(awards: Array<{ points: number }>): number {
+  return awards.reduce((total, award) => total + Math.trunc(Number(award.points ?? 0)), 0);
+}
+
+export function normalizePrestigeTotalFromAwards(awardSum: number): number {
+  return Math.max(0, Math.trunc(Number(awardSum)));
+}
+
+export function formatPrestigeAwardPoints(points: number): string {
+  const value = Math.trunc(Number(points));
+  if (value > 0) {
+    return `+${value}`;
+  }
+  return String(value);
+}
 
 export function formatPrestigeAwardLabel(category: string, metadata: Record<string, unknown> = {}): string {
   const base = PRESTIGE_AWARD_CATEGORY_LABELS[category] ?? category;
@@ -219,6 +244,9 @@ export function formatPrestigeAwardLabel(category: string, metadata: Record<stri
 
 export type PrestigeState = {
   consecutive_league_titles?: number;
+  consecutive_last_manager_seasons?: number;
+  last_place_bonus_season?: number | null;
+  last_place_bonus_claimed_season?: number | null;
   youth_max_developed?: number;
   qualified_transfer_sales?: number;
   sponsor_prestige_earned?: number;
@@ -291,6 +319,11 @@ export function normalizePrestigeState(value: unknown): PrestigeState {
   const raw = value as Record<string, unknown>;
   return {
     consecutive_league_titles: Number(raw.consecutive_league_titles ?? 0) || 0,
+    consecutive_last_manager_seasons: Number(raw.consecutive_last_manager_seasons ?? 0) || 0,
+    last_place_bonus_season:
+      raw.last_place_bonus_season == null ? null : Number(raw.last_place_bonus_season) || null,
+    last_place_bonus_claimed_season:
+      raw.last_place_bonus_claimed_season == null ? null : Number(raw.last_place_bonus_claimed_season) || null,
     youth_max_developed: Number(raw.youth_max_developed ?? 0) || 0,
     qualified_transfer_sales: Number(raw.qualified_transfer_sales ?? 0) || 0,
     sponsor_prestige_earned: Number(raw.sponsor_prestige_earned ?? 0) || 0,
@@ -529,6 +562,17 @@ export function updateConsecutiveLeagueTitles(state: PrestigeState, wonLeague: b
     ...state,
     consecutive_league_titles: wonLeague ? (state.consecutive_league_titles ?? 0) + 1 : 0,
   };
+}
+
+export function updateConsecutiveLastManagerSeasons(state: PrestigeState, wasLast: boolean): PrestigeState {
+  return {
+    ...state,
+    consecutive_last_manager_seasons: wasLast ? (state.consecutive_last_manager_seasons ?? 0) + 1 : 0,
+  };
+}
+
+export function applyPrestigeDeductionFloor(currentPoints: number, deduction: number): number {
+  return Math.max(0, Math.trunc(Number(currentPoints)) + Math.trunc(Number(deduction)));
 }
 
 export function updateFacilitiesAtMaxState(

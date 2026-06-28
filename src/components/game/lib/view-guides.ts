@@ -20,6 +20,7 @@ export const VIEW_GUIDES: Record<GameView, ViewGuideConfig> = {
       "Dein zentraler Spielstand: Saisonfortschritt, Finanzen auf einen Blick und der naechste Schritt. Nach Saisonende siehst du hier auch die Auswertung.",
     tips: [
       "Markiere dich als Fertig, wenn du deine Off-Season-Aufgaben erledigt hast.",
+      "Letztplatzierter der Managerwertung kann einen Comeback-Bonus waehlen (Trainingslager, Finanzspritze oder Game-Changer).",
       "Der Host setzt die Phase fort, sobald alle Manager bereit sind.",
     ],
   },
@@ -101,6 +102,7 @@ export const VIEW_GUIDES: Record<GameView, ViewGuideConfig> = {
       "Liga- und Managerwertung: kosmetische Ligatabelle, Rang nach Siegpunkten (Manager-Spiele), Stufen aus Kader + Siegpunkte sowie Positionsboard.",
     tips: [
       "Manager-Rang bestimmt Praemien und Sponsoring-Optionen.",
+      "Letzter in der Managerwertung verliert 3 Prestige, darf aber einen Comeback-Bonus in der Off-Season waehlen (ausser bei 2x in Folge Letzter).",
       "Die Ligatabelle spiegelt Match-Ergebnisse der Saison wider.",
     ],
     sections: [

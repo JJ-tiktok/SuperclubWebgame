@@ -17,13 +17,17 @@ import {
   isPrestigeEnabled,
   isQualifiedTransferProfit,
   normalizePrestigeState,
+  normalizePrestigeTotalFromAwards,
   PRESTIGE_CATEGORY,
   PRESTIGE_POINTS,
   shouldTriggerFinalSeason,
   sponsorPointsForTier,
   sumTrainingStarsForSeason,
+  sumPrestigeAwardPoints,
   updateConsecutiveLeagueTitles,
+  updateConsecutiveLastManagerSeasons,
   updateFacilitiesAtMaxState,
+  applyPrestigeDeductionFloor,
   type FacilityKey,
   type PhilosophyId,
   type PrestigeState,
@@ -171,6 +175,106 @@ async function awardPrestigePoints(params: {
 
   params.existingRefs?.add(ref);
   return points;
+}
+
+async function deductPrestigePoints(params: {
+  supabase: ServiceClient;
+  gameId: string;
+  clubId: string;
+  seasonNumber: number;
+  category: string;
+  ref: string;
+  points: number;
+  metadata?: Record<string, unknown>;
+  existingRefs?: Set<string>;
+}): Promise<number> {
+  const { supabase, gameId, clubId, seasonNumber, category, ref, points, metadata = {} } = params;
+  if (points >= 0) {
+    return 0;
+  }
+
+  if (params.existingRefs?.has(ref)) {
+    return 0;
+  }
+
+  const { error: insertError } = await supabase.from("prestige_awards").insert({
+    game_id: gameId,
+    club_id: clubId,
+    season_number: seasonNumber,
+    category,
+    ref,
+    points,
+    metadata,
+  });
+
+  if (insertError) {
+    if ((insertError as { code?: string }).code === "23505") {
+      return 0;
+    }
+    throw insertError;
+  }
+
+  const { data: club, error: clubError } = await supabase
+    .from("clubs")
+    .select("prestige_points")
+    .eq("id", clubId)
+    .single<{ prestige_points: number }>();
+
+  if (clubError) {
+    throw clubError;
+  }
+
+  const nextPoints = applyPrestigeDeductionFloor(Number(club.prestige_points ?? 0), points);
+  const { error: updateError } = await supabase.from("clubs").update({ prestige_points: nextPoints }).eq("id", clubId);
+  if (updateError) {
+    throw updateError;
+  }
+
+  params.existingRefs?.add(ref);
+  return points;
+}
+
+export async function processLastPlaceManagerAtSeasonEnd(
+  supabase: ServiceClient,
+  gameId: string,
+  seasonNumber: number,
+  settings: LobbyGame["settings"],
+) {
+  const managerRows = await loadManagerScoreRows(supabase, gameId, seasonNumber);
+  if (managerRows.length < 2) {
+    return;
+  }
+
+  const lastRank = managerRows.length;
+  const lastClubId = managerRows.find((row) => row.rank === lastRank)?.club_id ?? null;
+  const clubs = await loadHumanPrestigeClubs(supabase, gameId);
+  const prestigeEnabled = isPrestigeEnabled(settings);
+
+  for (const club of clubs) {
+    let state = normalizePrestigeState(club.prestige_state);
+    const managerRow = managerRows.find((row) => row.club_id === club.id);
+    const wasLast = managerRow?.rank === lastRank;
+
+    state = updateConsecutiveLastManagerSeasons(state, wasLast);
+
+    if (wasLast) {
+      const consecutive = state.consecutive_last_manager_seasons ?? 0;
+      if (consecutive === 1) {
+        state = {
+          ...state,
+          last_place_bonus_season: seasonNumber + 1,
+        };
+      } else if (consecutive >= 2) {
+        state = {
+          ...state,
+          last_place_bonus_season: null,
+        };
+      }
+
+    }
+
+    await updateClubPrestigeState(supabase, club.id, state);
+  }
 }
 
 async function updateClubPrestigeState(
@@ -592,6 +696,70 @@ export async function processPrestigeAtSeasonEnd(
       traditionsvereinMet,
     });
   }
+
+  await applyManagerRankLastPrestigeDeductions(supabase, gameId, seasonNumber, managerRows);
+  await syncPrestigePointsForGameClubs(supabase, gameId);
+}
+
+async function applyManagerRankLastPrestigeDeductions(
+  supabase: ServiceClient,
+  gameId: string,
+  seasonNumber: number,
+  managerRows: ManagerScoreRow[],
+) {
+  if (managerRows.length < 2) {
+    return;
+  }
+
+  const lastRank = managerRows.length;
+  const lastClubId = managerRows.find((row) => row.rank === lastRank)?.club_id ?? null;
+  if (!lastClubId) {
+    return;
+  }
+
+  const refs = await loadExistingAwardRefs(supabase, lastClubId, PRESTIGE_CATEGORY.manager_rank_last);
+  await deductPrestigePoints({
+    supabase,
+    gameId,
+    clubId: lastClubId,
+    seasonNumber,
+    category: PRESTIGE_CATEGORY.manager_rank_last,
+    ref: String(seasonNumber),
+    points: PRESTIGE_POINTS.manager_rank_last,
+    existingRefs: refs,
+  });
+}
+
+async function syncPrestigePointsForGameClubs(supabase: ServiceClient, gameId: string) {
+  const clubs = await loadHumanPrestigeClubs(supabase, gameId);
+
+  await Promise.all(
+    clubs.map(async (club) => {
+      const { data: awards, error } = await supabase
+        .from("prestige_awards")
+        .select("points")
+        .eq("club_id", club.id)
+        .returns<Array<{ points: number }>>();
+
+      if (error) {
+        throw error;
+      }
+
+      const total = normalizePrestigeTotalFromAwards(sumPrestigeAwardPoints(awards ?? []));
+      if (total === Number(club.prestige_points ?? 0)) {
+        return;
+      }
+
+      const { error: updateError } = await supabase
+        .from("clubs")
+        .update({ prestige_points: total })
+        .eq("id", club.id);
+
+      if (updateError) {
+        throw updateError;
+      }
+    }),
+  );
 }
 
 export async function processContinentalPrestigeAtCupEnd(

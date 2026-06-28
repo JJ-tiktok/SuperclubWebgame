@@ -83,6 +83,7 @@ import {
   createPoachRequestAction,
   declinePoachRequestAction,
 } from "@/app/games/actions/poach";
+import { claimLastPlaceBonusAction } from "@/app/games/actions/last-place-bonus";
 import {
   acceptTransferOfferAction,
   cancelTransferOfferAction,
@@ -95,7 +96,6 @@ import {
   lockFixtureLineupAction,
   markReadyForNextThirdAction,
   resolveFixtureAction,
-  startMatchAction,
   triggerDrawRerollAction,
 } from "@/app/games/actions/match";
 import { healInjuredPlayerAction } from "@/app/games/actions/game-changers";
@@ -153,7 +153,7 @@ import { GameEventsDock } from "@/components/game/game-events-dock";
 import { GameLineupBoard } from "@/components/game/game-lineup-board";
 import { GameRealtimeBridge } from "@/components/game/game-realtime-bridge";
 import { hydrateGameStoreIfNewer, useGameStore } from "@/components/game/game-store";
-import { pickFresherSnapshot } from "@/components/game/snapshot-freshness";
+import { mergePendingGameChangerSnapshot } from "@/components/game/snapshot-freshness";
 import { CaptainPanel } from "@/components/game/captain-panel";
 import { ClubBadge } from "@/components/game/club-badge";
 import { AfterMatchCards, MatchCardsPanel } from "@/components/game/match-cards-panel";
@@ -174,6 +174,7 @@ import {
 import { canUpgradeFacility, getStaffRecruitBlockReason, getStaffRecruitHint, getStaffRecruitReasonLabel, getUpgradeCost, getUpgradeReasonLabel, type UpgradeAction } from "@/lib/lobby/investments";
 import { isOffseasonPendingScopeActive } from "@/lib/lobby/offseason-pending-effects";
 import { calculateLineupPower, getCaptainBoostExtra } from "@/lib/lobby/lineup-power";
+import { hasFitGoalkeeper } from "@/lib/lobby/lineup-assignments";
 import { getPhaseLabel, isFinalSeason, isInvestmentPhase } from "@/lib/lobby/phases";
 import { isQualifiedTransferProfit } from "@/lib/lobby/prestige";
 import { buildSeasonEndSummaryModel } from "@/lib/lobby/season-end-summary";
@@ -214,6 +215,7 @@ import { isPlayerUnavailableForSeason } from "@/lib/lobby/poach";
 import type {
   ClubPlayerSnapshot,
   CpuStrengthTier,
+  DraftPickSnapshot,
   DraftPlayerRow,
   LobbyClub,
   LobbySnapshot,
@@ -265,7 +267,7 @@ export function GameDashboard(props: GameDashboardProps) {
     hydrateGameStoreIfNewer(props.snapshot);
   }, [props.snapshot]);
 
-  const snapshot = pickFresherSnapshot(props.snapshot, storeSnapshot);
+  const snapshot = mergePendingGameChangerSnapshot(props.snapshot, storeSnapshot);
 
   return <GameDashboardContent {...props} snapshot={snapshot} />;
 }
@@ -349,6 +351,9 @@ function GameDashboardContent({ activeView, currentUserId, snapshot }: GameDashb
           <FinalSeasonBanner game={snapshot.game} />
           {snapshot.game.phase === "off_season" && ownClub ? (
             <OffSeasonChecklist ownClub={ownClub} snapshot={snapshot} />
+          ) : null}
+          {snapshot.game.phase === "off_season" && ownClub ? (
+            <LastPlaceBonusPanel ownClub={ownClub} snapshot={snapshot} />
           ) : null}
           {snapshot.game.phase === "lobby" ? (
             <LobbySetupView ownClub={ownClub} snapshot={snapshot} />
@@ -535,6 +540,8 @@ function OffSeasonChecklist({ ownClub, snapshot }: { ownClub: LobbyClub; snapsho
     !overview?.sponsor_signing_allowed ||
     (overview?.available_sponsor_deals.length === 0 && (overview?.sponsor_history.length ?? 0) > 0);
 
+  const lastPlaceBonus = overview?.last_place_bonus;
+
   const items: Array<{ id: string; label: string; done: boolean; href: string; help: string }> = [
     {
       id: "training",
@@ -574,6 +581,19 @@ function OffSeasonChecklist({ ownClub, snapshot }: { ownClub: LobbyClub; snapsho
           },
         ]
       : []),
+    ...(lastPlaceBonus?.eligible || lastPlaceBonus?.pending_game_changer_choice
+      ? [
+          {
+            id: "comeback_bonus",
+            label: "Comeback-Bonus",
+            done: !lastPlaceBonus.eligible && !lastPlaceBonus.pending_game_changer_choice,
+            href: `/games/${snapshot.game.room_code}?view=dashboard#comeback-bonus`,
+            help: lastPlaceBonus.pending_game_changer_choice
+              ? "Game-Changer-Auswahl offen"
+              : "Bonus unten waehlen",
+          },
+        ]
+      : []),
   ];
 
   return (
@@ -604,6 +624,103 @@ function OffSeasonChecklist({ ownClub, snapshot }: { ownClub: LobbyClub; snapsho
       </div>
     </Panel>
   );
+}
+
+function LastPlaceBonusPanel({ ownClub, snapshot }: { ownClub: LobbyClub; snapshot: LobbySnapshot }) {
+  const searchParams = useSearchParams();
+  const comebackError = searchParams.get("comeback_error");
+  const bonus = snapshot.club_overview?.last_place_bonus;
+  const comebackErrorMessage = getComebackBonusErrorMessage(comebackError);
+  if (!bonus) {
+    return null;
+  }
+
+  if (bonus.blocked_reason === "consecutive_last") {
+    return (
+      <Panel className="border-rose-800/60 bg-rose-950/20" id="comeback-bonus">
+        <div className="p-4">
+          <p className="text-xs font-medium uppercase text-rose-400">Comeback-Bonus</p>
+          <p className="mt-1 text-sm text-zinc-300">
+            Zweite Saison in Folge Letzter in der Managerwertung: kein Comeback-Bonus, aber weiterhin −3 Prestige.
+          </p>
+        </div>
+      </Panel>
+    );
+  }
+
+  if (!bonus.eligible && !bonus.pending_game_changer_choice) {
+    return null;
+  }
+
+  const moneyLabel = "5 Mio.";
+
+  return (
+    <Panel className="border-amber-700/60 bg-amber-950/20" id="comeback-bonus">
+      <PanelHeader>
+        <div>
+          <PanelTitle>Comeback-Bonus</PanelTitle>
+          <PanelDescription>
+            Du warst Letzter in der Managerwertung. Waehle einen einmaligen Off-Season-Bonus.
+          </PanelDescription>
+        </div>
+      </PanelHeader>
+      {comebackErrorMessage ? (
+        <p className="px-4 pb-2 text-sm text-rose-300">{comebackErrorMessage}</p>
+      ) : null}
+      {bonus.pending_game_changer_choice ? (
+        <p className="px-4 pb-4 text-sm text-zinc-300">
+          Deine Game-Changer-Auswahl ist offen — waehle eine Karte im Dialog.
+        </p>
+      ) : (
+        <div className="grid gap-3 px-4 pb-4 md:grid-cols-3">
+          <form action={claimLastPlaceBonusAction}>
+            <input type="hidden" name="game_id" value={snapshot.game.id} />
+            <input type="hidden" name="room_code" value={snapshot.game.room_code} />
+            <input type="hidden" name="bonus_type" value="training" />
+            <Button className="h-auto w-full flex-col items-start gap-1 py-3" type="submit" variant="secondary">
+              <span className="font-semibold">Trainingslager</span>
+              <span className="text-xs font-normal text-zinc-400">+1 Trainingseinheit in dieser Off-Season</span>
+            </Button>
+          </form>
+          <form action={claimLastPlaceBonusAction}>
+            <input type="hidden" name="game_id" value={snapshot.game.id} />
+            <input type="hidden" name="room_code" value={snapshot.game.room_code} />
+            <input type="hidden" name="bonus_type" value="money" />
+            <Button className="h-auto w-full flex-col items-start gap-1 py-3" type="submit" variant="secondary">
+              <span className="font-semibold">Finanzspritze</span>
+              <span className="text-xs font-normal text-zinc-400">+{moneyLabel} aufs Vereinskonto</span>
+            </Button>
+          </form>
+          <form action={claimLastPlaceBonusAction}>
+            <input type="hidden" name="game_id" value={snapshot.game.id} />
+            <input type="hidden" name="room_code" value={snapshot.game.room_code} />
+            <input type="hidden" name="bonus_type" value="game_changer" />
+            <Button className="h-auto w-full flex-col items-start gap-1 py-3" type="submit" variant="secondary">
+              <span className="font-semibold">Neue Impulse</span>
+              <span className="text-xs font-normal text-zinc-400">2 Karten ziehen, 1 waehlen (Good News & Geheimwaffen)</span>
+            </Button>
+          </form>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function getComebackBonusErrorMessage(code: string | null): string | null {
+  switch (code) {
+    case "no_cards":
+      return "Keine passenden Game-Changer-Karten in der Datenbank gefunden (Good News / Geheimwaffen). Bitte pruefen, ob die Karten-Seeds geladen sind.";
+    case "choice_open":
+      return "Deine Kartenauswahl ist bereits offen — nutze den Dialog oben auf der Seite.";
+    case "not_eligible":
+      return "Comeback-Bonus ist in dieser Saison nicht (mehr) verfuegbar.";
+    case "wrong_phase":
+      return "Comeback-Bonus kann nur in der Off-Season eingeloest werden.";
+    case "invalid_type":
+      return "Ungueltige Bonus-Auswahl.";
+    default:
+      return null;
+  }
 }
 
 function GameHeader({
@@ -1125,6 +1242,16 @@ function getManagerDone(club: LobbyClub, memberByClerkId: Map<string, LobbySnaps
   };
 }
 
+function getDraftPlayerPositionLabel(player: DraftPlayerRow | undefined) {
+  if (!player) {
+    return null;
+  }
+
+  return getDraftOverviewPositionKey(player) === "UTIL"
+    ? "UTIL"
+    : getPositionLabel(mapDbPlayerToPlayerCardData(player).positions);
+}
+
 function DraftView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snapshot: LobbySnapshot }) {
   const draft = snapshot.draft;
 
@@ -1149,13 +1276,17 @@ function DraftView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
   }
 
   const currentTurnClub = snapshot.clubs.find((club) => club.id === draft.current_club_id);
-  const pickedPlayerIds = new Set(draft.picks.map((pick) => pick.playerId));
   const archetypesEnabled = snapshot.game.settings.archetypes_enabled !== false;
   const isMyTurn = Boolean(ownClub && draft.current_club_id === ownClub.id && snapshot.game.current_turn_club_id === ownClub.id);
   const ownSquadCount = ownClub ? draft.squad_counts[ownClub.id] ?? 0 : 0;
   const playerNames = new Map(draft.board_players.map((player) => [player.id, player.display_name]));
   const playerById = new Map(draft.board_players.map((player) => [player.id, player]));
   const clubNames = new Map(snapshot.clubs.map((club) => [club.id, club.club_name]));
+  const clubById = new Map(snapshot.clubs.map((club) => [club.id, club]));
+  const pickByPlayerId = new Map<string, DraftPickSnapshot>(
+    draft.picks.map((pick) => [pick.playerId, pick]),
+  );
+  const ownPicksThisRound = ownClub ? draft.picks.filter((pick) => pick.clubId === ownClub.id) : [];
 
   const clubPositionCounts: Record<string, ReturnType<typeof createEmptyDraftOverviewPositionCounts>> = {};
   for (const club of snapshot.clubs) {
@@ -1217,19 +1348,48 @@ function DraftView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
           <div className="grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))] gap-3">
             {draft.board_players.map((player) => {
               const card = mapDbPlayerToPlayerCardData(player);
-              const picked = pickedPlayerIds.has(player.id);
+              const pick = pickByPlayerId.get(player.id);
+              const picked = Boolean(pick);
+              const isOwnPick = Boolean(pick && ownClub && pick.clubId === ownClub.id);
+              const pickerClub = pick ? clubById.get(pick.clubId) : undefined;
               const canPick = isMyTurn && !picked;
 
               return (
-                <div className={cn("rounded-lg border border-zinc-800 bg-zinc-900/45 p-2", picked ? "opacity-55" : "")} key={player.id}>
-                  <PlayerCard disabled={picked} player={card} showArchetypes={archetypesEnabled} variant="draft" />
+                <div
+                  className={cn(
+                    "relative rounded-lg border bg-zinc-900/45 p-2",
+                    isOwnPick ? "border-[var(--club-color)]" : "border-zinc-800",
+                    picked && !isOwnPick ? "opacity-55" : "",
+                  )}
+                  key={player.id}
+                >
+                  {isOwnPick ? (
+                    <span className="absolute right-2 top-2 z-10 rounded-full bg-[var(--club-color)] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white shadow-sm">
+                      Dein Pick
+                    </span>
+                  ) : null}
+                  <PlayerCard disabled={picked && !isOwnPick} player={card} showArchetypes={archetypesEnabled} variant="draft" />
+                  {picked && pickerClub ? (
+                    <div className="mt-2 flex items-center gap-2 rounded-md border border-zinc-800 bg-zinc-950/80 px-2 py-1.5">
+                      <ClubBadge clubColor={pickerClub.club_color} clubName={pickerClub.club_name} size="sm" />
+                      <span className="truncate text-xs font-medium text-zinc-200">
+                        {isOwnPick ? "Du" : pickerClub.club_name}
+                      </span>
+                    </div>
+                  ) : null}
                   <form action={makeDraftPickAction} className="mt-2">
                     <input name="game_id" type="hidden" value={snapshot.game.id} />
                     <input name="room_code" type="hidden" value={snapshot.game.room_code} />
                     <input name="club_id" type="hidden" value={ownClub?.id ?? ""} />
                     <input name="player_id" type="hidden" value={player.id} />
                     <Button className="w-full" disabled={!canPick} type="submit" variant={canPick ? "primary" : "outline"}>
-                      {picked ? "Gedraftet" : canPick ? "Draften" : "Nicht am Zug"}
+                      {picked
+                        ? isOwnPick
+                          ? "Dein Pick"
+                          : `→ ${pickerClub?.club_name ?? "Gedraftet"}`
+                        : canPick
+                          ? "Draften"
+                          : "Nicht am Zug"}
                     </Button>
                   </form>
                 </div>
@@ -1295,34 +1455,85 @@ function DraftView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
             </div>
           </Panel>
 
+          <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+            <PanelHeader>
+              <div>
+                <PanelTitle>Deine Picks</PanelTitle>
+                <PanelDescription>Runde {draft.round_index + 1}</PanelDescription>
+              </div>
+              <ClipboardList size={18} className="text-[var(--club-color)]" aria-hidden />
+            </PanelHeader>
+            <div className="space-y-2">
+              {ownPicksThisRound.length === 0 ? (
+                <p className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3 text-sm text-zinc-400">
+                  Noch kein eigener Pick in dieser Runde.
+                </p>
+              ) : (
+                ownPicksThisRound.map((pick) => {
+                  const player = playerById.get(pick.playerId);
+                  const positionLabel = getDraftPlayerPositionLabel(player);
+
+                  return (
+                    <div
+                      className="rounded-md border border-[var(--club-color)] bg-zinc-900/80 p-3"
+                      key={`own-${pick.pickIndex}-${pick.playerId}`}
+                    >
+                      <p className="text-xs font-medium uppercase text-zinc-500">Pick {pick.pickIndex + 1}</p>
+                      <p className="mt-1 text-sm font-semibold text-zinc-100">{playerNames.get(pick.playerId) ?? "Spieler"}</p>
+                      {positionLabel ? <p className="mt-1 text-xs text-zinc-500">{positionLabel}</p> : null}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </Panel>
+
           <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="history">
             <PanelHeader>
               <div>
                 <PanelTitle>Pick-Historie</PanelTitle>
-                <PanelDescription>Aktuelle Runde, neueste Picks unten.</PanelDescription>
+                <PanelDescription>Aktuelle Runde, neueste Picks zuerst.</PanelDescription>
               </div>
               <ListOrdered size={18} className="text-[var(--club-color)]" aria-hidden />
             </PanelHeader>
-            <div className="space-y-2">
+            <div className="max-h-[560px] space-y-2 overflow-auto pr-1">
               {draft.picks.length === 0 ? (
                 <p className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3 text-sm text-zinc-400">Noch kein Pick in dieser Runde.</p>
               ) : (
-                draft.picks.map((pick) => {
+                [...draft.picks].reverse().map((pick) => {
                   const player = playerById.get(pick.playerId);
-                  const positionLabel = player
-                    ? getDraftOverviewPositionKey(player) === "UTIL"
-                      ? "UTIL"
-                      : getPositionLabel(mapDbPlayerToPlayerCardData(player).positions)
-                    : null;
+                  const pickerClub = clubById.get(pick.clubId);
+                  const isOwnPick = Boolean(ownClub && pick.clubId === ownClub.id);
+                  const positionLabel = getDraftPlayerPositionLabel(player);
+                  const clubColor = pickerClub?.club_color && /^#[0-9a-fA-F]{6}$/.test(pickerClub.club_color)
+                    ? pickerClub.club_color
+                    : "#3f3f46";
 
                   return (
-                    <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3" key={`${pick.clubId}-${pick.playerId}`}>
-                      <p className="text-xs font-medium uppercase text-zinc-500">Pick {pick.pickIndex + 1}</p>
+                    <div
+                      className={cn(
+                        "rounded-md border border-l-4 bg-zinc-900/70 p-3",
+                        isOwnPick ? "border-[var(--club-color)] bg-zinc-900/80" : "border-zinc-800",
+                      )}
+                      key={`${pick.clubId}-${pick.playerId}`}
+                      style={{ borderLeftColor: clubColor }}
+                    >
+                      <div className="flex items-center gap-2">
+                        <p className="text-xs font-medium uppercase text-zinc-500">Pick {pick.pickIndex + 1}</p>
+                        <span className="text-zinc-600">·</span>
+                        {pickerClub ? (
+                          <span className="flex min-w-0 items-center gap-1.5">
+                            <ClubBadge clubColor={pickerClub.club_color} clubName={pickerClub.club_name} size="sm" />
+                            <span className="truncate text-xs font-medium text-zinc-300">
+                              {isOwnPick ? "Du" : pickerClub.club_name}
+                            </span>
+                          </span>
+                        ) : (
+                          <span className="truncate text-xs text-zinc-500">{clubNames.get(pick.clubId) ?? "Club"}</span>
+                        )}
+                      </div>
                       <p className="mt-1 text-sm font-semibold text-zinc-100">{playerNames.get(pick.playerId) ?? "Spieler"}</p>
-                      <p className="mt-1 text-xs text-zinc-500">
-                        {clubNames.get(pick.clubId) ?? "Club"}
-                        {positionLabel ? ` · ${positionLabel}` : ""}
-                      </p>
+                      {positionLabel ? <p className="mt-1 text-xs text-zinc-500">{positionLabel}</p> : null}
                     </div>
                   );
                 })
@@ -2792,7 +3003,7 @@ function LineupView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; sna
       unavailable: isPlayerUnavailableForSeason(seasonNumber, owned.unavailable_until_season),
     };
   });
-  const hasGoalkeeper = lineupCards.some((card) => card.positions.includes("GK"));
+  const hasGoalkeeper = hasFitGoalkeeper(lineupCards);
   const staffEffects = (overview.staff ?? []).flatMap(
     (s) => s.card.effects as Array<{ type: string; zone?: string; stars?: number }>,
   );
@@ -4379,7 +4590,6 @@ function FixtureCard({
   // PvP state machine
   const isPvP = !hasCpu && home.kind === "human" && away.kind === "human";
   const matchState = fixture.match_state ?? "scheduled";
-  const currentThird = fixture.current_third ?? 0;
   const ownReady = ownSide === "home" ? fixture.home_ready_for_next_third : ownSide === "away" ? fixture.away_ready_for_next_third : false;
   const opponentReady = ownSide === "home" ? fixture.away_ready_for_next_third : ownSide === "away" ? fixture.home_ready_for_next_third : false;
   const secretWeapons = (snapshot.club_overview?.game_changers ?? []).filter(
@@ -4480,6 +4690,7 @@ function FixtureCard({
 
           {(home.kind === "human" || away.kind === "human") && (result ?? partialThirds.length > 0) ? (
             <MatchResultDetail
+              animateReveal={isPvP && fixture.status === "completed"}
               away={away}
               events={result?.events ?? []}
               fixture={fixture}
@@ -4556,10 +4767,12 @@ function FixtureCard({
               </>
             ) : null}
 
-            {/* PvP Pre-Match: both lineups locked, match not started yet */}
-            {isPvP && bothHumanLineupsLocked && matchState === "scheduled" && ownSide ? (
+            {/* PvP: both lineups locked, match not yet completed */}
+            {isPvP && bothHumanLineupsLocked && matchState !== "completed" && ownSide ? (
               <div className="space-y-2">
-                <p className="text-xs text-zinc-400">Beide Aufstellungen sind gelockt. Du kannst jetzt Geheimwaffen vor dem Anpfiff einsetzen.</p>
+                <p className="text-xs text-zinc-400">
+                  Beide Aufstellungen sind gelockt. Setze optional Geheimwaffen ein und bestaetige dann das Match.
+                </p>
                 <MatchCardsPanel
                   gameId={snapshot.game.id}
                   roomCode={snapshot.game.room_code}
@@ -4569,20 +4782,6 @@ function FixtureCard({
                   squad={ownSquad}
                   playedWindows={playedWindowsForFixture}
                 />
-                <form action={startMatchAction}>
-                  <input name="game_id" type="hidden" value={snapshot.game.id} />
-                  <input name="room_code" type="hidden" value={snapshot.game.room_code} />
-                  <input name="fixture_id" type="hidden" value={fixture.id} />
-                  <Button className="w-full" type="submit" variant="primary">
-                    Match starten
-                  </Button>
-                </form>
-              </div>
-            ) : null}
-
-            {/* PvP In Progress */}
-            {isPvP && matchState === "in_progress" && ownSide ? (
-              <div className="space-y-3">
                 <MatchCardsPanel
                   gameId={snapshot.game.id}
                   roomCode={snapshot.game.room_code}
@@ -4598,12 +4797,12 @@ function FixtureCard({
                     <input name="room_code" type="hidden" value={snapshot.game.room_code} />
                     <input name="fixture_id" type="hidden" value={fixture.id} />
                     <Button className="w-full" type="submit" variant="primary">
-                      {currentThird < 3 ? `Bereit fuer Drittel ${currentThird + 1}` : "Ergebnis bestaetigen"}
+                      Match abspielen
                     </Button>
                   </form>
                 ) : (
                   <div className="rounded-md border border-zinc-700 bg-zinc-800/50 p-2 text-center text-xs text-zinc-400">
-                    {opponentReady ? "Beide bereit – Drittel laeuft..." : "Warte auf Gegner..."}
+                    {opponentReady ? "Beide bereit – Match laeuft..." : "Warte auf Gegner..."}
                   </div>
                 )}
               </div>
@@ -4611,7 +4810,19 @@ function FixtureCard({
 
             {/* After match: active cards (e.g. Sieg oder Spielabbruch) */}
             {fixture.status === "completed" && ownSide ? (
-              <AfterMatchCards
+              <>
+                {isPvP ? (
+                  <MatchCardsPanel
+                    gameId={snapshot.game.id}
+                    roomCode={snapshot.game.room_code}
+                    fixtureId={fixture.id}
+                    window="during_match"
+                    cards={secretWeapons}
+                    squad={ownSquad}
+                    playedWindows={playedWindowsForFixture}
+                  />
+                ) : null}
+                <AfterMatchCards
                 gameId={snapshot.game.id}
                 roomCode={snapshot.game.room_code}
                 fixtureId={fixture.id}
@@ -4624,6 +4835,7 @@ function FixtureCard({
                 )}
                 retroWinResult={(fixture.retro_win_result as { rolls?: number[]; success?: boolean } | null) ?? null}
               />
+              </>
             ) : null}
 
             {canResolveOwnCpuMatch || canHostResolvePvpMatchLegacy ? (

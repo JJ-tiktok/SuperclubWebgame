@@ -84,12 +84,21 @@ export type ThirdSummary = {
 // Choice descriptions for pending Game Changers
 // ---------------------------------------------------------------------------
 
-export type ChoiceType = "pick_player" | "pick_zone" | "pick_release_players" | "accept_or_decline" | "pick_staff";
+export type ChoiceType = "pick_player" | "pick_zone" | "pick_release_players" | "pick_offseason_card" | "accept_or_decline" | "pick_staff";
+
+export type OffseasonCardCandidate = {
+  card_id: string;
+  display_name: string;
+  description: string;
+  category: GameChangerCategory;
+  effects: unknown[];
+};
 
 export type PendingChoice =
   | { type: "pick_player"; effect_type: "player_potential_bonus"; stars: number; filter?: "owned" }
   | { type: "pick_zone"; effect_type: "next_match_zone_delta"; delta: number }
   | { type: "pick_release_players"; effect_type: "force_release_stars"; stars: number }
+  | { type: "pick_offseason_card"; candidates: OffseasonCardCandidate[]; last_place_bonus?: boolean }
   | { type: "accept_or_decline"; effect_type: "free_scouting_buy_next" }
   | { type: "pick_staff"; effect_type: "free_staff_offer" };
 
@@ -115,6 +124,34 @@ export function parseReleaseClubPlayerIds(payload?: Record<string, unknown>): st
   }
 
   return payload.club_player_ids.filter((id): id is string => typeof id === "string" && id.length > 0);
+}
+
+export function isOffseasonCardChoicePayload(payload: Record<string, unknown> | null | undefined): boolean {
+  return payload?.type === "pick_offseason_card" && Array.isArray(payload.candidates);
+}
+
+export function getOffseasonCardCandidates(
+  payload: Record<string, unknown> | null | undefined,
+): OffseasonCardCandidate[] {
+  if (!payload || payload.type !== "pick_offseason_card" || !Array.isArray(payload.candidates)) {
+    return [];
+  }
+
+  return payload.candidates
+    .filter((entry): entry is OffseasonCardCandidate => {
+      if (!entry || typeof entry !== "object") {
+        return false;
+      }
+      const row = entry as OffseasonCardCandidate;
+      return typeof row.card_id === "string" && typeof row.display_name === "string";
+    })
+    .map((entry) => ({
+      card_id: entry.card_id,
+      display_name: entry.display_name,
+      description: entry.description ?? "",
+      category: entry.category,
+      effects: entry.effects ?? [],
+    }));
 }
 
 export function sumReleasePlayerStars(

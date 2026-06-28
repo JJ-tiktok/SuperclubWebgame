@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import { ArrowDownRight, ArrowLeftRight, ArrowUpRight } from "lucide-react";
 import { getThirdLabel } from "@/components/game/lib/dashboard-helpers";
 import { ARCHETYPE_META, type PlayerArchetype } from "@/lib/lobby/archetypes";
@@ -44,6 +45,7 @@ export type MatchResultParticipantLike = {
 };
 
 export type MatchResultFixtureLike = {
+  id?: string;
   status: string;
   home_score?: number | null;
   away_score?: number | null;
@@ -70,6 +72,7 @@ export function parseFixtureResult(value: Record<string, unknown> | null | undef
 }
 
 export function MatchResultDetail({
+  animateReveal = false,
   away,
   events,
   fixture,
@@ -77,6 +80,7 @@ export function MatchResultDetail({
   snapshot,
   thirds,
 }: {
+  animateReveal?: boolean;
   away: MatchResultParticipantLike;
   events: FixtureEvent[];
   fixture: MatchResultFixtureLike;
@@ -84,19 +88,67 @@ export function MatchResultDetail({
   snapshot: LobbySnapshot;
   thirds: FixtureThird[];
 }) {
-  const liveHomeThirdPoints = thirds.reduce((sum, third) => {
+  const revealStorageKey = fixture.id ? `match-reveal-${fixture.id}` : null;
+  const alreadyRevealed =
+    typeof window !== "undefined" && revealStorageKey ? window.sessionStorage.getItem(revealStorageKey) === "1" : false;
+  const shouldAnimate = animateReveal && thirds.length === 3 && !alreadyRevealed;
+  const [revealedCount, setRevealedCount] = useState(shouldAnimate ? 0 : thirds.length);
+  const animationKeyRef = useRef(`${fixture.status}-${thirds.length}`);
+
+  useEffect(() => {
+    const animationKey = `${fixture.status}-${thirds.length}`;
+    if (!shouldAnimate) {
+      setRevealedCount(thirds.length);
+      animationKeyRef.current = animationKey;
+      return;
+    }
+
+    if (animationKeyRef.current !== animationKey) {
+      animationKeyRef.current = animationKey;
+      setRevealedCount(0);
+    }
+  }, [fixture.status, shouldAnimate, thirds.length]);
+
+  useEffect(() => {
+    if (!shouldAnimate || revealedCount < thirds.length || !revealStorageKey) {
+      return;
+    }
+    window.sessionStorage.setItem(revealStorageKey, "1");
+  }, [revealedCount, revealStorageKey, shouldAnimate, thirds.length]);
+
+  useEffect(() => {
+    if (!shouldAnimate || revealedCount >= thirds.length) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setRevealedCount((count) => Math.min(count + 1, thirds.length));
+    }, 800);
+
+    return () => window.clearTimeout(timer);
+  }, [revealedCount, shouldAnimate, thirds.length]);
+
+  const visibleThirds = thirds.slice(0, revealedCount);
+  const visibleEvents = shouldAnimate && revealedCount < thirds.length ? [] : events;
+  const liveHomeThirdPoints = visibleThirds.reduce((sum, third) => {
     if (third.home.total > third.away.total) return sum + 1;
     if (third.home.total === third.away.total) return sum + 0.5;
     return sum;
   }, 0);
-  const liveAwayThirdPoints = thirds.reduce((sum, third) => {
+  const liveAwayThirdPoints = visibleThirds.reduce((sum, third) => {
     if (third.away.total > third.home.total) return sum + 1;
     if (third.away.total === third.home.total) return sum + 0.5;
     return sum;
   }, 0);
   const isCompleted = fixture.status === "completed";
-  const displayHomeThirdPoints = isCompleted ? (fixture.home_third_points ?? liveHomeThirdPoints) : liveHomeThirdPoints;
-  const displayAwayThirdPoints = isCompleted ? (fixture.away_third_points ?? liveAwayThirdPoints) : liveAwayThirdPoints;
+  const displayHomeThirdPoints =
+    isCompleted && (!shouldAnimate || revealedCount >= thirds.length)
+      ? (fixture.home_third_points ?? liveHomeThirdPoints)
+      : liveHomeThirdPoints;
+  const displayAwayThirdPoints =
+    isCompleted && (!shouldAnimate || revealedCount >= thirds.length)
+      ? (fixture.away_third_points ?? liveAwayThirdPoints)
+      : liveAwayThirdPoints;
   const homeWins = displayHomeThirdPoints > displayAwayThirdPoints;
   const awayWins = displayAwayThirdPoints > displayHomeThirdPoints;
   const partialModifiers = (fixture.partial_result as { pending_modifiers?: ZoneModifier[] } | null)?.pending_modifiers;
@@ -249,7 +301,7 @@ export function MatchResultDetail({
                 )}
               >
                 <span className="text-zinc-600">Punkte </span>
-                {isCompleted ? (fixture.home_score ?? 0) : "–"}
+                {isCompleted && (!shouldAnimate || revealedCount >= thirds.length) ? (fixture.home_score ?? 0) : "–"}
               </div>
             </div>
           </div>
@@ -261,7 +313,11 @@ export function MatchResultDetail({
               <span className={cn(awayWins ? "text-emerald-400" : "text-zinc-500")}>{displayAwayThirdPoints}</span>
             </div>
             <span className="mt-0.5 text-[10px] uppercase tracking-wide text-zinc-600">
-              {isCompleted ? "Final" : `${thirds.length}/3 Drittel`}
+              {isCompleted
+                ? shouldAnimate && revealedCount < thirds.length
+                  ? `${revealedCount}/3 Drittel`
+                  : "Final"
+                : `${visibleThirds.length}/3 Drittel`}
             </span>
           </div>
 
@@ -308,7 +364,7 @@ export function MatchResultDetail({
                 )}
               >
                 <span className="text-zinc-600">Punkte </span>
-                {isCompleted ? (fixture.away_score ?? 0) : "–"}
+                {isCompleted && (!shouldAnimate || revealedCount >= thirds.length) ? (fixture.away_score ?? 0) : "–"}
               </div>
             </div>
           </div>
@@ -316,7 +372,7 @@ export function MatchResultDetail({
       </div>
 
       <div className="grid gap-3 md:grid-cols-3">
-        {thirds.map((third) => {
+        {visibleThirds.map((third) => {
           const homeWinsThird = third.home.total > third.away.total;
           const awayWinsThird = third.away.total > third.home.total;
           const topBorderClass = homeWinsThird || awayWinsThird ? "border-t-emerald-600" : "border-t-zinc-700";
@@ -365,10 +421,10 @@ export function MatchResultDetail({
         })}
       </div>
 
-      {events.length > 0 ? (
+      {visibleEvents.length > 0 ? (
         <div className="space-y-2">
           <p className="text-xs font-medium uppercase tracking-wide text-zinc-600">Ereignisse</p>
-          {events.map((event, index) => {
+          {visibleEvents.map((event, index) => {
             const eventClubName =
               home.club_id === event.club_id
                 ? home.display_name

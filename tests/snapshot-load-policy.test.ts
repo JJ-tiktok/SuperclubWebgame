@@ -39,6 +39,13 @@ describe("off-season snapshot loading", () => {
     }
   });
 
+  it("loads pending game changers on off_season dashboard for comeback bonus impulse flow", () => {
+    const profile = getClubOverviewLoadProfileForView("off_season", "dashboard");
+    assert.equal(profile.loadGameChangers, true);
+    const seasonProfile = getClubOverviewLoadProfileForView("season", "dashboard");
+    assert.equal(seasonProfile.loadGameChangers, false);
+  });
+
   it("loads squad on grounds for sponsor reward player picks", () => {
     const profile = getClubOverviewLoadProfileForView("off_season", "grounds");
     assert.equal(profile.loadSquad, true);

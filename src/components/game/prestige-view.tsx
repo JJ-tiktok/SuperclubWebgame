@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Panel, PanelDescription, PanelHeader, PanelTitle } from "@/components/ui/panel";
 import { PrestigeEarningGuide } from "@/components/game/prestige-earning-guide";
 import { ViewGuidePanel } from "@/components/game/shared/view-guide-panel";
-import { formatPrestigeAwardLabel } from "@/lib/lobby/prestige";
+import { formatPrestigeAwardLabel, formatPrestigeAwardPoints } from "@/lib/lobby/prestige";
 import type { LobbySnapshot, PrestigeAwardSnapshot, PrestigeSnapshot } from "@/lib/lobby/types";
 import type { PhilosophyProgress } from "@/lib/lobby/prestige";
 import { cn } from "@/lib/utils";
@@ -53,7 +53,14 @@ function ClubAwardsList({ awards }: { awards: PrestigeAwardSnapshot[] }) {
             <p className="truncate text-xs text-zinc-300">{formatPrestigeAwardLabel(award.category, award.metadata)}</p>
             <p className="text-[11px] text-zinc-600">Saison {award.season_number}</p>
           </div>
-          <span className="shrink-0 text-xs font-semibold text-lime-300">+{award.points}</span>
+          <span
+            className={cn(
+              "shrink-0 text-xs font-semibold",
+              award.points < 0 ? "text-rose-300" : "text-lime-300",
+            )}
+          >
+            {formatPrestigeAwardPoints(award.points)}
+          </span>
         </li>
       ))}
     </ul>
@@ -238,7 +245,7 @@ export function PrestigeView({
                     <p className="text-sm text-zinc-200">{formatPrestigeAwardLabel(award.category, award.metadata)}</p>
                     <p className="text-xs text-zinc-500">Saison {award.season_number}</p>
                   </div>
-                  <Badge tone="green">+{award.points}</Badge>
+                  <Badge tone={award.points < 0 ? "red" : "green"}>{formatPrestigeAwardPoints(award.points)}</Badge>
                 </div>
               ))
             )}

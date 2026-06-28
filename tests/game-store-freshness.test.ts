@@ -7,6 +7,7 @@ import {
 } from "@/components/game/game-store";
 import {
   compareSnapshotFreshness,
+  mergePendingGameChangerSnapshot,
   pickFresherSnapshot,
 } from "@/components/game/snapshot-freshness";
 import { applyGameEventToSnapshot } from "@/lib/lobby/game-events";
@@ -138,6 +139,55 @@ describe("snapshot freshness", () => {
 
     assert.equal(compareSnapshotFreshness(server, client), 1);
     assert.equal(pickFresherSnapshot(server, client).draft?.picks.length, 1);
+  });
+
+  it("keeps SSR pending game changer choices when the client snapshot is fresher but stale", () => {
+    const pendingChoice = {
+      id: "pending-1",
+      game_changer_card_id: "card-1",
+      status: "pending" as const,
+      choice_payload: {
+        type: "pick_offseason_card",
+        candidates: [{ card_id: "card-1", display_name: "Bonus", description: "", category: "good_news", effects: [] }],
+      },
+      card: {
+        id: "card-1",
+        display_name: "Bonus",
+        description: "",
+        category: "good_news" as const,
+        timing: "after_match",
+        effects: [],
+      },
+    };
+    const server = baseSnapshot({
+      club_overview: {
+        pending_game_changer_choices: [pendingChoice],
+        last_place_bonus: {
+          eligible: false,
+          pending_game_changer_choice: true,
+          consecutive_last_seasons: 1,
+          blocked_reason: null,
+        },
+      } as LobbySnapshot["club_overview"],
+    });
+    const client = baseSnapshot({
+      game: { ...baseSnapshot().game, live_seq: 5 },
+      club_overview: {
+        pending_game_changer_choices: [],
+        last_place_bonus: {
+          eligible: true,
+          pending_game_changer_choice: false,
+          consecutive_last_seasons: 1,
+          blocked_reason: null,
+        },
+      } as LobbySnapshot["club_overview"],
+    });
+
+    const merged = mergePendingGameChangerSnapshot(server, client);
+    assert.equal(merged.club_overview?.pending_game_changer_choices.length, 1);
+    assert.equal(merged.club_overview?.last_place_bonus?.pending_game_changer_choice, true);
+    assert.equal(merged.club_overview?.last_place_bonus?.eligible, false);
+    assert.equal(merged.game.live_seq, 5);
   });
 });
 

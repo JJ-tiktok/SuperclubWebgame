@@ -2,8 +2,9 @@ import { auth } from "@clerk/nextjs/server";
 import { getContinentalLineupStars, type ContinentalCpuTier } from "@/lib/lobby/continental-cup";
 import { normalizeRoomCode } from "./rules";
 import { DRAFT_PLAYER_SELECT } from "./draft";
-import { mergeCarriedSecretWeapons } from "@/lib/lobby/club-game-changers";
+import { collectPendingGameChangerChoices, mergeCarriedSecretWeapons } from "@/lib/lobby/club-game-changers";
 import { buildNextMatchZoneBoostsByClubId } from "@/lib/game/game-changer-effects";
+import { buildLastPlaceBonusSnapshot, isOffseasonCardChoicePayload } from "@/lib/lobby/last-place-bonus";
 import {
   buildLineupSnapshotFromPlayers,
   type LineupSnapshotClubPlayerRow,
@@ -86,7 +87,9 @@ import {
   getPrestigeTarget,
   isPrestigeEnabled,
   normalizePrestigeState,
+  normalizePrestigeTotalFromAwards,
   resolvePrestigeWinner,
+  sumPrestigeAwardPoints,
 } from "@/lib/lobby/prestige";
 import { isFinalSeason } from "@/lib/lobby/phases";
 import { createSupabaseServiceClient } from "@/lib/supabase/server";
@@ -955,10 +958,17 @@ async function getPrestigeSnapshot(
     awardsByClub.set(award.club_id, existing);
   }
 
-  const clubsWithAwards = prestigeClubs.map((club) => ({
-    ...club,
-    awards: awardsByClub.get(club.club_id) ?? [],
-  }));
+  const clubsWithAwards = prestigeClubs
+    .map((club) => {
+      const awards = awardsByClub.get(club.club_id) ?? [];
+      const prestigeFromAwards = normalizePrestigeTotalFromAwards(sumPrestigeAwardPoints(awards));
+      return {
+        ...club,
+        prestige_points: prestigeFromAwards,
+        awards,
+      };
+    })
+    .sort((left, right) => right.prestige_points - left.prestige_points);
 
   const ownAwards = ownClubId ? awardsByClub.get(ownClubId) ?? [] : [];
 
@@ -1758,6 +1768,7 @@ async function getClubOverviewSnapshot(
     { data: saleTransactions, error: saleTransactionsError },
     { data: openOfferRows, error: openOfferError },
     { data: sponsorContractRows, error: sponsorContractsError },
+    { data: openPendingGameChangerRows, error: openPendingGameChangerError },
   ] = await Promise.all([
     profile.loadSquad
       ? supabase
@@ -1857,6 +1868,16 @@ async function getClubOverviewSnapshot(
           .order("created_at", { ascending: true })
           .returns<SponsorContractRow[]>()
       : emptyQueryResult<SponsorContractRow[]>([]),
+    profile.loadGameChangers
+      ? supabase
+          .from("club_game_changers")
+          .select(CLUB_GAME_CHANGER_SELECT_V4)
+          .eq("club_id", club.id)
+          .eq("status", "pending")
+          .order("created_at", { ascending: true, nullsFirst: false })
+          .limit(20)
+          .returns<ClubGameChangerSnapshot[]>()
+      : emptyQueryResult<ClubGameChangerSnapshot[]>([]),
   ]);
 
   if (clubPlayersError) {
@@ -1906,6 +1927,24 @@ async function getClubOverviewSnapshot(
 
   if (gameChangerErrorFinal) {
     throw gameChangerErrorFinal;
+  }
+
+  let openPendingGameChangerRowsFinal = openPendingGameChangerRows;
+  if (isUndefinedColumnError(openPendingGameChangerError)) {
+    const pendingFallback = await supabase
+      .from("club_game_changers")
+      .select(CLUB_GAME_CHANGER_SELECT_V3)
+      .eq("club_id", club.id)
+      .eq("status", "pending")
+      .order("created_at", { ascending: true, nullsFirst: false })
+      .limit(20)
+      .returns<ClubGameChangerSnapshot[]>();
+    if (pendingFallback.error && !isUndefinedColumnError(pendingFallback.error)) {
+      throw pendingFallback.error;
+    }
+    openPendingGameChangerRowsFinal = pendingFallback.data;
+  } else if (openPendingGameChangerError) {
+    throw openPendingGameChangerError;
   }
 
   if (
@@ -1983,7 +2022,13 @@ async function getClubOverviewSnapshot(
   const wages = squadStars * 1_000_000;
 
   const allGameChangers = gameChangerRowsFinal ?? [];
-  const pendingChoices = allGameChangers.filter((row) => row.status === "pending");
+  const pendingChoices = collectPendingGameChangerChoices(
+    allGameChangers,
+    openPendingGameChangerRowsFinal ?? [],
+  );
+  const pendingOffseasonCardChoice = pendingChoices.some((row) =>
+    isOffseasonCardChoicePayload(row.choice_payload),
+  );
 
   const sponsorContracts = isUndefinedTableError(sponsorContractsError)
     ? []
@@ -2050,6 +2095,7 @@ async function getClubOverviewSnapshot(
     ),
     nlz_archetype_respec_available:
       (club.youth_academy_level ?? 0) >= 2 && (club.nlz_archetype_respecs_used_season ?? 0) < 1,
+    last_place_bonus: buildLastPlaceBonusSnapshot(club.prestige_state, seasonNumber, pendingOffseasonCardChoice),
   };
 }
 

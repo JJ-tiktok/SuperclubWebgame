@@ -13,9 +13,14 @@ export type LineupZoneCounts = {
 export type LineupLockValidation = {
   hasIncompleteLineup: boolean;
   hasInjuredInLineup: boolean;
+  implicitDefaultGoalkeeper: boolean;
   isComplete: boolean;
   starterCount: number;
   zoneCounts: LineupZoneCounts;
+};
+
+export type LineupLockValidationOptions = {
+  implicitDefaultGoalkeeper?: boolean;
 };
 
 const FORMATION_ZONE_COUNTS: Array<Pick<LineupZoneCounts, "ATT" | "DEF" | "MID"> & { GK: 1 }> = [
@@ -40,7 +45,11 @@ function matchesKnownFormation(zoneCounts: LineupZoneCounts) {
   );
 }
 
-export function getLineupLockValidation(players: LineupLockPlayer[]): LineupLockValidation {
+export function getLineupLockValidation(
+  players: LineupLockPlayer[],
+  options: LineupLockValidationOptions = {},
+): LineupLockValidation {
+  const implicitDefaultGoalkeeper = options.implicitDefaultGoalkeeper ?? false;
   const hasInjuredInLineup = players.some((player) => player.injured && player.current_zone !== "bench");
   const healthyStarters = players.filter((player) => !player.injured && player.current_zone !== "bench");
   const zoneCounts: LineupZoneCounts = { ATT: 0, DEF: 0, GK: 0, MID: 0 };
@@ -51,11 +60,16 @@ export function getLineupLockValidation(players: LineupLockPlayer[]): LineupLock
     }
   }
 
-  const isComplete = healthyStarters.length === 11 && matchesKnownFormation(zoneCounts);
+  const effectiveZoneCounts: LineupZoneCounts = implicitDefaultGoalkeeper
+    ? { ...zoneCounts, GK: zoneCounts.GK + 1 }
+    : zoneCounts;
+  const effectiveStarterCount = healthyStarters.length + (implicitDefaultGoalkeeper ? 1 : 0);
+  const isComplete = effectiveStarterCount === 11 && matchesKnownFormation(effectiveZoneCounts);
 
   return {
     hasIncompleteLineup: !isComplete,
     hasInjuredInLineup,
+    implicitDefaultGoalkeeper,
     isComplete,
     starterCount: healthyStarters.length,
     zoneCounts,

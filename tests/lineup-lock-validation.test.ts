@@ -39,6 +39,17 @@ describe("getLineupLockValidation", () => {
     assert.equal(result.isComplete, false);
     assert.equal(result.hasIncompleteLineup, true);
     assert.equal(result.starterCount, 10);
+    assert.equal(result.implicitDefaultGoalkeeper, false);
+  });
+
+  it("accepts 10 outfield starters when Given is implicit", () => {
+    const result = getLineupLockValidation(lineup442().slice(1), { implicitDefaultGoalkeeper: true });
+
+    assert.equal(result.isComplete, true);
+    assert.equal(result.hasIncompleteLineup, false);
+    assert.equal(result.starterCount, 10);
+    assert.equal(result.implicitDefaultGoalkeeper, true);
+    assert.deepEqual(result.zoneCounts, { ATT: 2, DEF: 4, GK: 0, MID: 4 });
   });
 
   it("rejects 11 healthy players with invalid zone distribution", () => {

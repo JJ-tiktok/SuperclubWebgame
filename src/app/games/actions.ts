@@ -29,6 +29,7 @@ import {
   type EndgameFacilityAction,
 } from "@/lib/lobby/endgame-facilities";
 import { buildLineupSnapshotFromPlayers, type LineupSnapshotClubPlayerRow } from "@/lib/lobby/lineup-snapshot";
+import { applyDefaultGivenKeeperToLineupPowerPlayers, shouldUseDefaultGivenKeeper } from "@/lib/lobby/lineup-assignments";
 import { getLineupLockValidation } from "@/lib/lobby/lineup-lock-validation";
 import { buildYouthPlayerSeed, isNlzOriginPlayer } from "@/lib/lobby/youth-generator";
 import { calculateLineupPower, type CaptainBoost } from "@/lib/lobby/lineup-power";
@@ -2993,17 +2994,30 @@ export async function lockFixtureLineupAction(formData: FormData) {
     throw new Error("Du kannst nur deine eigenen Fixtures locken.");
   }
 
-  const { data: lineupPlayers, error: lineupPlayersError } = await supabase
+  const { data: clubPlayers, error: lineupPlayersError } = await supabase
     .from("club_players")
-    .select("current_zone, injured")
+    .select("current_zone, injured, player:players(position, eligible_positions)")
     .eq("club_id", ownClub.id)
-    .returns<Array<{ current_zone: string; injured: boolean }>>();
+    .returns<
+      Array<{
+        current_zone: string;
+        injured: boolean;
+        player: { eligible_positions?: string[] | null; position?: string | null } | null;
+      }>
+    >();
 
   if (lineupPlayersError) {
     throw lineupPlayersError;
   }
 
-  const lineupValidation = getLineupLockValidation(lineupPlayers ?? []);
+  const squadPlayers = clubPlayers ?? [];
+  const useDefaultGivenKeeper = shouldUseDefaultGivenKeeper({
+    lineupPlayers: squadPlayers,
+    squadPlayers,
+  });
+  const lineupValidation = getLineupLockValidation(squadPlayers, {
+    implicitDefaultGoalkeeper: useDefaultGivenKeeper,
+  });
   if ((lineupValidation.hasIncompleteLineup || lineupValidation.hasInjuredInLineup) && !forceLock) {
     redirect(`/games/${roomCode}?view=matchday`);
   }
@@ -4420,8 +4434,6 @@ async function computeClubLockedPower(
       .from("club_players")
       .select("id, current_stars, current_zone, lineup_slot, injured, player:players(chemistry_left, chemistry_right, position, eligible_positions)")
       .eq("club_id", clubId)
-      .neq("current_zone", "bench")
-      .eq("injured", false)
       .returns<Array<{
         id: string;
         current_stars: number | string;
@@ -4453,21 +4465,26 @@ async function computeClubLockedPower(
         boost: Math.max(0, Math.trunc(Number(captainData.captain_boost_rank ?? 0))),
       }
     : null;
+  const squadPlayers = playerData ?? [];
+  const lineupStarters = squadPlayers.filter((player) => !player.injured && player.current_zone !== "bench");
   const powers = calculateLineupPower(
-    (playerData ?? []).map((p) => ({
-      id: p.id,
-      chemistry_left: p.player?.chemistry_left,
-      chemistry_right: p.player?.chemistry_right,
-      current_stars: p.current_stars,
-      current_zone: p.current_zone,
-      lineup_slot: p.lineup_slot,
-      position: p.player?.position,
-      positions: p.player?.eligible_positions?.length
-        ? p.player.eligible_positions
-        : p.player?.position
-          ? [p.player.position]
-          : undefined,
-    })),
+    applyDefaultGivenKeeperToLineupPowerPlayers(
+      lineupStarters.map((p) => ({
+        id: p.id,
+        chemistry_left: p.player?.chemistry_left,
+        chemistry_right: p.player?.chemistry_right,
+        current_stars: p.current_stars,
+        current_zone: p.current_zone,
+        lineup_slot: p.lineup_slot,
+        position: p.player?.position,
+        positions: p.player?.eligible_positions?.length
+          ? p.player.eligible_positions
+          : p.player?.position
+            ? [p.player.position]
+            : undefined,
+      })),
+      squadPlayers,
+    ),
     staffEffects,
     captain,
   );

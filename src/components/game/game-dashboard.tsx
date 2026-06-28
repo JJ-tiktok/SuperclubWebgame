@@ -176,7 +176,7 @@ import {
 import { canUpgradeFacility, getStaffRecruitBlockReason, getStaffRecruitHint, getStaffRecruitReasonLabel, getUpgradeCost, getUpgradeReasonLabel, type UpgradeAction } from "@/lib/lobby/investments";
 import { isOffseasonPendingScopeActive } from "@/lib/lobby/offseason-pending-effects";
 import { calculateLineupPower, getCaptainBoostExtra } from "@/lib/lobby/lineup-power";
-import { hasFitGoalkeeper } from "@/lib/lobby/lineup-assignments";
+import { hasFitGoalkeeper, shouldUseDefaultGivenKeeper, applyDefaultGivenKeeperToLineupPowerPlayers } from "@/lib/lobby/lineup-assignments";
 import { getPhaseLabel, isFinalSeason, isInvestmentPhase } from "@/lib/lobby/phases";
 import { isQualifiedTransferProfit } from "@/lib/lobby/prestige";
 import { buildSeasonEndSummaryModel } from "@/lib/lobby/season-end-summary";
@@ -4706,7 +4706,13 @@ function FixtureCard({
   const forceLockFormRef = useRef<HTMLFormElement>(null);
 
   const squad = ownSide ? (snapshot.club_overview?.squad ?? []) : [];
-  const lineupLockValidation = getLineupLockValidation(squad);
+  const useDefaultGivenKeeper = shouldUseDefaultGivenKeeper({
+    lineupPlayers: squad,
+    squadPlayers: squad,
+  });
+  const lineupLockValidation = getLineupLockValidation(squad, {
+    implicitDefaultGoalkeeper: useDefaultGivenKeeper,
+  });
   const { hasIncompleteLineup, hasInjuredInLineup } = lineupLockValidation;
   const hasLineupWarning = hasInjuredInLineup || hasIncompleteLineup;
 
@@ -5761,21 +5767,26 @@ function getOwnLineupPowerSummary(snapshot: LobbySnapshot, ownClub?: LobbyClub):
       : null;
 
   return calculateLineupPower(
-    squad.map((owned) => ({
-      id: owned.id,
-      chemistry_left: owned.player.chemistry_left,
-      chemistry_right: owned.player.chemistry_right,
-      current_stars: owned.current_stars,
-      current_zone: owned.current_zone,
-      injured: owned.injured,
-      lineup_slot: owned.lineup_slot,
-      position: owned.player.position,
-      positions: owned.player.eligible_positions?.length
-        ? owned.player.eligible_positions
-        : owned.player.position
-          ? [owned.player.position]
-          : undefined,
-    })),
+    applyDefaultGivenKeeperToLineupPowerPlayers(
+      squad
+        .filter((owned) => !owned.injured && owned.current_zone !== "bench")
+        .map((owned) => ({
+          id: owned.id,
+          chemistry_left: owned.player.chemistry_left,
+          chemistry_right: owned.player.chemistry_right,
+          current_stars: owned.current_stars,
+          current_zone: owned.current_zone,
+          injured: owned.injured,
+          lineup_slot: owned.lineup_slot,
+          position: owned.player.position,
+          positions: owned.player.eligible_positions?.length
+            ? owned.player.eligible_positions
+            : owned.player.position
+              ? [owned.player.position]
+              : undefined,
+        })),
+      squad,
+    ),
     staffEffects,
     captain,
   );

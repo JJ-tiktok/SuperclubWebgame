@@ -4,6 +4,7 @@ import { Star } from "lucide-react";
 import { setCaptainAction } from "@/app/games/actions/match";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelDescription, PanelHeader, PanelTitle } from "@/components/ui/panel";
+import { getClubPlayerDisplayName } from "@/lib/lobby/player-names";
 import type { ClubPlayerSnapshot } from "@/lib/lobby/types";
 
 export function CaptainPanel({
@@ -54,7 +55,7 @@ export function CaptainPanel({
           <span className="font-semibold text-zinc-100">
             {captain ? (
               <>
-                {captain.player?.display_name ?? "Spieler"}
+                {getClubPlayerDisplayName(captain)}
                 {hasBoost ? <span className="ml-2 text-amber-400">+{boost}</span> : null}
               </>
             ) : (
@@ -76,7 +77,7 @@ export function CaptainPanel({
               <option value="">Kein Captain</option>
               {sorted.map((cp) => (
                 <option key={cp.id} value={cp.id}>
-                  {cp.player?.display_name ?? "Spieler"} ({cp.current_zone} · {Number(cp.current_stars)})
+                  {getClubPlayerDisplayName(cp)} ({cp.current_zone} · {Number(cp.current_stars)})
                 </option>
               ))}
             </select>

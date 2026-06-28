@@ -25,9 +25,12 @@ export function applyGameEventToSnapshot(snapshot: LobbySnapshot, event: GameEve
       return applyLineupSaved(next, event);
     case "LINEUP_LOCKED":
       return applyLineupLocked(next, event);
+    case "PLAYER_INJURED":
+      return applyPlayerInjured(next, event);
     case "MATCH_STARTED":
     case "MATCH_THIRD_READY_CHANGED":
     case "MATCH_THIRD_RESOLVED":
+    case "MATCH_RESOLVED":
     case "MATCH_SIMULATED":
     case "DRAW_REROLL_TRIGGERED":
     case "SECRET_WEAPON_PLAYED":
@@ -488,6 +491,36 @@ function applyLineupSaved(snapshot: LobbySnapshot, event: GameEventSnapshot): Ga
         lineup_slot: getNumber(item?.slot),
       };
     }),
+  };
+
+  return { applied: true, needsRefetch: false, snapshot };
+}
+
+function applyPlayerInjured(snapshot: LobbySnapshot, event: GameEventSnapshot): GameEventApplyResult {
+  const clubId = getString(event.payload.clubId);
+  const clubPlayerId = getString(event.payload.clubPlayerId);
+  const injured = getBoolean(event.payload.injured);
+
+  if (!clubId || !clubPlayerId || injured !== true || !snapshot.club_overview) {
+    return { applied: true, needsRefetch: true, snapshot };
+  }
+
+  if (snapshot.club_overview.squad.every((player) => player.club_id !== clubId)) {
+    return { applied: true, needsRefetch: false, snapshot };
+  }
+
+  snapshot.club_overview = {
+    ...snapshot.club_overview,
+    squad: snapshot.club_overview.squad.map((player) =>
+      player.id === clubPlayerId
+        ? {
+            ...player,
+            current_zone: getString(event.payload.currentZone) ?? "bench",
+            injured: true,
+            lineup_slot: null,
+          }
+        : player,
+    ),
   };
 
   return { applied: true, needsRefetch: false, snapshot };

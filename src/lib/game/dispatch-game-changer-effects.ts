@@ -11,6 +11,8 @@ import {
   type PendingChoice,
 } from "@/lib/game/game-changer-effects";
 import { getClubPlayerDisplayNameFromRow } from "@/lib/lobby/player-names";
+import { applyClubPlayerInjury } from "@/lib/lobby/injury";
+import { emitGameEvent } from "@/lib/lobby/emit-game-event";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 async function loadInjuryCandidates(
@@ -51,10 +53,11 @@ async function applyTargetedInjury(
   const target = selectInjuryTarget(effect, candidates);
   if (!target) return { applied: false };
   const until = injuryDurationMatchday(effect, ctx.matchday);
-  await supabase
-    .from("club_players")
-    .update({ injured: true, injured_until_matchday: until })
-    .eq("id", target.id);
+  await applyClubPlayerInjury(supabase, {
+    clubId,
+    clubPlayerId: target.id,
+    untilMatchday: until,
+  });
   const durationLabel = effect.duration === "season" ? "Rest der Saison" : "naechstes Spiel";
   return { applied: true, detail: `${target.display_name} verletzt (${durationLabel})`, clubPlayerId: target.id };
 }
@@ -74,8 +77,9 @@ export async function dispatchGameChangerEffects(params: {
   clubGameChangerId: string | null;
   effects: GameChangerEffect[];
   ctx: ImmediateContext & { matchday: number };
+  emitCtx?: { actorClerkUserId: string; gameId: string };
 }): Promise<DispatchGameChangerResult> {
-  const { supabase, clubId, clubGameChangerId, effects, ctx } = params;
+  const { supabase, clubId, clubGameChangerId, effects, ctx, emitCtx } = params;
   const details: string[] = [];
   let pendingChoice: PendingChoice | null = null;
   let pendingChoiceEffectIdx = -1;
@@ -96,6 +100,19 @@ export async function dispatchGameChangerEffects(params: {
     if (effect.type === "targeted_injury") {
       const result = await applyTargetedInjury(supabase, clubId, effect, { matchday: ctx.matchday });
       if (result.detail) details.push(result.detail);
+      if (result.applied && result.clubPlayerId && emitCtx) {
+        await emitGameEvent(supabase, {
+          actorClerkUserId: emitCtx.actorClerkUserId,
+          gameId: emitCtx.gameId,
+          payload: {
+            clubId,
+            clubPlayerId: result.clubPlayerId,
+            currentZone: "bench",
+            injured: true,
+          },
+          type: "PLAYER_INJURED",
+        });
+      }
       continue;
     }
 

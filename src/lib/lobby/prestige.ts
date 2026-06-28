@@ -205,6 +205,22 @@ const PRESTIGE_AWARD_CATEGORY_LABELS: Record<string, string> = {
   [PRESTIGE_CATEGORY.philosophy]: "Vereinsphilosophie",
 };
 
+export function sumPrestigeAwardPoints(awards: Array<{ points: number }>): number {
+  return awards.reduce((total, award) => total + Math.trunc(Number(award.points ?? 0)), 0);
+}
+
+export function normalizePrestigeTotalFromAwards(awardSum: number): number {
+  return Math.max(0, Math.trunc(Number(awardSum)));
+}
+
+export function formatPrestigeAwardPoints(points: number): string {
+  const value = Math.trunc(Number(points));
+  if (value > 0) {
+    return `+${value}`;
+  }
+  return String(value);
+}
+
 export function formatPrestigeAwardLabel(category: string, metadata: Record<string, unknown> = {}): string {
   const base = PRESTIGE_AWARD_CATEGORY_LABELS[category] ?? category;
 

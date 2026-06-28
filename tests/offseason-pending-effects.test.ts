@@ -62,6 +62,37 @@ describe("offseason pending effects", () => {
     assert.equal(extra, 2);
   });
 
+  it("applies negative training_capacity_delta from game changer", () => {
+    const { pendingExtra } = sumTrainingCapacityFromPendingEffects(
+      [
+        {
+          effect_type: "training_capacity_delta",
+          scope: "current_offseason",
+          payload: { delta: -1 },
+        },
+      ],
+      "off_season",
+    );
+    assert.equal(pendingExtra, -1);
+  });
+
+  it("reduces training capacity below base when minus-one effect is active", () => {
+    const extra = computeTrainingExtraPlayers({
+      baseCapacity: 2,
+      offseasonTrainingCapacity: 2,
+      staffEffects: [],
+      pendingEffects: [
+        {
+          effect_type: "training_capacity_delta",
+          scope: "current_offseason",
+          payload: { delta: -1 },
+        },
+      ],
+      phase: "off_season",
+    });
+    assert.equal(extra, -1);
+  });
+
   it("isOffseasonPendingScopeActive without phase only allows current_offseason", () => {
     assert.equal(isOffseasonPendingScopeActive("current_offseason", undefined), true);
     assert.equal(isOffseasonPendingScopeActive("next_offseason", undefined), false);

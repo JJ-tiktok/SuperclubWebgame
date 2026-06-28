@@ -96,7 +96,6 @@ import {
   lockFixtureLineupAction,
   markReadyForNextThirdAction,
   resolveFixtureAction,
-  startMatchAction,
   triggerDrawRerollAction,
 } from "@/app/games/actions/match";
 import { healInjuredPlayerAction } from "@/app/games/actions/game-changers";
@@ -154,7 +153,7 @@ import { GameEventsDock } from "@/components/game/game-events-dock";
 import { GameLineupBoard } from "@/components/game/game-lineup-board";
 import { GameRealtimeBridge } from "@/components/game/game-realtime-bridge";
 import { hydrateGameStoreIfNewer, useGameStore } from "@/components/game/game-store";
-import { pickFresherSnapshot } from "@/components/game/snapshot-freshness";
+import { mergePendingGameChangerSnapshot } from "@/components/game/snapshot-freshness";
 import { CaptainPanel } from "@/components/game/captain-panel";
 import { ClubBadge } from "@/components/game/club-badge";
 import { AfterMatchCards, MatchCardsPanel } from "@/components/game/match-cards-panel";
@@ -175,6 +174,7 @@ import {
 import { canUpgradeFacility, getStaffRecruitBlockReason, getStaffRecruitHint, getStaffRecruitReasonLabel, getUpgradeCost, getUpgradeReasonLabel, type UpgradeAction } from "@/lib/lobby/investments";
 import { isOffseasonPendingScopeActive } from "@/lib/lobby/offseason-pending-effects";
 import { calculateLineupPower, getCaptainBoostExtra } from "@/lib/lobby/lineup-power";
+import { hasFitGoalkeeper } from "@/lib/lobby/lineup-assignments";
 import { getPhaseLabel, isFinalSeason, isInvestmentPhase } from "@/lib/lobby/phases";
 import { isQualifiedTransferProfit } from "@/lib/lobby/prestige";
 import { buildSeasonEndSummaryModel } from "@/lib/lobby/season-end-summary";
@@ -267,7 +267,7 @@ export function GameDashboard(props: GameDashboardProps) {
     hydrateGameStoreIfNewer(props.snapshot);
   }, [props.snapshot]);
 
-  const snapshot = pickFresherSnapshot(props.snapshot, storeSnapshot);
+  const snapshot = mergePendingGameChangerSnapshot(props.snapshot, storeSnapshot);
 
   return <GameDashboardContent {...props} snapshot={snapshot} />;
 }
@@ -627,7 +627,10 @@ function OffSeasonChecklist({ ownClub, snapshot }: { ownClub: LobbyClub; snapsho
 }
 
 function LastPlaceBonusPanel({ ownClub, snapshot }: { ownClub: LobbyClub; snapshot: LobbySnapshot }) {
+  const searchParams = useSearchParams();
+  const comebackError = searchParams.get("comeback_error");
   const bonus = snapshot.club_overview?.last_place_bonus;
+  const comebackErrorMessage = getComebackBonusErrorMessage(comebackError);
   if (!bonus) {
     return null;
   }
@@ -661,6 +664,9 @@ function LastPlaceBonusPanel({ ownClub, snapshot }: { ownClub: LobbyClub; snapsh
           </PanelDescription>
         </div>
       </PanelHeader>
+      {comebackErrorMessage ? (
+        <p className="px-4 pb-2 text-sm text-rose-300">{comebackErrorMessage}</p>
+      ) : null}
       {bonus.pending_game_changer_choice ? (
         <p className="px-4 pb-4 text-sm text-zinc-300">
           Deine Game-Changer-Auswahl ist offen — waehle eine Karte im Dialog.
@@ -698,6 +704,23 @@ function LastPlaceBonusPanel({ ownClub, snapshot }: { ownClub: LobbyClub; snapsh
       )}
     </Panel>
   );
+}
+
+function getComebackBonusErrorMessage(code: string | null): string | null {
+  switch (code) {
+    case "no_cards":
+      return "Keine passenden Game-Changer-Karten in der Datenbank gefunden (Good News / Geheimwaffen). Bitte pruefen, ob die Karten-Seeds geladen sind.";
+    case "choice_open":
+      return "Deine Kartenauswahl ist bereits offen — nutze den Dialog oben auf der Seite.";
+    case "not_eligible":
+      return "Comeback-Bonus ist in dieser Saison nicht (mehr) verfuegbar.";
+    case "wrong_phase":
+      return "Comeback-Bonus kann nur in der Off-Season eingeloest werden.";
+    case "invalid_type":
+      return "Ungueltige Bonus-Auswahl.";
+    default:
+      return null;
+  }
 }
 
 function GameHeader({
@@ -2980,7 +3003,7 @@ function LineupView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; sna
       unavailable: isPlayerUnavailableForSeason(seasonNumber, owned.unavailable_until_season),
     };
   });
-  const hasGoalkeeper = lineupCards.some((card) => card.positions.includes("GK"));
+  const hasGoalkeeper = hasFitGoalkeeper(lineupCards);
   const staffEffects = (overview.staff ?? []).flatMap(
     (s) => s.card.effects as Array<{ type: string; zone?: string; stars?: number }>,
   );
@@ -4567,7 +4590,6 @@ function FixtureCard({
   // PvP state machine
   const isPvP = !hasCpu && home.kind === "human" && away.kind === "human";
   const matchState = fixture.match_state ?? "scheduled";
-  const currentThird = fixture.current_third ?? 0;
   const ownReady = ownSide === "home" ? fixture.home_ready_for_next_third : ownSide === "away" ? fixture.away_ready_for_next_third : false;
   const opponentReady = ownSide === "home" ? fixture.away_ready_for_next_third : ownSide === "away" ? fixture.home_ready_for_next_third : false;
   const secretWeapons = (snapshot.club_overview?.game_changers ?? []).filter(
@@ -4668,6 +4690,7 @@ function FixtureCard({
 
           {(home.kind === "human" || away.kind === "human") && (result ?? partialThirds.length > 0) ? (
             <MatchResultDetail
+              animateReveal={isPvP && fixture.status === "completed"}
               away={away}
               events={result?.events ?? []}
               fixture={fixture}
@@ -4744,10 +4767,12 @@ function FixtureCard({
               </>
             ) : null}
 
-            {/* PvP Pre-Match: both lineups locked, match not started yet */}
-            {isPvP && bothHumanLineupsLocked && matchState === "scheduled" && ownSide ? (
+            {/* PvP: both lineups locked, match not yet completed */}
+            {isPvP && bothHumanLineupsLocked && matchState !== "completed" && ownSide ? (
               <div className="space-y-2">
-                <p className="text-xs text-zinc-400">Beide Aufstellungen sind gelockt. Du kannst jetzt Geheimwaffen vor dem Anpfiff einsetzen.</p>
+                <p className="text-xs text-zinc-400">
+                  Beide Aufstellungen sind gelockt. Setze optional Geheimwaffen ein und bestaetige dann das Match.
+                </p>
                 <MatchCardsPanel
                   gameId={snapshot.game.id}
                   roomCode={snapshot.game.room_code}
@@ -4757,20 +4782,6 @@ function FixtureCard({
                   squad={ownSquad}
                   playedWindows={playedWindowsForFixture}
                 />
-                <form action={startMatchAction}>
-                  <input name="game_id" type="hidden" value={snapshot.game.id} />
-                  <input name="room_code" type="hidden" value={snapshot.game.room_code} />
-                  <input name="fixture_id" type="hidden" value={fixture.id} />
-                  <Button className="w-full" type="submit" variant="primary">
-                    Match starten
-                  </Button>
-                </form>
-              </div>
-            ) : null}
-
-            {/* PvP In Progress */}
-            {isPvP && matchState === "in_progress" && ownSide ? (
-              <div className="space-y-3">
                 <MatchCardsPanel
                   gameId={snapshot.game.id}
                   roomCode={snapshot.game.room_code}
@@ -4786,12 +4797,12 @@ function FixtureCard({
                     <input name="room_code" type="hidden" value={snapshot.game.room_code} />
                     <input name="fixture_id" type="hidden" value={fixture.id} />
                     <Button className="w-full" type="submit" variant="primary">
-                      {currentThird < 3 ? `Bereit fuer Drittel ${currentThird + 1}` : "Ergebnis bestaetigen"}
+                      Match abspielen
                     </Button>
                   </form>
                 ) : (
                   <div className="rounded-md border border-zinc-700 bg-zinc-800/50 p-2 text-center text-xs text-zinc-400">
-                    {opponentReady ? "Beide bereit – Drittel laeuft..." : "Warte auf Gegner..."}
+                    {opponentReady ? "Beide bereit – Match laeuft..." : "Warte auf Gegner..."}
                   </div>
                 )}
               </div>
@@ -4799,7 +4810,19 @@ function FixtureCard({
 
             {/* After match: active cards (e.g. Sieg oder Spielabbruch) */}
             {fixture.status === "completed" && ownSide ? (
-              <AfterMatchCards
+              <>
+                {isPvP ? (
+                  <MatchCardsPanel
+                    gameId={snapshot.game.id}
+                    roomCode={snapshot.game.room_code}
+                    fixtureId={fixture.id}
+                    window="during_match"
+                    cards={secretWeapons}
+                    squad={ownSquad}
+                    playedWindows={playedWindowsForFixture}
+                  />
+                ) : null}
+                <AfterMatchCards
                 gameId={snapshot.game.id}
                 roomCode={snapshot.game.room_code}
                 fixtureId={fixture.id}
@@ -4812,6 +4835,7 @@ function FixtureCard({
                 )}
                 retroWinResult={(fixture.retro_win_result as { rolls?: number[]; success?: boolean } | null) ?? null}
               />
+              </>
             ) : null}
 
             {canResolveOwnCpuMatch || canHostResolvePvpMatchLegacy ? (

@@ -7,7 +7,6 @@
  *   - lockFixtureLineupAction
  *   - resolveFixtureAction
  *   - initializeSeasonScheduleAction
- *   - startMatchAction
  *   - markReadyForNextThirdAction
  *   - playSecretWeaponAction
  *   - playMatchCardAction
@@ -22,7 +21,6 @@ export {
   lockFixtureLineupAction,
   resolveFixtureAction,
   initializeSeasonScheduleAction,
-  startMatchAction,
   markReadyForNextThirdAction,
   playSecretWeaponAction,
   playMatchCardAction,

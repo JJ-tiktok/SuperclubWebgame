@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { resolveGameChangerChoiceAction } from "@/app/games/actions/game-changers";
 import { Button } from "@/components/ui/button";
 import { getCategoryStyle } from "@/lib/game/game-changer-ui";
@@ -51,7 +52,7 @@ export function GameChangerChoiceModal({ gameId, roomCode, choice, squad }: Prop
   const style = getCategoryStyle(
     payload.type === "pick_offseason_card" && offseasonCandidates[0]
       ? offseasonCandidates[0].category
-      : choice.card.category,
+      : (choice.card?.category ?? "good_news"),
   );
 
   function togglePlayer(playerId: string) {
@@ -81,6 +82,11 @@ export function GameChangerChoiceModal({ gameId, roomCode, choice, squad }: Prop
         </p>
 
         {payload.type === "pick_offseason_card" ? (
+          offseasonCandidates.length === 0 ? (
+            <p className="mt-4 text-sm text-rose-300">
+              Die Karten-Auswahl konnte nicht geladen werden. Bitte die Seite neu laden.
+            </p>
+          ) : (
           <form action={resolveGameChangerChoiceAction} className="mt-4 space-y-2">
             <input type="hidden" name="game_id" value={gameId} />
             <input type="hidden" name="room_code" value={roomCode} />
@@ -103,6 +109,7 @@ export function GameChangerChoiceModal({ gameId, roomCode, choice, squad }: Prop
               );
             })}
           </form>
+          )
         ) : payload.type === "pick_player" ? (
           <form action={resolveGameChangerChoiceAction} className="mt-4 max-h-72 space-y-2 overflow-y-auto">
             <input type="hidden" name="game_id" value={gameId} />

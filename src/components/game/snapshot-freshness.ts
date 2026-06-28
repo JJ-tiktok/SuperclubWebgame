@@ -1,4 +1,6 @@
-import type { LobbySnapshot } from "@/lib/lobby/types";
+import { isOffseasonCardChoicePayload } from "@/lib/game/game-changer-effects";
+import { sortPendingGameChangerChoices } from "@/lib/lobby/club-game-changers";
+import type { ClubGameChangerSnapshot, LobbySnapshot } from "@/lib/lobby/types";
 
 /**
  * Positive when `server` is fresher than `client`, negative when `client` is fresher.
@@ -57,4 +59,56 @@ export function pickFresherSnapshot(
   }
 
   return compareSnapshotFreshness(server, client) >= 0 ? server : client;
+}
+
+function mergePendingRowsById(
+  primary: ClubGameChangerSnapshot[],
+  secondary: ClubGameChangerSnapshot[],
+): ClubGameChangerSnapshot[] {
+  const byId = new Map<string, ClubGameChangerSnapshot>();
+  for (const row of primary) {
+    byId.set(row.id, row);
+  }
+  for (const row of secondary) {
+    byId.set(row.id, row);
+  }
+  return [...byId.values()];
+}
+
+/** Keeps pending Game-Changer choices from SSR when the client store snapshot is stale. */
+export function mergePendingGameChangerSnapshot(
+  server: LobbySnapshot,
+  client: LobbySnapshot | null | undefined,
+): LobbySnapshot {
+  const picked = pickFresherSnapshot(server, client);
+  const serverOverview = server.club_overview;
+  const pickedOverview = picked.club_overview;
+
+  if (!serverOverview || !pickedOverview) {
+    return picked;
+  }
+
+  const serverPending = serverOverview.pending_game_changer_choices ?? [];
+  const pickedPending = pickedOverview.pending_game_changer_choices ?? [];
+  if (serverPending.length === 0 && pickedPending.length === 0) {
+    return picked;
+  }
+
+  const mergedPending = sortPendingGameChangerChoices(mergePendingRowsById(pickedPending, serverPending));
+  const hasOffseasonPending = mergedPending.some((row) => isOffseasonCardChoicePayload(row.choice_payload));
+
+  return {
+    ...picked,
+    club_overview: {
+      ...pickedOverview,
+      pending_game_changer_choices: mergedPending,
+      last_place_bonus: serverOverview.last_place_bonus
+        ? {
+            ...serverOverview.last_place_bonus,
+            pending_game_changer_choice:
+              hasOffseasonPending || serverOverview.last_place_bonus.pending_game_changer_choice,
+          }
+        : pickedOverview.last_place_bonus,
+    },
+  };
 }

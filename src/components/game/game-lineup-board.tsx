@@ -1,36 +1,29 @@
 "use client";
 
 import type { PointerEvent } from "react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { saveLineupAction } from "@/app/games/actions/match";
 import { PlayerCard } from "@/components/player-card/PlayerCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ArchetypeMatchupGuide } from "@/components/game/shared/archetype-matchup-guide";
+import {
+  ensureDefaultKeeper,
+  ensureGoalkeeperAssigned,
+  getFormationCounts,
+  isLineupPlayerActive,
+  isLineupPlayerAssignable,
+  isLineupPlayerBlocked,
+  rebuildLineupAssignments,
+  stripUnavailableAssignments,
+  type FormationSlot,
+  type LineupAssignmentCard,
+} from "@/lib/lobby/lineup-assignments";
 import { applyPositionPenalty, getPositionPenalty } from "@/lib/lobby/position-penalty";
-import { getTotalSkillValue, type PlayerCardData, type PlayerCardPosition } from "@/types/player-card";
+import { getTotalSkillValue, type PlayerCardPosition } from "@/types/player-card";
 
-type LineupCard = PlayerCardData & {
-  injured?: boolean;
-  unavailable?: boolean;
-  lockedDefault?: boolean;
-  sourceZone?: string;
-  lineupSlot?: number | null;
-};
-
-function isLineupPlayerBlocked(player?: Pick<LineupCard, "injured" | "lockedDefault" | "unavailable">) {
-  return Boolean(player?.injured || player?.unavailable || player?.lockedDefault);
-}
-
-type FormationSlot = {
-  id: string;
-  label: string;
-  required: boolean;
-  zone: PlayerCardPosition;
-  x: number;
-  y: number;
-};
+type LineupCard = LineupAssignmentCard;
 
 type FormationKey = "3-4-3" | "4-4-2" | "4-3-3" | "3-5-2" | "5-3-2";
 
@@ -128,8 +121,19 @@ export function GameLineupBoard({
   const [selectedFormation, setSelectedFormation] = useState<FormationKey>(initialFormation);
   const formationSlots = useMemo(() => formationLayouts[selectedFormation], [selectedFormation]);
   const requiredCounts = useMemo(() => getRequiredCounts(formationSlots), [formationSlots]);
-  const [assignments, setAssignments] = useState(() => buildInitialAssignments(cardsWithDefaultKeeper, formationLayouts[initialFormation], !hasSavedLineup));
+  const [assignments, setAssignments] = useState(() =>
+    rebuildLineupAssignments(cardsWithDefaultKeeper, formationLayouts[initialFormation], !hasSavedLineup),
+  );
   const [drag, setDrag] = useState<DragState | null>(null);
+
+  useEffect(() => {
+    const pool = ensureDefaultKeeper(cards);
+    const byId = new Map(pool.map((card) => [card.id, card]));
+    setAssignments((current) => {
+      const stripped = stripUnavailableAssignments(current, byId);
+      return ensureGoalkeeperAssigned(stripped, pool, formationSlots);
+    });
+  }, [cards, formationSlots]);
   const assignedIds = new Set(Object.values(assignments));
   const benchCards = cardsWithDefaultKeeper.filter((card) => !assignedIds.has(card.id) && !card.lockedDefault);
   const chemistryLinks = getChemistryLinks(assignments, cardById, formationSlots);
@@ -151,12 +155,15 @@ export function GameLineupBoard({
 
   function changeFormation(nextFormation: FormationKey) {
     const nextSlots = formationLayouts[nextFormation];
-    const assignedCards = Object.values(assignments).flatMap((playerId) => cardById.get(playerId) ?? []);
+    const pool = ensureDefaultKeeper(cards);
+    const byId = new Map(pool.map((card) => [card.id, card]));
+    const stripped = stripUnavailableAssignments(assignments, byId);
+    const assignedCards = Object.values(stripped).flatMap((playerId) => byId.get(playerId) ?? []);
     const assignedSet = new Set(assignedCards.map((card) => card.id));
-    const remainingCards = cardsWithDefaultKeeper.filter((card) => !assignedSet.has(card.id));
+    const remainingCards = pool.filter((card) => !assignedSet.has(card.id));
 
     setSelectedFormation(nextFormation);
-    setAssignments(buildInitialAssignments([...assignedCards, ...remainingCards], nextSlots, true));
+    setAssignments(rebuildLineupAssignments([...assignedCards, ...remainingCards], nextSlots, true));
     setDrag(null);
   }
 
@@ -236,7 +243,7 @@ export function GameLineupBoard({
     const targetSlot = getNearestSlot(drag.x, drag.y, formationSlots);
     const player = cardById.get(drag.playerId);
 
-    if (targetSlot && player && canUseSlot(player)) {
+    if (targetSlot && player && canPlacePlayer(player)) {
       setAssignments((current) => {
         const fromSlot = slotById.get(drag.fromSlotId);
         const next = { ...current };
@@ -247,7 +254,7 @@ export function GameLineupBoard({
           return current;
         }
 
-        if (fromSlot && displacedPlayer && !canUseSlot(displacedPlayer)) {
+        if (fromSlot && displacedPlayer && !canPlacePlayer(displacedPlayer)) {
           return current;
         }
 
@@ -430,30 +437,6 @@ export function GameLineupBoard({
   );
 }
 
-function ensureDefaultKeeper(cards: LineupCard[]) {
-  if (cards.some((card) => card.positions.includes("GK"))) {
-    return cards;
-  }
-
-  return [
-    {
-      ageGroup: "prime",
-      cardStyle: { tier: "standard", theme: "dark" },
-      chemistry: { left: false, right: false, symbol: "star" },
-      id: "default-given-gk",
-      lockedDefault: true,
-      market: { currency: "M", scoutingFee: 0, transferFee: 0 },
-      name: "Given",
-      position: "GK",
-      positions: ["GK"],
-      role: "Default Torhueter",
-      skill: { current: 1, max: 1, potential: 1 },
-      sourceZone: "GK",
-    } satisfies LineupCard,
-    ...cards,
-  ];
-}
-
 function SummaryMetric({ detail, label, value }: { detail: string; label: string; value: number }) {
   return (
     <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3">
@@ -480,18 +463,6 @@ function rowSlots(zone: "ATT" | "DEF" | "MID", count: number, y: number): Format
     y,
     zone,
   }));
-}
-
-function getSlotIdsByZone(slots: FormationSlot[]) {
-  const initial: Record<PlayerCardPosition, string[]> = { ATT: [], DEF: [], GK: [], MID: [] };
-
-  return slots.reduce(
-    (groups, slot) => {
-      groups[slot.zone].push(slot.id);
-      return groups;
-    },
-    initial,
-  );
 }
 
 function getRequiredCounts(slots: FormationSlot[]) {
@@ -654,7 +625,7 @@ function getLineupSummary(
 
   for (const slot of formationSlots) {
     const card = cardById.get(assignments[slot.id] ?? "");
-    if (!card || !canUseSlot(card)) {
+    if (!card || !isLineupPlayerActive(card)) {
       continue;
     }
 
@@ -685,68 +656,6 @@ function getLineupSummary(
   summary.total = summary.ATT.total + summary.DEF.total + summary.MID.total;
 
   return summary;
-}
-
-function buildInitialAssignments(cards: LineupCard[], formationSlots: FormationSlot[], fillRemaining: boolean) {
-  const assignments: Record<string, string> = {};
-  const used = new Set<string>();
-  const orderedCards = [...cards].sort((a, b) => Number(a.lineupSlot ?? 999) - Number(b.lineupSlot ?? 999));
-  const slotIdsByZone = getSlotIdsByZone(formationSlots);
-
-  for (const card of orderedCards) {
-    const preferredZone = normalizeZone(card.sourceZone);
-    if (!preferredZone || preferredZone === "bench") {
-      continue;
-    }
-
-    // Restore saved position without checking card.positions — allows off-position saves to be
-    // correctly restored even if the player's natural position doesn't match the saved zone.
-    assignCard(card, preferredZone, assignments, used, slotIdsByZone, { ignorePositionCheck: true });
-  }
-
-  if (fillRemaining) {
-    for (const card of orderedCards) {
-      if (used.has(card.id)) {
-        continue;
-      }
-
-      const primaryZone = card.positions[0];
-      if (primaryZone) {
-        assignCard(card, primaryZone, assignments, used, slotIdsByZone);
-      }
-    }
-  }
-
-  return assignments;
-}
-
-function assignCard(
-  card: LineupCard,
-  zone: PlayerCardPosition,
-  assignments: Record<string, string>,
-  used: Set<string>,
-  slotIdsByZone: Record<PlayerCardPosition, string[]>,
-  options: { ignorePositionCheck?: boolean } = {},
-) {
-  const slots = slotIdsByZone[zone] ?? [];
-
-  if (isLineupPlayerBlocked(card)) {
-    return;
-  }
-
-  for (const slotId of slots) {
-    if (assignments[slotId]) {
-      continue;
-    }
-
-    if (!options.ignorePositionCheck && !card.positions.includes(zone)) {
-      continue;
-    }
-
-    assignments[slotId] = card.id;
-    used.add(card.id);
-    return;
-  }
 }
 
 function normalizeZone(value: string | undefined): PlayerCardPosition | "bench" | null {
@@ -829,7 +738,7 @@ function getLineupPayload(assignments: Record<string, string>, cardById: Map<str
   return formationSlots.flatMap((slot, index) => {
     const card = cardById.get(assignments[slot.id] ?? "");
 
-    if (!card || isLineupPlayerBlocked(card)) {
+    if (!card || !isLineupPlayerActive(card) || card.lockedDefault) {
       return [];
     }
 
@@ -867,21 +776,8 @@ function getNearestSlot(x: number, y: number, formationSlots: FormationSlot[]) {
   return nearest && nearest.distance <= 13 ? nearest.slot : null;
 }
 
-function getFormationCounts(assignments: Record<string, string>, playerById: Map<string, LineupCard>, formationSlots: FormationSlot[]) {
-  return formationSlots.reduce(
-    (counts, slot) => {
-      const player = playerById.get(assignments[slot.id] ?? "");
-      if (player && canUseSlot(player)) {
-        counts[slot.zone] += 1;
-      }
-      return counts;
-    },
-    { ATT: 0, DEF: 0, GK: 0, MID: 0 } satisfies Record<PlayerCardPosition, number>,
-  );
-}
-
-function canUseSlot(player: LineupCard) {
-  return !isLineupPlayerBlocked(player);
+function canPlacePlayer(player: LineupCard) {
+  return isLineupPlayerAssignable(player) && !player.lockedDefault;
 }
 
 function clamp(value: number, min: number, max: number) {

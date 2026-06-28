@@ -51,7 +51,7 @@ import {
 import { isPrestigeEnabled, normalizePrestigeState } from "@/lib/lobby/prestige";
 import { incrementPlayerTenureForGame } from "@/lib/lobby/player-tenure";
 import { applyClubPlayerInjury, getFixtureParticipantClubIds, healExpiredInjuriesForClubs } from "@/lib/lobby/injury";
-import { isMarketPoolPlayer, playerMatchesScoutingPile } from "@/lib/lobby/player-pool";
+import { isMarketPoolPlayer } from "@/lib/lobby/player-pool";
 import {
   applyLastPlaceMoneyBonus,
   applyLastPlaceTrainingBonus,
@@ -134,7 +134,6 @@ import {
   isOffseasonPhase,
   isScoutingPileKey,
   sumStaffScoutingBonus,
-  type ScoutingPileKey,
 } from "@/lib/lobby/scouting";
 import {
   canTrainOwnedPlayer,
@@ -993,13 +992,12 @@ export async function drawScoutingPlayerAction(formData: FormData) {
     clubs,
     draws,
     gameId,
-    pileKey,
     seasonNumber,
     supabase,
   });
 
   if (!selectedPlayer) {
-    throw new Error(`Kein verfuegbarer Spieler in Region ${pileKey} fuer Scouting gefunden.`);
+    throw new Error("Kein verfuegbarer Spieler fuer Scouting gefunden.");
   }
 
   const { data: insertedDraw, error: insertError } = await supabase.from("scouting_draws").insert({
@@ -6303,11 +6301,10 @@ async function pickAvailableScoutingPlayer(params: {
   clubs: LobbyClub[];
   draws: ScoutingDrawSnapshot[];
   gameId: string;
-  pileKey: ScoutingPileKey;
   seasonNumber: number;
   supabase: SupabaseServiceClient;
 }) {
-  const { clubs, draws, pileKey, supabase } = params;
+  const { clubs, draws, supabase } = params;
   const clubIds = clubs.map((club) => club.id);
   const openPlayerIds = new Set(draws.filter((draw) => draw.status === "drawn").map((draw) => draw.player_id));
   const ownedPlayerIds = new Set<string>();
@@ -6342,7 +6339,6 @@ async function pickAvailableScoutingPlayer(params: {
   const available = (players ?? []).filter(
     (player) =>
       isMarketPoolPlayer(player) &&
-      playerMatchesScoutingPile(player, pileKey) &&
       !openPlayerIds.has(player.id) &&
       !ownedPlayerIds.has(player.id),
   );

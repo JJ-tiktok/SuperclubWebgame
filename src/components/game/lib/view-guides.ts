@@ -89,11 +89,16 @@ export const VIEW_GUIDES: Record<GameView, ViewGuideConfig> = {
     tips: [
       "Eingehende Angebote kannst du annehmen, ablehnen oder kontern.",
       "Ausgehende Angebote laufen bis zur Annahme oder zum Saisonstart.",
+      "Abwerbung unzufriedener Spieler: pro Saison nur ein Angebot an jeden anderen Verein (ein Zielspieler).",
+      "Lehnt der Gegner ab, sitzt der Spieler die kommende Saison gesperrt auf der Bank.",
     ],
     sections: [
       { id: "pool", label: "Markt", description: "Verfuegbare Spieler" },
-      { id: "incoming", label: "Eingehend", description: "Angebote an dich" },
-      { id: "outgoing", label: "Ausgehend", description: "Deine Angebote" },
+      { id: "poaching", label: "Abwerbung", description: "Unzufriedene Spieler anderer Vereine" },
+      { id: "poach-incoming", label: "Eingehend", description: "Abwerbungsanfragen an dich" },
+      { id: "poach-outgoing", label: "Ausgehend", description: "Deine Abwerbungsanfragen" },
+      { id: "incoming", label: "Eingehend", description: "Manager-Angebote an dich" },
+      { id: "outgoing", label: "Ausgehend", description: "Deine Manager-Angebote" },
     ],
   },
   table: {

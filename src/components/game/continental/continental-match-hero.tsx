@@ -1,6 +1,6 @@
 "use client";
 
-import { CalendarDays } from "lucide-react";
+import { CalendarDays, Lock, Play } from "lucide-react";
 import {
   lockContinentalLineupAction,
   resolveContinentalFixtureAction,
@@ -14,7 +14,8 @@ import type { ContinentalFixtureSnapshot, LobbyClub, LobbySnapshot } from "@/lib
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Panel } from "@/components/ui/panel";
-import { findOwnCurrentFixture } from "./continental-bracket-utils";
+import { cn } from "@/lib/utils";
+import { didParticipantLoseFixture, findOwnCurrentFixture } from "./continental-bracket-utils";
 
 function getOwnLineupPowerSummary(snapshot: LobbySnapshot, ownClub?: LobbyClub) {
   const squad = snapshot.club_overview?.squad;
@@ -97,20 +98,43 @@ export function ContinentalMatchHero({
 
   const ownParticipant = continental.participants.find((entry) => entry.club_id === ownClub.id);
   const isEliminated = ownParticipant?.eliminated_round != null;
+  const isWinner =
+    continental.winner_club_id != null && ownClub.id === continental.winner_club_id;
   const isCurrentRound = fixture.round === continental.current_round && !isEliminated;
+  const isEliminationFixture =
+    isEliminated &&
+    ownParticipant != null &&
+    fixture.round === ownParticipant.eliminated_round &&
+    didParticipantLoseFixture(fixture, ownParticipant.id);
+
+  let sectionLabel: string;
+  if (isCurrentRound) {
+    sectionLabel = `Dein Continental-Cup-Spiel — ${getContinentalRoundLabel(fixture.round)}`;
+  } else if (isEliminationFixture) {
+    sectionLabel = `Ausgeschieden im ${getContinentalRoundLabel(fixture.round)}`;
+  } else if (isWinner && continental.status === "completed") {
+    sectionLabel = `Finale gewonnen — ${getContinentalRoundLabel(fixture.round)}`;
+  } else {
+    sectionLabel = `Letztes eigenes Spiel — ${getContinentalRoundLabel(fixture.round)}`;
+  }
 
   return (
     <div className="space-y-2">
-      <p className="flex items-center gap-2 text-xs font-medium uppercase text-zinc-500">
+      <p
+        className={cn(
+          "flex items-center gap-2 text-xs font-medium uppercase",
+          isEliminationFixture ? "text-rose-400" : "text-zinc-500",
+        )}
+      >
         <CalendarDays size={13} aria-hidden />
-        {isCurrentRound
-          ? `Dein Continental-Cup-Spiel — ${getContinentalRoundLabel(fixture.round)}`
-          : `Letztes eigenes Spiel — ${getContinentalRoundLabel(fixture.round)}`}
+        {sectionLabel}
       </p>
       <ContinentalFixtureHeroCard
         fixture={fixture}
+        isEliminationFixture={isEliminationFixture}
         isHost={isHost}
         ownClub={ownClub}
+        ownParticipantId={ownParticipant?.id}
         snapshot={snapshot}
       />
     </div>
@@ -119,13 +143,17 @@ export function ContinentalMatchHero({
 
 function ContinentalFixtureHeroCard({
   fixture,
+  isEliminationFixture,
   isHost,
   ownClub,
+  ownParticipantId,
   snapshot,
 }: {
   fixture: ContinentalFixtureSnapshot;
+  isEliminationFixture: boolean;
   isHost: boolean;
   ownClub: LobbyClub;
+  ownParticipantId: string | undefined;
   snapshot: LobbySnapshot;
 }) {
   const home = fixture.home_participant;
@@ -153,8 +181,28 @@ function ContinentalFixtureHeroCard({
   const showMatchResult =
     (home.kind === "human" || away.kind === "human") && (result != null || partialThirds.length > 0);
 
+  const statusMessage = isEliminationFixture
+    ? "Du bist in dieser Runde aus dem Continental Cup ausgeschieden."
+    : ownSide
+      ? ownLocked
+        ? "Deine Aufstellung ist gelockt."
+        : "Locke deine Aufstellung für dieses K.o.-Spiel."
+      : "Du bist in diesem Fixture Zuschauer.";
+
+  const ownWon =
+    fixture.status === "completed" &&
+    ownParticipantId != null &&
+    fixture.winner_participant_id === ownParticipantId;
+
   return (
-    <Panel className="border-[var(--club-border)] bg-zinc-950/85 shadow-[0_0_20px_rgba(16,185,129,0.08)]">
+    <Panel
+      className={cn(
+        "border-[var(--club-border)] bg-zinc-950/85",
+        isEliminationFixture
+          ? "shadow-[0_0_20px_rgba(244,63,94,0.12)]"
+          : "shadow-[0_0_20px_rgba(16,185,129,0.08)]",
+      )}
+    >
       <div className="grid gap-4 p-4 lg:grid-cols-[1fr_220px]">
         <div>
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -171,9 +219,21 @@ function ContinentalFixtureHeroCard({
                 <span title={away.display_name}>{away.display_name}</span>
               </h3>
             </div>
-            <Badge tone={fixture.status === "completed" ? "green" : "amber"}>
+            <Badge
+              tone={
+                fixture.status === "completed"
+                  ? isEliminationFixture
+                    ? "neutral"
+                    : ownWon
+                      ? "green"
+                      : "neutral"
+                  : "amber"
+              }
+            >
               {fixture.status === "completed"
-                ? `${fixture.home_score ?? 0} : ${fixture.away_score ?? 0}`
+                ? isEliminationFixture
+                  ? `Niederlage ${fixture.home_score ?? 0} : ${fixture.away_score ?? 0}`
+                  : `${fixture.home_score ?? 0} : ${fixture.away_score ?? 0}`
                 : "offen"}
             </Badge>
           </div>
@@ -210,15 +270,19 @@ function ContinentalFixtureHeroCard({
         </div>
 
         <div className="flex flex-col justify-between gap-3 rounded-md border border-zinc-800 bg-zinc-900/70 p-3">
-          <div className="space-y-2 text-sm text-zinc-400">
-            <p>
-              {ownSide
-                ? ownLocked
-                  ? "Deine Aufstellung ist gelockt."
-                  : "Locke deine Aufstellung fuer dieses K.o.-Spiel."
-                : "Du bist in diesem Fixture Zuschauer."}
-            </p>
-            <p>CPU-Aufstellungen werden stabil am Fixture gespeichert.</p>
+          <div className="space-y-3">
+            <p className="text-sm font-medium text-zinc-200">{statusMessage}</p>
+            {ownSide ? (
+              <div className="flex flex-wrap gap-2">
+                <Badge tone={fixture.home_lineup_locked ? "green" : "neutral"}>
+                  Heim {fixture.home_lineup_locked ? "gelockt" : "offen"}
+                </Badge>
+                <Badge tone={fixture.away_lineup_locked ? "green" : "neutral"}>
+                  Auswärts {fixture.away_lineup_locked ? "gelockt" : "offen"}
+                </Badge>
+              </div>
+            ) : null}
+            <p className="text-xs text-zinc-500">CPU-Aufstellungen werden stabil am Fixture gespeichert.</p>
           </div>
           <div className="space-y-2">
             {canLock ? (
@@ -226,7 +290,8 @@ function ContinentalFixtureHeroCard({
                 <input name="game_id" type="hidden" value={snapshot.game.id} />
                 <input name="room_code" type="hidden" value={snapshot.game.room_code} />
                 <input name="fixture_id" type="hidden" value={fixture.id} />
-                <Button className="w-full" type="submit" variant="primary">
+                <Button className="w-full gap-2" type="submit" variant="primary">
+                  <Lock size={14} aria-hidden />
                   Aufstellung locken
                 </Button>
               </form>
@@ -236,7 +301,8 @@ function ContinentalFixtureHeroCard({
                 <input name="game_id" type="hidden" value={snapshot.game.id} />
                 <input name="room_code" type="hidden" value={snapshot.game.room_code} />
                 <input name="fixture_id" type="hidden" value={fixture.id} />
-                <Button className="w-full" type="submit" variant="primary">
+                <Button className="w-full gap-2" type="submit" variant="primary">
+                  <Play size={14} aria-hidden />
                   Spiel auswerten
                 </Button>
               </form>

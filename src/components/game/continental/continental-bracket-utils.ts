@@ -21,6 +21,21 @@ export function findFixtureForParticipant(
   );
 }
 
+function findOwnMostAdvancedCompletedFixture(
+  fixtures: ContinentalFixtureSnapshot[],
+  participantId: string,
+): ContinentalFixtureSnapshot | null {
+  return (
+    fixtures
+      .filter(
+        (fixture) =>
+          fixture.status === "completed" &&
+          (fixture.home_participant.id === participantId || fixture.away_participant.id === participantId),
+      )
+      .sort((left, right) => left.round - right.round)[0] ?? null
+  );
+}
+
 export function findOwnCurrentFixture(
   continental: ContinentalTournamentSnapshot,
   clubId: string | undefined,
@@ -34,20 +49,40 @@ export function findOwnCurrentFixture(
     return null;
   }
 
-  const ownFixtures = continental.fixtures.filter(
-    (fixture) =>
-      fixture.home_participant.id === participant.id || fixture.away_participant.id === participant.id,
-  );
+  if (participant.eliminated_round != null) {
+    return findFixtureForParticipant(continental.fixtures, participant.id, participant.eliminated_round);
+  }
 
-  if (participant.eliminated_round != null || continental.status === "completed") {
-    return (
-      ownFixtures
-        .filter((fixture) => fixture.status === "completed")
-        .sort((left, right) => right.round - left.round)[0] ?? null
-    );
+  if (continental.status === "completed") {
+    return findOwnMostAdvancedCompletedFixture(continental.fixtures, participant.id);
   }
 
   return findFixtureForParticipant(continental.fixtures, participant.id, continental.current_round);
+}
+
+export function didParticipantLoseFixture(
+  fixture: ContinentalFixtureSnapshot,
+  participantId: string,
+): boolean {
+  if (fixture.status !== "completed") {
+    return false;
+  }
+  if (fixture.winner_participant_id != null) {
+    return fixture.winner_participant_id !== participantId;
+  }
+
+  const isHome = fixture.home_participant.id === participantId;
+  const isAway = fixture.away_participant.id === participantId;
+  if (!isHome && !isAway) {
+    return false;
+  }
+
+  const homeScore = fixture.home_score ?? 0;
+  const awayScore = fixture.away_score ?? 0;
+  if (homeScore === awayScore) {
+    return false;
+  }
+  return (isHome && homeScore < awayScore) || (isAway && awayScore < homeScore);
 }
 
 export function computeParticipantRecord(
@@ -202,7 +237,11 @@ export function getManagerRoundStatus(
 
   const currentFixture = isActive
     ? findFixtureForParticipant(continental.fixtures, participant.id, continental.current_round)
-    : null;
+    : isEliminated && participant.eliminated_round != null
+      ? findFixtureForParticipant(continental.fixtures, participant.id, participant.eliminated_round)
+      : continental.status === "completed"
+        ? findOwnMostAdvancedCompletedFixture(continental.fixtures, participant.id)
+        : null;
 
   let opponentName: string | null = null;
   let homeLocked = false;

@@ -1,10 +1,19 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { Trophy } from "lucide-react";
+import { ChevronRight, Trophy } from "lucide-react";
 import { Panel, PanelDescription, PanelHeader, PanelTitle } from "@/components/ui/panel";
-import { CONTINENTAL_CPU_TIER_LABEL, getContinentalRoundLabel } from "@/lib/lobby/continental-cup";
-import type { ContinentalParticipantSnapshot, ContinentalTournamentSnapshot, LobbyClub } from "@/lib/lobby/types";
+import {
+  CONTINENTAL_CPU_TIER_LABEL,
+  CONTINENTAL_ROUNDS,
+  getContinentalRoundLabel,
+} from "@/lib/lobby/continental-cup";
+import type {
+  ContinentalFixtureSnapshot,
+  ContinentalParticipantSnapshot,
+  ContinentalTournamentSnapshot,
+  LobbyClub,
+} from "@/lib/lobby/types";
 import { cn } from "@/lib/utils";
 import { buildSymmetricBracket, fixtureInvolvesClub, type BracketSlot } from "./continental-bracket-utils";
 
@@ -18,9 +27,11 @@ const COLUMN_SPACING: Record<number, string> = {
 function BracketMatchCard({
   slot,
   ownClubId,
+  compact = false,
 }: {
   slot: BracketSlot;
   ownClubId: string | undefined;
+  compact?: boolean;
 }) {
   const fixture = slot.fixture;
   const isOwn = fixture ? fixtureInvolvesClub(fixture, ownClubId) : false;
@@ -42,7 +53,8 @@ function BracketMatchCard({
   return (
     <div
       className={cn(
-        "rounded-md border p-3 transition-colors",
+        "rounded-md border transition-colors",
+        compact ? "p-2.5" : "p-3",
         isOwn
           ? "border-[var(--club-border)] bg-zinc-900/80 shadow-[0_0_16px_rgba(16,185,129,0.12)]"
           : "border-zinc-800 bg-zinc-900/50",
@@ -51,6 +63,7 @@ function BracketMatchCard({
     >
       <div className="space-y-1.5">
         <BracketTeamRow
+          compact={compact}
           isOwn={home.club_id === ownClubId}
           isWinner={homeWon}
           name={home.display_name}
@@ -58,6 +71,7 @@ function BracketMatchCard({
           score={isCompleted ? fixture.home_score : null}
         />
         <BracketTeamRow
+          compact={compact}
           isOwn={away.club_id === ownClubId}
           isWinner={awayWon}
           name={away.display_name}
@@ -75,12 +89,14 @@ function BracketTeamRow({
   score,
   isOwn,
   isWinner,
+  compact = false,
 }: {
   name: string;
   participant: ContinentalParticipantSnapshot;
   score: number | null | undefined;
   isOwn: boolean;
   isWinner: boolean;
+  compact?: boolean;
 }) {
   const tierLabel =
     participant.kind === "cpu" && participant.cpu_strength_tier
@@ -90,7 +106,8 @@ function BracketTeamRow({
   return (
     <div
       className={cn(
-        "flex items-center justify-between gap-2 text-[10px] font-medium uppercase tracking-wide",
+        "flex items-center justify-between gap-2 font-medium uppercase tracking-wide",
+        compact ? "text-[11px]" : "text-[10px]",
         isWinner && "text-emerald-400",
         !isWinner && score != null && "opacity-50",
         isOwn && !isWinner && score == null && "text-[var(--club-color)]",
@@ -98,7 +115,11 @@ function BracketTeamRow({
     >
       <span className="min-w-0 truncate" title={tierLabel ? `${name} (${tierLabel})` : name}>
         {name}
-        {tierLabel ? <span className="ml-1 text-[9px] font-normal normal-case text-zinc-500">({tierLabel})</span> : null}
+        {tierLabel ? (
+          <span className={cn("ml-1 font-normal normal-case text-zinc-500", compact ? "text-[10px]" : "text-[9px]")}>
+            ({tierLabel})
+          </span>
+        ) : null}
       </span>
       <span className="shrink-0 font-bold">{score != null ? score : ""}</span>
     </div>
@@ -187,15 +208,105 @@ function BracketFinalCenter({
   );
 }
 
-export function ContinentalBracket({
+function MobileRoundBracket({
   continental,
-  ownClub,
+  ownClubId,
 }: {
   continental: ContinentalTournamentSnapshot;
-  ownClub: LobbyClub | undefined;
+  ownClubId: string | undefined;
+}) {
+  const roundsWithFixtures = CONTINENTAL_ROUNDS.filter((round) =>
+    continental.fixtures.some((fixture) => fixture.round === round),
+  );
+
+  return (
+    <div className="space-y-5 lg:hidden">
+      {roundsWithFixtures.map((round) => {
+        const roundFixtures = continental.fixtures
+          .filter((fixture) => fixture.round === round)
+          .sort((left, right) => left.match_index - right.match_index);
+        const isCurrentRound = continental.current_round === round && continental.status !== "completed";
+
+        return (
+          <section key={round}>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <h3
+                className={cn(
+                  "text-xs font-semibold uppercase tracking-widest",
+                  isCurrentRound ? "text-emerald-400" : "text-zinc-500",
+                )}
+              >
+                {getContinentalRoundLabel(round)}
+              </h3>
+              {isCurrentRound ? (
+                <span className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium uppercase text-emerald-300">
+                  Aktuelle Runde
+                </span>
+              ) : null}
+            </div>
+            <div className="space-y-2">
+              {roundFixtures.map((fixture) => (
+                <MobileFixtureCard fixture={fixture} key={fixture.id} ownClubId={ownClubId} />
+              ))}
+            </div>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function MobileFixtureCard({
+  fixture,
+  ownClubId,
+}: {
+  fixture: ContinentalFixtureSnapshot;
+  ownClubId: string | undefined;
+}) {
+  const isOwn = fixtureInvolvesClub(fixture, ownClubId);
+  const isCompleted = fixture.status === "completed";
+  const home = fixture.home_participant;
+  const away = fixture.away_participant;
+  const homeWon = isCompleted && fixture.winner_participant_id === home.id;
+  const awayWon = isCompleted && fixture.winner_participant_id === away.id;
+
+  return (
+    <div
+      className={cn(
+        "rounded-md border p-3",
+        isOwn ? "border-[var(--club-border)] bg-zinc-900/80" : "border-zinc-800 bg-zinc-900/40",
+      )}
+    >
+      <div className="space-y-1.5">
+        <BracketTeamRow
+          compact
+          isOwn={home.club_id === ownClubId}
+          isWinner={homeWon}
+          name={home.display_name}
+          participant={home}
+          score={isCompleted ? fixture.home_score : null}
+        />
+        <BracketTeamRow
+          compact
+          isOwn={away.club_id === ownClubId}
+          isWinner={awayWon}
+          name={away.display_name}
+          participant={away}
+          score={isCompleted ? fixture.away_score : null}
+        />
+      </div>
+    </div>
+  );
+}
+
+function DesktopSymmetricBracket({
+  continental,
+  ownClubId,
+}: {
+  continental: ContinentalTournamentSnapshot;
+  ownClubId: string | undefined;
 }) {
   const bracket = buildSymmetricBracket(continental.fixtures);
-  const ownClubId = ownClub?.id;
   const connectorCounts = bracket.leftColumns.map((column) => Math.max(1, Math.floor(column.slots.length / 2)));
 
   const gridItems: Array<{ key: string; node: ReactNode }> = [];
@@ -232,15 +343,13 @@ export function ContinentalBracket({
   });
 
   return (
-    <Panel className="border-zinc-800 bg-zinc-950/70" id="bracket">
-      <PanelHeader>
-        <div>
-          <PanelTitle>Turnierbaum</PanelTitle>
-          <PanelDescription>Voller K.o.-Baum — horizontal scrollbar auf kleineren Bildschirmen</PanelDescription>
-        </div>
-        <Trophy size={18} className="text-[var(--club-color)]" aria-hidden />
-      </PanelHeader>
-
+    <div className="relative hidden lg:block">
+      <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-8 bg-gradient-to-r from-zinc-950 to-transparent" />
+      <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-8 bg-gradient-to-l from-zinc-950 to-transparent" />
+      <p className="mb-3 flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+        <ChevronRight size={12} aria-hidden />
+        Horizontal scrollen für den vollen Baum
+      </p>
       <div className="overflow-x-auto pb-2">
         <div className="min-w-[1100px] py-6">
           <div
@@ -253,6 +362,33 @@ export function ContinentalBracket({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+export function ContinentalBracket({
+  continental,
+  ownClub,
+}: {
+  continental: ContinentalTournamentSnapshot;
+  ownClub: LobbyClub | undefined;
+}) {
+  const ownClubId = ownClub?.id;
+
+  return (
+    <Panel className="border-zinc-800 bg-zinc-950/70" id="bracket">
+      <PanelHeader>
+        <div>
+          <PanelTitle>Turnierbaum</PanelTitle>
+          <PanelDescription>
+            Kompakte Rundenansicht auf Mobilgeräten, voller symmetrischer Baum auf Desktop
+          </PanelDescription>
+        </div>
+        <Trophy size={18} className="text-[var(--club-color)]" aria-hidden />
+      </PanelHeader>
+
+      <MobileRoundBracket continental={continental} ownClubId={ownClubId} />
+      <DesktopSymmetricBracket continental={continental} ownClubId={ownClubId} />
     </Panel>
   );
 }

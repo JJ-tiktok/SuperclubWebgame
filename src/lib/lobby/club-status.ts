@@ -3,6 +3,13 @@ import type { LobbyClub } from "@/lib/lobby/types";
 
 export const CLUB_STATUS_ORDER: ClubStatus[] = ["newly_promoted", "established", "mid_table", "title_contender"];
 
+export const ATTRACTIVENESS_BY_CLUB_STATUS: Record<ClubStatus, number> = {
+  newly_promoted: 3,
+  established: 4,
+  mid_table: 5,
+  title_contender: 6,
+};
+
 export function normalizeClubStatus(status: string | undefined | null): ClubStatus {
   if (status === "established" || status === "mid_table" || status === "title_contender") {
     return status;
@@ -19,7 +26,7 @@ export function isClubStatusOverrideActive(
 }
 
 export function resolveEffectiveClubStatus(
-  club: Pick<LobbyClub, "status" | "status_override" | "status_override_until_season">,
+  club: Pick<LobbyClub, "status_override" | "status_override_until_season"> & { status?: string | null },
   seasonNumber: number,
 ): ClubStatus {
   if (isClubStatusOverrideActive(club, seasonNumber)) {
@@ -33,4 +40,20 @@ export function applyClubStatusDelta(current: ClubStatus, delta: number): ClubSt
   const baseIdx = currentIdx < 0 ? 0 : currentIdx;
   const nextIdx = Math.max(0, Math.min(CLUB_STATUS_ORDER.length - 1, baseIdx + delta));
   return CLUB_STATUS_ORDER[nextIdx];
+}
+
+/** Eingefrorener Wert vom Saisonende — nicht live aus aktuellem Kader berechnen. */
+export function resolvePoachAttractivenessStars(
+  club: Pick<LobbyClub, "status_override" | "status_override_until_season"> & {
+    attractiveness_stars?: number | string | null;
+    status?: string | null;
+  },
+  seasonNumber: number,
+): number {
+  if (club.attractiveness_stars != null) {
+    return Number(club.attractiveness_stars);
+  }
+
+  const status = resolveEffectiveClubStatus(club, seasonNumber);
+  return ATTRACTIVENESS_BY_CLUB_STATUS[status];
 }

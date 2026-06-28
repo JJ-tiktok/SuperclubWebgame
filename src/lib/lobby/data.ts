@@ -64,7 +64,7 @@ import {
 } from "@/lib/lobby/scouting";
 import { computeTrainingExtraPlayers, isOffseasonPendingScopeActive } from "@/lib/lobby/offseason-pending-effects";
 import { getTrainingStatus, parseTrainingEvent, filterTrainingEventsForWindow } from "@/lib/lobby/training";
-import { isClubStatusOverrideActive, resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
+import { isClubStatusOverrideActive, resolveEffectiveClubStatus, resolvePoachAttractivenessStars } from "@/lib/lobby/club-status";
 import {
   buildClubSponsorOverview,
   EMPTY_SPONSOR_OVERVIEW,
@@ -113,6 +113,7 @@ const CLUB_SELECT_V5 = `${CLUB_SELECT_V4}, medical_center_level, analytics_hub_l
 const CLUB_SELECT_V6 = `${CLUB_SELECT_V5}, squad_stars`;
 const CLUB_SELECT_V7 = `${CLUB_SELECT_V6}, squad_size`;
 const CLUB_SELECT_V8 = `${CLUB_SELECT_V7}, prestige_points, continental_wins, philosophy_id, philosophy_fulfilled, prestige_state`;
+const CLUB_SELECT_V9 = `${CLUB_SELECT_V8}, attractiveness_stars`;
 const CLUB_SELECT = CLUB_SELECT_V3;
 
 const CLUB_GAME_CHANGER_SELECT_LEGACY =
@@ -209,10 +210,10 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
     return { snapshot: null, currentUserId: userId };
   }
 
-  const [clubsResultV8, { data: members, error: membersError }] = await Promise.all([
+  const [clubsResultV9, { data: members, error: membersError }] = await Promise.all([
     supabase
       .from("clubs")
-      .select(CLUB_SELECT_V8)
+      .select(CLUB_SELECT_V9)
       .eq("game_id", game.id)
       .order("created_at", { ascending: true })
       .returns<LobbyClub[]>(),
@@ -224,9 +225,21 @@ export async function getLobbySnapshotByRoomCode(roomCodeParam: string, options?
       .returns<LobbyMember[]>(),
   ]);
 
-  let clubs = clubsResultV8.data;
-  let clubsError = clubsResultV8.error;
-  // Fallback chain for DBs without the latest migrations: V8 -> V7 -> V6 -> V5 -> V4 -> V3 -> legacy.
+  let clubs = clubsResultV9.data;
+  let clubsError = clubsResultV9.error;
+  // Fallback chain for DBs without the latest migrations: V9 -> V8 -> V7 -> V6 -> V5 -> V4 -> V3 -> legacy.
+  if (isUndefinedColumnError(clubsError)) {
+    const v8 = await supabase
+      .from("clubs")
+      .select(CLUB_SELECT_V8)
+      .eq("game_id", game.id)
+      .order("created_at", { ascending: true })
+      .returns<LobbyClub[]>();
+    if (!isUndefinedColumnError(v8.error)) {
+      clubs = v8.data;
+      clubsError = v8.error;
+    }
+  }
   if (isUndefinedColumnError(clubsError)) {
     const v7 = await supabase
       .from("clubs")
@@ -1064,7 +1077,7 @@ async function getTransferMarketSnapshot(
 
   if (isUndefinedTableError(offersError) || isUndefinedTableError(acceptedError)) {
     return {
-      attractiveness_stars: Number(ownClub.attractiveness_stars ?? 3),
+      attractiveness_stars: resolvePoachAttractivenessStars(ownClub, seasonNumber),
       incoming_offers: [],
       incoming_poach_requests: [],
       manager_departures_count: 0,
@@ -1121,12 +1134,12 @@ async function getTransferMarketSnapshot(
   const poachedLastSeasonIds = new Set(
     (poachHistoryResult.data ?? []).map((row) => row.target_club_player_id),
   );
-  const buyerAttractiveness = Number(ownClub.attractiveness_stars ?? 3);
+  const buyerAttractiveness = resolvePoachAttractivenessStars(ownClub, seasonNumber);
   const poachRequests = poachSetupError ? [] : (poachRequestsResult.data ?? []).map(normalizePoachRequestRow);
   const poachableClubs = clubs
     .filter((club) => club.id !== ownClub.id)
     .map((club) => {
-      const sellerAttractiveness = Number(club.attractiveness_stars ?? 3);
+      const sellerAttractiveness = resolvePoachAttractivenessStars(club, seasonNumber);
       const squad = otherPlayersByClubId.get(club.id) ?? [];
       const players = filterPoachablePlayersForBuyer({
         buyerAttractivenessStars: buyerAttractiveness,

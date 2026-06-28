@@ -180,7 +180,7 @@ import { hasFitGoalkeeper } from "@/lib/lobby/lineup-assignments";
 import { getPhaseLabel, isFinalSeason, isInvestmentPhase } from "@/lib/lobby/phases";
 import { isQualifiedTransferProfit } from "@/lib/lobby/prestige";
 import { buildSeasonEndSummaryModel } from "@/lib/lobby/season-end-summary";
-import { isClubStatusOverrideActive, resolveEffectiveClubStatus } from "@/lib/lobby/club-status";
+import { isClubStatusOverrideActive, resolveEffectiveClubStatus, resolvePoachAttractivenessStars } from "@/lib/lobby/club-status";
 import { getManagerScoreBand, getPlacementReward, getScoutingCapacity, getStadiumIncome, getTrainingCapacity, MAX_SQUAD_SIZE } from "@/lib/game/rules";
 import { CPU_TIER_LABEL } from "@/lib/lobby/cpu-teams";
 import { canStartLobby } from "@/lib/lobby/rules";
@@ -213,7 +213,7 @@ import {
   getClubPlayerDisplayName,
 } from "@/lib/lobby/player-names";
 import { MANAGER_TRANSFER_DEPARTURE_LIMIT } from "@/lib/lobby/transfers";
-import { isPlayerUnavailableForSeason } from "@/lib/lobby/poach";
+import { isPlayerUnavailableForSeason, getPoachMinimumBidMillions, getPoachReasonLabel, resolvePoachMinimumBid } from "@/lib/lobby/poach";
 import type {
   ClubPlayerSnapshot,
   CpuStrengthTier,
@@ -2088,6 +2088,9 @@ function ScoutingDrawsPanel({
 }
 
 function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snapshot: LobbySnapshot }) {
+  const searchParams = useSearchParams();
+  const poachError = searchParams.get("poach_error");
+  const poachSuccess = searchParams.get("poach_success") === "1";
   const overview = snapshot.club_overview;
   const transferMarket = snapshot.transfer_market;
 
@@ -2115,10 +2118,23 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
   const managerDeparturesCount = transferMarket?.manager_departures_count ?? 0;
   const seasonNumber = Number(snapshot.game.settings?.seasonNumber ?? 1);
   const poachingEnabled = isOffseason && !transfersBlocked && !transferMarket?.poach_setup_error;
+  const ownPoachAttractiveness =
+    transferMarket?.attractiveness_stars ?? resolvePoachAttractivenessStars(ownClub, seasonNumber);
+  const archetypesEnabled = snapshot.game.settings.archetypes_enabled !== false;
 
   return (
     <div className="space-y-4">
       <ViewGuidePanel roomCode={snapshot.game.room_code} view="transfer" />
+      {poachError ? (
+        <div className="rounded-md border border-amber-700 bg-amber-950/40 p-3 text-sm text-amber-100">
+          Abwerbung nicht moeglich: {getPoachReasonLabel(poachError)}
+        </div>
+      ) : null}
+      {poachSuccess ? (
+        <div className="rounded-md border border-emerald-800 bg-emerald-950/40 p-3 text-sm text-emerald-100">
+          Abwerbungsangebot wurde gesendet.
+        </div>
+      ) : null}
       <Panel className="border-[var(--club-border)] bg-zinc-950/85">
         <PanelHeader>
           <div>
@@ -2306,7 +2322,7 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
               <div>
                 <PanelTitle>Abwerbung unzufriedener Spieler</PanelTitle>
                 <PanelDescription>
-                  Nur in der Offseason. Dein Vereinsstatus ({transferMarket?.attractiveness_stars ?? ownClub.attractiveness_stars ?? 3} Sterne) erlaubt Abwerbungen von Spielern, die beim Gegner ueber seinem Status liegen.
+                  Nur in der Offseason. Dein Vereinsstatus ({ownPoachAttractiveness} Sterne) erlaubt Abwerbungen von Spielern, die beim Gegner ueber seinem Status liegen.
                 </PanelDescription>
               </div>
               <Target size={18} className="text-[var(--club-color)]" aria-hidden />
@@ -2322,43 +2338,36 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
             ) : (
               <div className="space-y-4">
                 {transferMarket.poachable_clubs.map((entry) => (
-                  <div className="rounded-md border border-zinc-800 bg-zinc-900/55 p-3" key={entry.club.id}>
-                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <p className="font-semibold text-zinc-100">{entry.club.club_name}</p>
-                        <p className="text-xs text-zinc-500">{entry.club.manager_name} · Status {entry.attractiveness_stars} Sterne</p>
-                      </div>
-                    </div>
-                    <div className="grid gap-3 lg:grid-cols-2">
-                      {entry.players.map((player) => (
-                        <div className="rounded-md border border-zinc-800 bg-zinc-950/70 p-3" key={player.id}>
-                          <div className="flex items-start justify-between gap-3">
-                            <div>
-                              <p className="font-medium text-zinc-100">{getClubPlayerDisplayName(player)}</p>
-                              <p className="text-xs text-zinc-500">{formatStars(Number(player.current_stars))} Sterne</p>
-                            </div>
-                          </div>
-                          <form action={createPoachRequestAction} className="mt-3 flex flex-wrap items-end gap-2">
-                            <input name="game_id" type="hidden" value={snapshot.game.id} />
-                            <input name="room_code" type="hidden" value={snapshot.game.room_code} />
-                            <input name="target_club_player_id" type="hidden" value={player.id} />
-                            <label className="text-xs text-zinc-400">
-                              Gebot (Mio.)
-                              <input
-                                className="mt-1 block w-24 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-sm text-zinc-100"
-                                defaultValue={2}
-                                min={1}
-                                name="cash_amount_millions"
-                                step={1}
-                                type="number"
-                              />
-                            </label>
-                            <Button size="sm" type="submit" variant="outline">
-                              Abwerben
-                            </Button>
-                          </form>
+                  <div
+                    className="overflow-hidden rounded-md border border-zinc-800 bg-zinc-900/55"
+                    key={entry.club.id}
+                  >
+                    <div
+                      className="h-1"
+                      style={{ backgroundColor: entry.club.club_color ?? "#3f3f46" }}
+                    />
+                    <div className="p-3">
+                      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <p className="font-semibold text-zinc-100">{entry.club.club_name}</p>
+                          <p className="text-xs text-zinc-500">
+                            {entry.club.manager_name} · Status {entry.attractiveness_stars} Sterne
+                          </p>
                         </div>
-                      ))}
+                        <Badge tone="neutral">Gegner</Badge>
+                      </div>
+                      <div className="grid gap-3 lg:grid-cols-2">
+                        {entry.players.map((player) => (
+                          <PoachPlayerOfferCard
+                            archetypesEnabled={archetypesEnabled}
+                            buyerMoney={overview.finance.money}
+                            key={player.id}
+                            player={player}
+                            sellerAttractivenessStars={entry.attractiveness_stars}
+                            snapshot={snapshot}
+                          />
+                        ))}
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -2382,7 +2391,13 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
               ) : (
                 <div className="space-y-3">
                   {transferMarket.incoming_poach_requests.map((request) => (
-                    <PoachRequestCard direction="incoming" key={request.id} request={request} snapshot={snapshot} />
+                    <PoachRequestCard
+                      archetypesEnabled={archetypesEnabled}
+                      direction="incoming"
+                      key={request.id}
+                      request={request}
+                      snapshot={snapshot}
+                    />
                   ))}
                 </div>
               )}
@@ -2402,7 +2417,13 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
               ) : (
                 <div className="space-y-3">
                   {transferMarket.outgoing_poach_requests.map((request) => (
-                    <PoachRequestCard direction="outgoing" key={request.id} request={request} snapshot={snapshot} />
+                    <PoachRequestCard
+                      archetypesEnabled={archetypesEnabled}
+                      direction="outgoing"
+                      key={request.id}
+                      request={request}
+                      snapshot={snapshot}
+                    />
                   ))}
                 </div>
               )}
@@ -2414,11 +2435,77 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
   );
 }
 
+function PoachPlayerOfferCard({
+  archetypesEnabled,
+  buyerMoney,
+  player,
+  sellerAttractivenessStars,
+  snapshot,
+}: {
+  archetypesEnabled: boolean;
+  buyerMoney: number;
+  player: ClubPlayerSnapshot;
+  sellerAttractivenessStars: number;
+  snapshot: LobbySnapshot;
+}) {
+  const card = mapOwnedPlayerToCardData(player);
+  const minimumBid = resolvePoachMinimumBid(player);
+  const minimumBidMillions = getPoachMinimumBidMillions(minimumBid);
+  const canAfford = buyerMoney >= minimumBid;
+
+  return (
+    <div className="rounded-md border border-zinc-800 bg-zinc-950/70 p-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <Badge tone="amber">Unzufrieden</Badge>
+        <p className="text-[10px] text-zinc-500">
+          Ueber Status {sellerAttractivenessStars} beim Gegner
+        </p>
+      </div>
+      <div className="mt-3">
+        <PlayerCard
+          disabled={player.injured}
+          player={card}
+          showArchetypes={archetypesEnabled}
+          variant="draft"
+        />
+        <p className="mt-2 text-xs text-zinc-400">{formatTransferPlayerMeta(player)}</p>
+      </div>
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-zinc-800 bg-zinc-900/50 px-3 py-2">
+        <p className="text-xs text-zinc-400">Mindestgebot</p>
+        <p className="text-sm font-semibold text-lime-300">{formatMoney(minimumBid)}</p>
+      </div>
+      <form action={createPoachRequestAction} className="mt-3 flex flex-wrap items-end gap-2">
+        <input name="game_id" type="hidden" value={snapshot.game.id} />
+        <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+        <input name="target_club_player_id" type="hidden" value={player.id} />
+        <label className="grid flex-1 gap-1 text-xs text-zinc-400 sm:min-w-[140px]">
+          Gebot (Mio.)
+          <input
+            className="h-9 rounded-md border border-zinc-700 bg-zinc-900 px-2 text-sm text-zinc-100 outline-none focus:border-lime-300 disabled:cursor-not-allowed disabled:opacity-60"
+            defaultValue={minimumBidMillions}
+            disabled={!canAfford}
+            min={minimumBidMillions}
+            name="cash_amount_millions"
+            step={1}
+            type="number"
+          />
+        </label>
+        <Button className="gap-1.5" disabled={!canAfford} size="sm" type="submit" variant="primary">
+          <Target size={14} aria-hidden />
+          {canAfford ? "Abwerben" : "Zu wenig Geld"}
+        </Button>
+      </form>
+    </div>
+  );
+}
+
 function PoachRequestCard({
+  archetypesEnabled,
   direction,
   request,
   snapshot,
 }: {
+  archetypesEnabled: boolean;
   direction: "incoming" | "outgoing";
   request: PoachRequestSnapshot;
   snapshot: LobbySnapshot;
@@ -2431,16 +2518,34 @@ function PoachRequestCard({
     <div className="rounded-md border border-zinc-800 bg-zinc-900/60 p-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="font-semibold text-zinc-100">{targetName}</p>
-          <p className="mt-1 text-sm text-zinc-400">
+          <p className="text-sm font-semibold text-zinc-50">{targetName}</p>
+          <p className="mt-1 text-xs text-zinc-500">
             {direction === "incoming" ? "Anfrage von" : "Anfrage an"} {counterparty}
           </p>
+          <p className="mt-1 text-xs text-zinc-500">{formatSavedAt(request.created_at)}</p>
+        </div>
+        <Badge tone="amber">offen</Badge>
+      </div>
+      {targetPlayer ? (
+        <div className="mt-3 rounded-md border border-zinc-800 bg-zinc-950/50 p-3">
+          <p className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+            {direction === "incoming" ? "Angefragter Spieler" : "Zielspieler"}
+          </p>
+          <PlayerCard
+            disabled={targetPlayer.injured}
+            player={mapOwnedPlayerToCardData(targetPlayer)}
+            showArchetypes={archetypesEnabled}
+            variant="draft"
+          />
+          <p className="mt-2 text-xs text-zinc-400">{formatTransferPlayerMeta(targetPlayer)}</p>
+          <p className="mt-2 text-sm font-semibold text-lime-300">Gebot: {formatMoney(request.cash_amount)}</p>
+        </div>
+      ) : (
+        <div className="mt-3">
+          <p className="font-semibold text-zinc-100">{targetName}</p>
           <p className="mt-1 text-sm text-zinc-500">Gebot: {formatMoney(request.cash_amount)}</p>
         </div>
-        {targetPlayer ? (
-          <Badge tone="blue">{formatStars(Number(targetPlayer.current_stars))} Sterne</Badge>
-        ) : null}
-      </div>
+      )}
       {direction === "incoming" ? (
         <div className="mt-3 space-y-2">
           <p className="text-xs text-amber-300">

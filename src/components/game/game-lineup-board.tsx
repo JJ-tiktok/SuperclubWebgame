@@ -117,14 +117,20 @@ export function GameLineupBoard({
   const cardsWithDefaultKeeper = useMemo(() => ensureDefaultKeeper(cards), [cards]);
   const cardById = useMemo(() => new Map(cardsWithDefaultKeeper.map((card) => [card.id, card])), [cardsWithDefaultKeeper]);
   const hasSavedLineup = useMemo(() => cardsWithDefaultKeeper.some((card) => isSavedLineupZone(card.sourceZone)), [cardsWithDefaultKeeper]);
-  const initialFormation = useMemo(() => inferSavedFormation(cardsWithDefaultKeeper), [cardsWithDefaultKeeper]);
-  const [selectedFormation, setSelectedFormation] = useState<FormationKey>(initialFormation);
+  const [selectedFormation, setSelectedFormation] = useState<FormationKey>(() =>
+    resolveInitialFormation(cardsWithDefaultKeeper, roomCode),
+  );
   const formationSlots = useMemo(() => formationLayouts[selectedFormation], [selectedFormation]);
   const requiredCounts = useMemo(() => getRequiredCounts(formationSlots), [formationSlots]);
-  const [assignments, setAssignments] = useState(() =>
-    rebuildLineupAssignments(cardsWithDefaultKeeper, formationLayouts[initialFormation], !hasSavedLineup),
-  );
+  const [assignments, setAssignments] = useState(() => {
+    const formation = resolveInitialFormation(cardsWithDefaultKeeper, roomCode);
+    return rebuildLineupAssignments(cardsWithDefaultKeeper, formationLayouts[formation], !hasSavedLineup);
+  });
   const [drag, setDrag] = useState<DragState | null>(null);
+
+  useEffect(() => {
+    writeStoredFormation(roomCode, selectedFormation);
+  }, [roomCode, selectedFormation]);
 
   useEffect(() => {
     const pool = ensureDefaultKeeper(cards);
@@ -475,7 +481,36 @@ function getRequiredCounts(slots: FormationSlot[]) {
   );
 }
 
-function inferSavedFormation(cards: LineupCard[]): FormationKey {
+function getFormationStorageKey(roomCode: string) {
+  return `superclub-lineup-formation:${roomCode}`;
+}
+
+function isFormationKey(value: string | null | undefined): value is FormationKey {
+  return value != null && value in formationLayouts;
+}
+
+function readStoredFormation(roomCode: string): FormationKey | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const value = window.localStorage.getItem(getFormationStorageKey(roomCode));
+  return isFormationKey(value) ? value : null;
+}
+
+function writeStoredFormation(roomCode: string, formation: FormationKey) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(getFormationStorageKey(roomCode), formation);
+}
+
+function resolveInitialFormation(cards: LineupCard[], roomCode: string): FormationKey {
+  return inferSavedFormation(cards) ?? readStoredFormation(roomCode) ?? "4-4-2";
+}
+
+function inferSavedFormation(cards: LineupCard[]): FormationKey | null {
   const counts = cards.reduce(
     (total, card) => {
       const zone = normalizeZone(card.sourceZone);
@@ -492,7 +527,7 @@ function inferSavedFormation(cards: LineupCard[]): FormationKey {
     return required.ATT === counts.ATT && required.DEF === counts.DEF && required.MID === counts.MID;
   });
 
-  return match?.id ?? "4-4-2";
+  return match?.id ?? null;
 }
 
 function ChemistryConnection({ link }: { link: ChemistryLink }) {

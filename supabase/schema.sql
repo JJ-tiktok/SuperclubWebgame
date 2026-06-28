@@ -722,7 +722,8 @@ create or replace function public.is_game_member(target_game_id uuid)
 returns boolean
 language sql
 stable
-security invoker
+security definer
+set search_path = public
 as $$
   select exists (
     select 1

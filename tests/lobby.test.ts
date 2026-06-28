@@ -145,6 +145,13 @@ describe("Lobby schema blueprint", () => {
     assert.doesNotMatch(schema, /\buser_id\b/);
   });
 
+  it("defines is_game_member as security definer to avoid RLS recursion", () => {
+    assert.match(
+      schema,
+      /create or replace function public\.is_game_member\(target_game_id uuid\)[\s\S]*?security definer[\s\S]*?set search_path = public/,
+    );
+  });
+
   it("publishes lobby tables through Supabase Realtime", () => {
     assert.match(schema, /alter publication supabase_realtime add table public\.games/);
     assert.match(schema, /alter publication supabase_realtime add table public\.clubs/);

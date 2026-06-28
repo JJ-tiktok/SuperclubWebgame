@@ -6,10 +6,53 @@ import {
   getPoachUnavailableSeason,
   isPlayerPoachable,
   isPlayerUnavailableForSeason,
+  getPoachMinimumBidMillions,
+  resolvePoachMinimumBid,
   wasPlayerBenchedLastSeason,
 } from "@/lib/lobby/poach";
 
 describe("poach requests", () => {
+  it("resolves minimum bid from owned player market values", () => {
+    assert.equal(
+      resolvePoachMinimumBid({
+        current_stars: 5,
+        player: { base_stars: 5, potential_stars: 0, skill_max: 5 },
+      }),
+      50_000_000,
+    );
+  });
+
+  it("rounds minimum bid up to whole millions for form defaults", () => {
+    assert.equal(getPoachMinimumBidMillions(50_000_000), 50);
+    assert.equal(getPoachMinimumBidMillions(1_100_000), 2);
+    assert.equal(getPoachMinimumBidMillions(1_000_000), 1);
+  });
+
+  it("rejects offers below the transfer market value", () => {
+    const result = canCreatePoachRequest({
+      buyerAttractivenessStars: 6,
+      buyerClubId: "buyer",
+      buyerMoney: 100_000_000,
+      buyerSquadSize: 10,
+      cashAmount: 20_000_000,
+      currentSeason: 3,
+      hasOpenRequestForPair: false,
+      hasPoachRequestLastSeason: false,
+      isOffseason: true,
+      minimumMarketValue: 50_000_000,
+      playerStars: 6,
+      sellerAttractivenessStars: 4,
+      sellerClubId: "seller",
+      targetClubId: "seller",
+      transfersBlocked: false,
+    });
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.reason, "below_market_value");
+    }
+  });
+
   it("allows poaching when buyer attractiveness covers player above seller ceiling", () => {
     assert.equal(
       isPlayerPoachable({
@@ -59,6 +102,7 @@ describe("poach requests", () => {
       hasOpenRequestForPair: false,
       hasPoachRequestLastSeason: true,
       isOffseason: true,
+      minimumMarketValue: 0,
       playerStars: 6,
       sellerAttractivenessStars: 4,
       sellerClubId: "seller",
@@ -83,6 +127,7 @@ describe("poach requests", () => {
       hasOpenRequestForPair: true,
       hasPoachRequestLastSeason: false,
       isOffseason: true,
+      minimumMarketValue: 0,
       playerStars: 6,
       sellerAttractivenessStars: 4,
       sellerClubId: "seller",

@@ -1,5 +1,23 @@
 import { MAX_SQUAD_SIZE } from "@/lib/game/rules";
+import { getClubPlayerMarketValues } from "@/lib/lobby/player-market";
 import { normalizeTransferCashAmount } from "@/lib/lobby/transfers";
+
+export function resolvePoachMinimumBid(owned: {
+  current_stars: number | string;
+  player: {
+    base_stars?: number | string | null;
+    minimum_bid?: number | string | null;
+    potential_stars?: number | string | null;
+    scouting_price?: number | string | null;
+    skill_max?: number | string | null;
+  };
+}) {
+  return getClubPlayerMarketValues(owned).minimumBid;
+}
+
+export function getPoachMinimumBidMillions(minimumBid: number) {
+  return Math.max(1, Math.ceil(Number(minimumBid) / 1_000_000));
+}
 
 export type PoachRequestStatus = "open" | "accepted" | "declined" | "cancelled";
 
@@ -45,6 +63,7 @@ export function canCreatePoachRequest(params: {
   hasOpenRequestForPair: boolean;
   hasPoachRequestLastSeason: boolean;
   isOffseason: boolean;
+  minimumMarketValue: number;
   playerStars: number;
   sellerAttractivenessStars: number;
   sellerClubId: string;
@@ -89,6 +108,10 @@ export function canCreatePoachRequest(params: {
   const normalizedCash = normalizeTransferCashAmount(params.cashAmount);
   if (normalizedCash <= 0) {
     return { ok: false, reason: "empty_offer" } as const;
+  }
+
+  if (normalizedCash < params.minimumMarketValue) {
+    return { ok: false, reason: "below_market_value" } as const;
   }
 
   if (params.buyerMoney < normalizedCash) {
@@ -146,6 +169,7 @@ export function getPoachUnavailableSeason(currentSeason: number) {
 export function getPoachReasonLabel(reason: string) {
   const labels: Record<string, string> = {
     back_to_back_player: "Spieler wurde letzte Saison bereits angefragt",
+    below_market_value: "Gebot unter Marktwert",
     empty_offer: "Gebot leer",
     insufficient_money: "Zu wenig Geld",
     invalid_target: "Ungueltiges Ziel",

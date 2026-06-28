@@ -38,6 +38,7 @@ import {
   isContinentalTournamentComplete,
 } from "@/app/games/actions/continental";
 import { getNextLobbyPhase, getSettingsForNextPhase, isInvestmentPhase, shouldAdvanceSeason } from "@/lib/lobby/phases";
+import { resolvePoachAttractivenessStars } from "@/lib/lobby/club-status";
 import {
   maybeTriggerFinalSeason,
   processContinentalPrestigeAtCupEnd,
@@ -166,6 +167,7 @@ import {
   canCreatePoachRequest,
   getPoachUnavailableSeason,
   isPlayerUnavailableForSeason,
+  resolvePoachMinimumBid,
 } from "@/lib/lobby/poach";
 import {
   getClubPlayerDisplayNameFromRow,
@@ -2141,9 +2143,19 @@ export async function createPoachRequestAction(formData: FormData) {
   const targetClubPlayerId = String(formData.get("target_club_player_id") || "");
   const cashAmount = normalizeTransferCashAmount(Number(formData.get("cash_amount_millions") || 0) * 1_000_000);
   const supabase = createSupabaseServiceClient();
+  const redirectTransfer = (params?: { error?: string; success?: boolean }) => {
+    const search = new URLSearchParams({ view: "transfer" });
+    if (params?.error) {
+      search.set("poach_error", params.error);
+    }
+    if (params?.success) {
+      search.set("poach_success", "1");
+    }
+    redirect(`/games/${roomCode}?${search.toString()}`);
+  };
 
   if (!userId || !gameId || !roomCode || !targetClubPlayerId || !supabase) {
-    redirect(`/games/${roomCode}?view=transfer`);
+    redirectTransfer({ error: "invalid_target" });
   }
 
   const [{ game, ownClub }, { data: target, error: targetError }] = await Promise.all([
@@ -2151,14 +2163,28 @@ export async function createPoachRequestAction(formData: FormData) {
     supabase
       .from("club_players")
       .select(
-        "id, club_id, player_id, current_stars, unavailable_until_season, club:clubs!club_players_club_id_fkey!inner(id, game_id, attractiveness_stars)",
+        `id, club_id, player_id, current_stars, unavailable_until_season, club:clubs!club_players_club_id_fkey!inner(id, game_id, attractiveness_stars, status, status_override, status_override_until_season), player:players(${DRAFT_PLAYER_SELECT})`,
       )
       .eq("id", targetClubPlayerId)
       .single<{
-        club: { attractiveness_stars?: number | string | null; game_id: string; id: string };
+        club: {
+          attractiveness_stars?: number | string | null;
+          game_id: string;
+          id: string;
+          status?: string | null;
+          status_override?: string | null;
+          status_override_until_season?: number | null;
+        };
         club_id: string;
         current_stars: number | string;
         id: string;
+        player: {
+          base_stars?: number | string | null;
+          minimum_bid?: number | string | null;
+          potential_stars?: number | string | null;
+          scouting_price?: number | string | null;
+          skill_max?: number | string | null;
+        };
         player_id: string;
         unavailable_until_season?: number | null;
       }>(),
@@ -2169,7 +2195,7 @@ export async function createPoachRequestAction(formData: FormData) {
   }
 
   if (target.club.game_id !== gameId || target.club_id === ownClub.id) {
-    redirect(`/games/${roomCode}?view=transfer`);
+    redirectTransfer({ error: "invalid_target" });
   }
 
   const seasonNumber = Number(game.settings?.seasonNumber ?? 1);
@@ -2216,8 +2242,9 @@ export async function createPoachRequestAction(formData: FormData) {
   const transfersBlocked =
     (await isClubTransferBlocked(supabase, ownClub.id, game.phase)) ||
     (await isClubTransferBlocked(supabase, target.club_id, game.phase));
+  const minimumMarketValue = resolvePoachMinimumBid(target);
   const createCheck = canCreatePoachRequest({
-    buyerAttractivenessStars: Number(ownClub.attractiveness_stars ?? 3),
+    buyerAttractivenessStars: resolvePoachAttractivenessStars(ownClub, seasonNumber),
     buyerClubId: ownClub.id,
     buyerMoney: Number(ownClub.money),
     buyerSquadSize,
@@ -2226,16 +2253,21 @@ export async function createPoachRequestAction(formData: FormData) {
     hasOpenRequestForPair: Boolean(pairRequests?.length),
     hasPoachRequestLastSeason: Boolean(lastSeasonRequests?.length),
     isOffseason: isOffseasonPhase(game.phase),
+    minimumMarketValue,
     playerStars: Number(target.current_stars),
-    sellerAttractivenessStars: Number(target.club.attractiveness_stars ?? 3),
+    sellerAttractivenessStars: resolvePoachAttractivenessStars(target.club, seasonNumber),
     sellerClubId: target.club_id,
     targetClubId: target.club_id,
     transfersBlocked,
     unavailableUntilSeason: target.unavailable_until_season,
   });
 
-  if (!createCheck.ok || openTargetRequests?.length) {
-    redirect(`/games/${roomCode}?view=transfer`);
+  if (!createCheck.ok) {
+    redirectTransfer({ error: createCheck.reason });
+  }
+
+  if (openTargetRequests?.length) {
+    redirectTransfer({ error: "pair_request_exists" });
   }
 
   const { error: insertError } = await supabase.from("poach_requests").insert({
@@ -2254,7 +2286,7 @@ export async function createPoachRequestAction(formData: FormData) {
 
   await touchGameSave(supabase, gameId, userId);
   revalidatePath(`/games/${roomCode}`);
-  redirect(`/games/${roomCode}?view=transfer`);
+  redirectTransfer({ success: true });
 }
 
 export async function acceptPoachRequestAction(formData: FormData) {
@@ -5856,6 +5888,7 @@ type ManagerScoreRow = {
 };
 
 async function finalizeSeasonEnd(supabase: SupabaseServiceClient, gameId: string, seasonNumber: number) {
+  // status + attractiveness_stars are frozen for the entire offseason (poaching, display).
   const rows = await getManagerScoreRows(supabase, gameId, seasonNumber);
 
   for (const row of rows) {
@@ -5981,6 +6014,7 @@ async function bookSeasonFinance(
 
     const finalAttractivenessStars = Math.min(6, row.attractiveness_stars + staffAttrBonus);
 
+    // Final offseason snapshot: not recomputed when the squad grows during scouting/transfers.
     const clubUpdate: Record<string, unknown> = {
       attractiveness_stars: finalAttractivenessStars,
       money: Number(club.money ?? 0) + net,
@@ -6207,7 +6241,7 @@ async function getGameClubContext(supabase: SupabaseServiceClient, gameId: strin
     supabase
       .from("clubs")
       .select(
-        "id, game_id, clerk_user_id, club_name, manager_name, money, points, is_ready, created_at, scouting_level, training_level, stadium_level, season_rank, status, offseason_scouting_capacity, offseason_training_capacity, prestige_state",
+        "id, game_id, clerk_user_id, club_name, manager_name, money, points, is_ready, created_at, scouting_level, training_level, stadium_level, season_rank, status, status_override, status_override_until_season, attractiveness_stars, offseason_scouting_capacity, offseason_training_capacity, prestige_state",
       )
       .eq("game_id", gameId)
       .order("created_at", { ascending: true })

@@ -1,4 +1,5 @@
 import type { PlayerCardData, PlayerCardPosition } from "@/types/player-card";
+import type { LineupPowerPlayer } from "@/lib/lobby/lineup-power";
 
 export const DEFAULT_GIVEN_KEEPER_ID = "default-given-gk";
 
@@ -56,6 +57,68 @@ export function createDefaultGivenKeeperCard(): LineupAssignmentCard {
     skill: { current: 1, max: 1, potential: 1 },
     sourceZone: "GK",
   };
+}
+
+export function createDefaultGivenKeeperPowerPlayer(): LineupPowerPlayer {
+  return {
+    id: DEFAULT_GIVEN_KEEPER_ID,
+    chemistry_left: false,
+    chemistry_right: false,
+    current_stars: 1,
+    current_zone: "GK",
+    position: "GK",
+    positions: ["GK"],
+  };
+}
+
+export type SquadGoalkeeperCheckPlayer = {
+  injured?: boolean | null;
+  player?: {
+    eligible_positions?: string[] | null;
+    position?: string | null;
+  } | null;
+};
+
+export function hasGoalkeeperInLineup(players: Array<{ current_zone: string; injured?: boolean | null }>) {
+  return players.some((player) => !player.injured && player.current_zone === "GK");
+}
+
+export function hasFitGoalkeeperInSquad(players: SquadGoalkeeperCheckPlayer[]) {
+  return players.some((row) => {
+    if (row.injured) {
+      return false;
+    }
+
+    const positions = row.player?.eligible_positions?.length
+      ? row.player.eligible_positions
+      : row.player?.position
+        ? [row.player.position]
+        : [];
+
+    return positions.includes("GK");
+  });
+}
+
+export function shouldUseDefaultGivenKeeper(params: {
+  lineupPlayers: Array<{ current_zone: string; injured?: boolean | null }>;
+  squadPlayers: SquadGoalkeeperCheckPlayer[];
+}) {
+  if (hasGoalkeeperInLineup(params.lineupPlayers)) {
+    return false;
+  }
+
+  return !hasFitGoalkeeperInSquad(params.squadPlayers);
+}
+
+export function applyDefaultGivenKeeperToLineupPowerPlayers(
+  lineupPlayers: LineupPowerPlayer[],
+  squadPlayers: SquadGoalkeeperCheckPlayer[],
+) {
+  if (!shouldUseDefaultGivenKeeper({ lineupPlayers, squadPlayers })) {
+    return lineupPlayers;
+  }
+
+  return [...lineupPlayers, createDefaultGivenKeeperPowerPlayer()];
 }
 
 export function ensureDefaultKeeper(cards: LineupAssignmentCard[]) {

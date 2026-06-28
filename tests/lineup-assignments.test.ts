@@ -2,15 +2,18 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   DEFAULT_GIVEN_KEEPER_ID,
+  applyDefaultGivenKeeperToLineupPowerPlayers,
   buildInitialAssignments,
   ensureDefaultKeeper,
   ensureGoalkeeperAssigned,
   getFormationCounts,
   rebuildLineupAssignments,
+  shouldUseDefaultGivenKeeper,
   stripUnavailableAssignments,
   type FormationSlot,
   type LineupAssignmentCard,
 } from "@/lib/lobby/lineup-assignments";
+import { calculateLineupPower } from "@/lib/lobby/lineup-power";
 
 const gkSlot: FormationSlot = { id: "gk", label: "GK", required: true, x: 50, y: 89, zone: "GK" };
 const defSlot: FormationSlot = { id: "def-1", label: "DEF", required: true, x: 50, y: 72, zone: "DEF" };
@@ -130,5 +133,41 @@ describe("lineup-assignments", () => {
 
     assert.equal(assignments[gkSlot.id], "keeper-fit");
     assert.notEqual(assignments[gkSlot.id], DEFAULT_GIVEN_KEEPER_ID);
+  });
+
+  it("adds Given to locked power when outfield lineup has no goalkeeper in squad", () => {
+    const outfield = [
+      { current_zone: "DEF", injured: false, current_stars: 3 },
+      { current_zone: "DEF", injured: false, current_stars: 3 },
+      { current_zone: "DEF", injured: false, current_stars: 3 },
+      { current_zone: "DEF", injured: false, current_stars: 3 },
+      { current_zone: "MID", injured: false, current_stars: 3 },
+      { current_zone: "MID", injured: false, current_stars: 3 },
+      { current_zone: "MID", injured: false, current_stars: 3 },
+      { current_zone: "MID", injured: false, current_stars: 3 },
+      { current_zone: "ATT", injured: false, current_stars: 3 },
+      { current_zone: "ATT", injured: false, current_stars: 3 },
+    ];
+
+    assert.equal(
+      shouldUseDefaultGivenKeeper({
+        lineupPlayers: outfield,
+        squadPlayers: outfield.map((player) => ({ injured: player.injured, player: { position: "DEF" } })),
+      }),
+      true,
+    );
+
+    const powers = calculateLineupPower(
+      applyDefaultGivenKeeperToLineupPowerPlayers(
+        outfield.map((player, index) => ({
+          current_stars: player.current_stars,
+          current_zone: player.current_zone,
+          id: `p-${index}`,
+        })),
+        outfield.map((player) => ({ injured: player.injured, player: { position: "DEF" } })),
+      ),
+    );
+
+    assert.equal(powers.DEF.base, 13);
   });
 });

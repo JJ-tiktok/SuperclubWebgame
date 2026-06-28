@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Panel, PanelDescription, PanelHeader, PanelTitle } from "@/components/ui/panel";
 import { PrestigeEarningGuide } from "@/components/game/prestige-earning-guide";
 import { ViewGuidePanel } from "@/components/game/shared/view-guide-panel";
-import { formatPrestigeAwardLabel, formatPrestigeAwardPoints } from "@/lib/lobby/prestige";
+import { formatPrestigeAwardLabel, formatPrestigeAwardPoints, prestigePointsClassName } from "@/lib/lobby/prestige";
 import type { LobbySnapshot, PrestigeAwardSnapshot, PrestigeSnapshot } from "@/lib/lobby/types";
 import type { PhilosophyProgress } from "@/lib/lobby/prestige";
 import { cn } from "@/lib/utils";
@@ -53,12 +53,7 @@ function ClubAwardsList({ awards }: { awards: PrestigeAwardSnapshot[] }) {
             <p className="truncate text-xs text-zinc-300">{formatPrestigeAwardLabel(award.category, award.metadata)}</p>
             <p className="text-[11px] text-zinc-600">Saison {award.season_number}</p>
           </div>
-          <span
-            className={cn(
-              "shrink-0 text-xs font-semibold",
-              award.points < 0 ? "text-rose-300" : "text-lime-300",
-            )}
-          >
+          <span className={cn("shrink-0 text-xs font-semibold", prestigePointsClassName(award.points))}>
             {formatPrestigeAwardPoints(award.points)}
           </span>
         </li>
@@ -129,7 +124,7 @@ export function PrestigeView({
 
         <div className="space-y-3">
           {prestige.clubs.map((club, index) => {
-            const progress = Math.min(100, Math.round((club.prestige_points / prestige.target) * 100));
+            const progress = Math.max(0, Math.min(100, Math.round((club.prestige_points / prestige.target) * 100)));
             const isOwn = club.club_id === ownClubId;
             const isExpanded = expandedClubId === club.club_id;
             return (
@@ -148,7 +143,7 @@ export function PrestigeView({
                     {club.philosophy_fulfilled ? <Badge tone="green">Philosophie erfuellt</Badge> : null}
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge tone="amber">{club.prestige_points} Prestige</Badge>
+                    <Badge tone={club.prestige_points < 0 ? "red" : "amber"}>{club.prestige_points} Prestige</Badge>
                     {club.continental_wins > 0 ? (
                       <Badge tone="blue">
                         <Trophy size={12} aria-hidden />

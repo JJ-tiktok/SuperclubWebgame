@@ -210,7 +210,7 @@ export function sumPrestigeAwardPoints(awards: Array<{ points: number }>): numbe
 }
 
 export function normalizePrestigeTotalFromAwards(awardSum: number): number {
-  return Math.max(0, Math.trunc(Number(awardSum)));
+  return Math.trunc(Number(awardSum));
 }
 
 export function formatPrestigeAwardPoints(points: number): string {
@@ -219,6 +219,26 @@ export function formatPrestigeAwardPoints(points: number): string {
     return `+${value}`;
   }
   return String(value);
+}
+
+export function prestigePointsClassName(points: number): string {
+  const value = Math.trunc(Number(points));
+  if (value < 0) {
+    return "text-rose-300";
+  }
+  if (value > 0) {
+    return "text-lime-300";
+  }
+  return "text-zinc-400";
+}
+
+export function prestigePointsClassNameFromLabel(pointsLabel: string): string {
+  const cleaned = pointsLabel.trim().replace(/^\+/, "");
+  const parsed = Number(cleaned);
+  if (!Number.isFinite(parsed)) {
+    return "text-lime-300";
+  }
+  return prestigePointsClassName(parsed);
 }
 
 export function formatPrestigeAwardLabel(category: string, metadata: Record<string, unknown> = {}): string {
@@ -572,7 +592,7 @@ export function updateConsecutiveLastManagerSeasons(state: PrestigeState, wasLas
 }
 
 export function applyPrestigeDeductionFloor(currentPoints: number, deduction: number): number {
-  return Math.max(0, Math.trunc(Number(currentPoints)) + Math.trunc(Number(deduction)));
+  return Math.trunc(Number(currentPoints)) + Math.trunc(Number(deduction));
 }
 
 export function updateFacilitiesAtMaxState(

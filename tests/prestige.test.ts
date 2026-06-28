@@ -6,6 +6,8 @@ import {
   capTrainingStarsForPhilosophy,
   checkTraditionsverein,
   formatPrestigeAwardPoints,
+  prestigePointsClassName,
+  prestigePointsClassNameFromLabel,
   getPhilosophyProgress,
   getTalentschmiedePhilosophyProgress,
   isAcademyPlayerAtMax,
@@ -63,9 +65,10 @@ describe("prestige point catalog", () => {
 });
 
 describe("prestige deduction floor", () => {
-  it("never reduces prestige below zero", () => {
-    assert.equal(applyPrestigeDeductionFloor(1, PRESTIGE_POINTS.manager_rank_last), 0);
+  it("applies manager rank last penalty without a zero floor", () => {
+    assert.equal(applyPrestigeDeductionFloor(1, PRESTIGE_POINTS.manager_rank_last), -2);
     assert.equal(applyPrestigeDeductionFloor(100, PRESTIGE_POINTS.manager_rank_last), 97);
+    assert.equal(applyPrestigeDeductionFloor(0, PRESTIGE_POINTS.manager_rank_last), -3);
   });
 });
 
@@ -78,6 +81,16 @@ describe("prestige award totals", () => {
       ]),
       0,
     );
+    assert.equal(
+      normalizePrestigeTotalFromAwards(
+        sumPrestigeAwardPoints([
+          { points: 3 },
+          { points: -3 },
+          { points: -3 },
+        ]),
+      ),
+      -3,
+    );
   });
 
   it("formats award points with explicit sign", () => {
@@ -86,9 +99,17 @@ describe("prestige award totals", () => {
     assert.equal(formatPrestigeAwardPoints(0), "0");
   });
 
-  it("normalizes award sum to zero floor", () => {
+  it("maps prestige point values to display tone classes", () => {
+    assert.equal(prestigePointsClassName(-3), "text-rose-300");
+    assert.equal(prestigePointsClassName(3), "text-lime-300");
+    assert.equal(prestigePointsClassName(0), "text-zinc-400");
+    assert.equal(prestigePointsClassNameFromLabel("-3"), "text-rose-300");
+    assert.equal(prestigePointsClassNameFromLabel("+10"), "text-lime-300");
+  });
+
+  it("normalizes award sum to integer total", () => {
     assert.equal(normalizePrestigeTotalFromAwards(0), 0);
-    assert.equal(normalizePrestigeTotalFromAwards(-2), 0);
+    assert.equal(normalizePrestigeTotalFromAwards(-2), -2);
     assert.equal(normalizePrestigeTotalFromAwards(5), 5);
   });
 });

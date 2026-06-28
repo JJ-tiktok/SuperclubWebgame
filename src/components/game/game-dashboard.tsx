@@ -100,6 +100,7 @@ import {
 } from "@/app/games/actions/match";
 import { healInjuredPlayerAction } from "@/app/games/actions/game-changers";
 import { resolveDisplayZoneBoosts, type ZoneModifier } from "@/lib/game/game-changer-effects";
+import { getLineupLockValidation } from "@/lib/lobby/lineup-lock-validation";
 import {
   formatMoney,
   formatSavedAt,
@@ -122,6 +123,7 @@ import { OpponentIntelPanel } from "@/components/game/opponent-intel-panel";
 import { PlayerHighlightsPanel } from "@/components/game/player-highlights-panel";
 import { HallOfFameView } from "@/components/game/hall-of-fame-view";
 import { PrestigeView } from "@/components/game/prestige-view";
+import { PrestigeSeasonAwardsSummary } from "@/components/game/prestige-awards-summary";
 import { FinalSeasonBanner } from "@/components/game/final-season-banner";
 import { GameEndView } from "@/components/game/game-end-view";
 import { LobbySetupView } from "@/components/lobby/lobby-setup-view";
@@ -923,6 +925,14 @@ function DashboardView({
             Dein Verein: {snapshot.prestige.clubs.find((club) => club.club_id === ownClub?.id)?.prestige_points ?? 0} /{" "}
             {snapshot.prestige.target} Prestige
           </p>
+          {snapshot.prestige.own_awards.length > 0 ? (
+            <div className="mt-4">
+              <PrestigeSeasonAwardsSummary
+                awards={snapshot.prestige.own_awards}
+                seasonNumber={seasonNumber}
+              />
+            </div>
+          ) : null}
         </Panel>
       ) : null}
 
@@ -1128,6 +1138,14 @@ function SeasonEndSummary({
                 <p className="mt-1 text-lg font-semibold text-zinc-50">{formatMoney(summary.finance?.projected_net ?? 0)}</p>
                 <p className="mt-1 text-xs text-zinc-500">Stadion + Praemie minus Gehaelter, gebucht beim Start der Finance-Phase.</p>
               </div>
+              {snapshot.prestige?.enabled ? (
+                <div className="mt-3 rounded-md border border-zinc-800 bg-zinc-950/60 p-3">
+                  <PrestigeSeasonAwardsSummary
+                    awards={snapshot.prestige.own_awards}
+                    seasonNumber={seasonNumber}
+                  />
+                </div>
+              ) : null}
             </>
           ) : (
             <p className="mt-3 text-sm text-zinc-400">Dein Verein ist in der Managerwertung noch nicht verfuegbar.</p>
@@ -4580,11 +4598,11 @@ function FixtureCard({
 
   const [showLockWarning, setShowLockWarning] = useState(false);
   const lockFormRef = useRef<HTMLFormElement>(null);
+  const forceLockFormRef = useRef<HTMLFormElement>(null);
 
   const squad = ownSide ? (snapshot.club_overview?.squad ?? []) : [];
-  const hasInjuredInLineup = squad.some((p) => p.injured && p.current_zone !== "bench");
-  const healthyStarters = squad.filter((p) => !p.injured && p.current_zone !== "bench").length;
-  const hasIncompleteLineup = healthyStarters < 9;
+  const lineupLockValidation = getLineupLockValidation(squad);
+  const { hasIncompleteLineup, hasInjuredInLineup } = lineupLockValidation;
   const hasLineupWarning = hasInjuredInLineup || hasIncompleteLineup;
 
   // PvP state machine
@@ -4731,6 +4749,12 @@ function FixtureCard({
                   <input name="room_code" type="hidden" value={snapshot.game.room_code} />
                   <input name="fixture_id" type="hidden" value={fixture.id} />
                 </form>
+                <form action={lockFixtureLineupAction} className="hidden" ref={forceLockFormRef}>
+                  <input name="game_id" type="hidden" value={snapshot.game.id} />
+                  <input name="room_code" type="hidden" value={snapshot.game.room_code} />
+                  <input name="fixture_id" type="hidden" value={fixture.id} />
+                  <input name="force_lock" type="hidden" value="1" />
+                </form>
                 {!showLockWarning ? (
                   <Button className="w-full" onClick={handleLockClick} type="button" variant="primary">
                     Aufstellung locken
@@ -4743,14 +4767,14 @@ function FixtureCard({
                         <p>Ein oder mehrere Spieler in deiner Aufstellung sind verletzt und werden nicht eingesetzt.</p>
                       ) : null}
                       {hasIncompleteLineup ? (
-                        <p>Deine Aufstellung hat nicht genug gesunde Spieler fuer alle Formationsslots.</p>
+                        <p>Deine Aufstellung braucht 11 gesunde Spieler in einer gueltigen Formation.</p>
                       ) : null}
                     </div>
                     <p className="mt-2 text-sm text-amber-200/60">Du kannst die Aufstellung jetzt noch anpassen.</p>
                     <div className="mt-3 flex flex-wrap gap-2">
                       <Button
                         className="border-amber-700 text-amber-100 hover:bg-amber-950"
-                        onClick={() => lockFormRef.current?.requestSubmit()}
+                        onClick={() => forceLockFormRef.current?.requestSubmit()}
                         type="button"
                         variant="outline"
                       >

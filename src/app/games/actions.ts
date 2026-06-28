@@ -2155,7 +2155,8 @@ export async function createPoachRequestAction(formData: FormData) {
   };
 
   if (!userId || !gameId || !roomCode || !targetClubPlayerId || !supabase) {
-    redirectTransfer({ error: "invalid_target" });
+    const search = new URLSearchParams({ view: "transfer", poach_error: "invalid_target" });
+    redirect(`/games/${roomCode}?${search.toString()}`);
   }
 
   const [{ game, ownClub }, { data: target, error: targetError }] = await Promise.all([

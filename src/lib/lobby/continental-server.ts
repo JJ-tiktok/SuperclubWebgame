@@ -76,10 +76,11 @@ type ClubPlayerRow = {
 type StaffEffect = { type: string; zone?: string; stars?: number };
 
 function extractStaffEffects(
-  staffData: Array<{ staff_card: { effects?: StaffEffect[] } | null }> | null | undefined,
+  staffData: Array<{ staff_card: unknown }> | null | undefined,
 ): StaffEffect[] {
   return (staffData ?? []).flatMap((entry) => {
-    const card = entry.staff_card as { effects?: StaffEffect[] } | null;
+    const raw = entry.staff_card;
+    const card = (Array.isArray(raw) ? raw[0] : raw) as { effects?: StaffEffect[] } | null;
     return card?.effects ?? [];
   });
 }

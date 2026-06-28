@@ -26,7 +26,7 @@ export function isClubStatusOverrideActive(
 }
 
 export function resolveEffectiveClubStatus(
-  club: Pick<LobbyClub, "status" | "status_override" | "status_override_until_season">,
+  club: Pick<LobbyClub, "status_override" | "status_override_until_season"> & { status?: string | null },
   seasonNumber: number,
 ): ClubStatus {
   if (isClubStatusOverrideActive(club, seasonNumber)) {
@@ -44,7 +44,10 @@ export function applyClubStatusDelta(current: ClubStatus, delta: number): ClubSt
 
 /** Eingefrorener Wert vom Saisonende — nicht live aus aktuellem Kader berechnen. */
 export function resolvePoachAttractivenessStars(
-  club: Pick<LobbyClub, "attractiveness_stars" | "status" | "status_override" | "status_override_until_season">,
+  club: Pick<LobbyClub, "status_override" | "status_override_until_season"> & {
+    attractiveness_stars?: number | string | null;
+    status?: string | null;
+  },
   seasonNumber: number,
 ): number {
   if (club.attractiveness_stars != null) {

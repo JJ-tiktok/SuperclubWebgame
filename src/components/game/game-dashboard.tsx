@@ -2322,7 +2322,7 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
               <div>
                 <PanelTitle>Abwerbung unzufriedener Spieler</PanelTitle>
                 <PanelDescription>
-                  Nur in der Offseason. Dein Vereinsstatus ({ownPoachAttractiveness} Sterne) erlaubt Abwerbungen von Spielern, die beim Gegner ueber seinem Status liegen.
+                  Nur in der Offseason. Dein Vereinsstatus ({ownPoachAttractiveness} Sterne) erlaubt Abwerbungen von Spielern, die beim Gegner ueber seinem Status liegen. Pro Saison nur ein Angebot pro anderem Verein.
                 </PanelDescription>
               </div>
               <Target size={18} className="text-[var(--club-color)]" aria-hidden />
@@ -2406,7 +2406,7 @@ function TransferMarketView({ ownClub, snapshot }: { ownClub: LobbyClub | undefi
               <PanelHeader>
                 <div>
                   <PanelTitle>Ausgehende Abwerbungen</PanelTitle>
-                  <PanelDescription>Offene Anfragen an schwaecher eingestufte Vereine.</PanelDescription>
+                  <PanelDescription>Offene Anfragen an schwaecher eingestufte Vereine. Pro Saison nur ein Zielspieler pro Gegner-Verein.</PanelDescription>
                 </div>
                 <Target size={18} className="text-[var(--club-color)]" aria-hidden />
               </PanelHeader>

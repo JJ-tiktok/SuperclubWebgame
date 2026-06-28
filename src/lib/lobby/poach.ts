@@ -84,6 +84,7 @@ export function canCreatePoachRequest(params: {
   }
 
   if (params.hasOpenRequestForPair) {
+    // One poach request per buyer/seller club pair per season (any target player).
     return { ok: false, reason: "pair_request_exists" } as const;
   }
 
@@ -176,7 +177,7 @@ export function getPoachReasonLabel(reason: string) {
     not_offseason: "Nur Offseason",
     not_open: "Anfrage nicht offen",
     not_poachable: "Spieler nicht abwerbbar",
-    pair_request_exists: "Bereits eine Anfrage an diesen Verein",
+    pair_request_exists: "Pro Saison nur ein Abwerbungsangebot pro Verein",
     player_unavailable: "Spieler gesperrt",
     squad_full: "Kader voll",
     transfers_blocked: "Transfers gesperrt",

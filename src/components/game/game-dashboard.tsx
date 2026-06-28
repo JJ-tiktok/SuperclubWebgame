@@ -214,6 +214,7 @@ import { isPlayerUnavailableForSeason } from "@/lib/lobby/poach";
 import type {
   ClubPlayerSnapshot,
   CpuStrengthTier,
+  DraftPickSnapshot,
   DraftPlayerRow,
   LobbyClub,
   LobbySnapshot,
@@ -1125,6 +1126,16 @@ function getManagerDone(club: LobbyClub, memberByClerkId: Map<string, LobbySnaps
   };
 }
 
+function getDraftPlayerPositionLabel(player: DraftPlayerRow | undefined) {
+  if (!player) {
+    return null;
+  }
+
+  return getDraftOverviewPositionKey(player) === "UTIL"
+    ? "UTIL"
+    : getPositionLabel(mapDbPlayerToPlayerCardData(player).positions);
+}
+
 function DraftView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snapshot: LobbySnapshot }) {
   const draft = snapshot.draft;
 
@@ -1149,13 +1160,17 @@ function DraftView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
   }
 
   const currentTurnClub = snapshot.clubs.find((club) => club.id === draft.current_club_id);
-  const pickedPlayerIds = new Set(draft.picks.map((pick) => pick.playerId));
   const archetypesEnabled = snapshot.game.settings.archetypes_enabled !== false;
   const isMyTurn = Boolean(ownClub && draft.current_club_id === ownClub.id && snapshot.game.current_turn_club_id === ownClub.id);
   const ownSquadCount = ownClub ? draft.squad_counts[ownClub.id] ?? 0 : 0;
   const playerNames = new Map(draft.board_players.map((player) => [player.id, player.display_name]));
   const playerById = new Map(draft.board_players.map((player) => [player.id, player]));
   const clubNames = new Map(snapshot.clubs.map((club) => [club.id, club.club_name]));
+  const clubById = new Map(snapshot.clubs.map((club) => [club.id, club]));
+  const pickByPlayerId = new Map<string, DraftPickSnapshot>(
+    draft.picks.map((pick) => [pick.playerId, pick]),
+  );
+  const ownPicksThisRound = ownClub ? draft.picks.filter((pick) => pick.clubId === ownClub.id) : [];
 
   const clubPositionCounts: Record<string, ReturnType<typeof createEmptyDraftOverviewPositionCounts>> = {};
   for (const club of snapshot.clubs) {
@@ -1217,19 +1232,48 @@ function DraftView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
           <div className="grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))] gap-3">
             {draft.board_players.map((player) => {
               const card = mapDbPlayerToPlayerCardData(player);
-              const picked = pickedPlayerIds.has(player.id);
+              const pick = pickByPlayerId.get(player.id);
+              const picked = Boolean(pick);
+              const isOwnPick = Boolean(pick && ownClub && pick.clubId === ownClub.id);
+              const pickerClub = pick ? clubById.get(pick.clubId) : undefined;
               const canPick = isMyTurn && !picked;
 
               return (
-                <div className={cn("rounded-lg border border-zinc-800 bg-zinc-900/45 p-2", picked ? "opacity-55" : "")} key={player.id}>
-                  <PlayerCard disabled={picked} player={card} showArchetypes={archetypesEnabled} variant="draft" />
+                <div
+                  className={cn(
+                    "relative rounded-lg border bg-zinc-900/45 p-2",
+                    isOwnPick ? "border-[var(--club-color)]" : "border-zinc-800",
+                    picked && !isOwnPick ? "opacity-55" : "",
+                  )}
+                  key={player.id}
+                >
+                  {isOwnPick ? (
+                    <span className="absolute right-2 top-2 z-10 rounded-full bg-[var(--club-color)] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white shadow-sm">
+                      Dein Pick
+                    </span>
+                  ) : null}
+                  <PlayerCard disabled={picked && !isOwnPick} player={card} showArchetypes={archetypesEnabled} variant="draft" />
+                  {picked && pickerClub ? (
+                    <div className="mt-2 flex items-center gap-2 rounded-md border border-zinc-800 bg-zinc-950/80 px-2 py-1.5">
+                      <ClubBadge clubColor={pickerClub.club_color} clubName={pickerClub.club_name} size="sm" />
+                      <span className="truncate text-xs font-medium text-zinc-200">
+                        {isOwnPick ? "Du" : pickerClub.club_name}
+                      </span>
+                    </div>
+                  ) : null}
                   <form action={makeDraftPickAction} className="mt-2">
                     <input name="game_id" type="hidden" value={snapshot.game.id} />
                     <input name="room_code" type="hidden" value={snapshot.game.room_code} />
                     <input name="club_id" type="hidden" value={ownClub?.id ?? ""} />
                     <input name="player_id" type="hidden" value={player.id} />
                     <Button className="w-full" disabled={!canPick} type="submit" variant={canPick ? "primary" : "outline"}>
-                      {picked ? "Gedraftet" : canPick ? "Draften" : "Nicht am Zug"}
+                      {picked
+                        ? isOwnPick
+                          ? "Dein Pick"
+                          : `→ ${pickerClub?.club_name ?? "Gedraftet"}`
+                        : canPick
+                          ? "Draften"
+                          : "Nicht am Zug"}
                     </Button>
                   </form>
                 </div>
@@ -1295,34 +1339,85 @@ function DraftView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snap
             </div>
           </Panel>
 
+          <Panel className="border-[var(--club-border)] bg-zinc-950/85">
+            <PanelHeader>
+              <div>
+                <PanelTitle>Deine Picks</PanelTitle>
+                <PanelDescription>Runde {draft.round_index + 1}</PanelDescription>
+              </div>
+              <ClipboardList size={18} className="text-[var(--club-color)]" aria-hidden />
+            </PanelHeader>
+            <div className="space-y-2">
+              {ownPicksThisRound.length === 0 ? (
+                <p className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3 text-sm text-zinc-400">
+                  Noch kein eigener Pick in dieser Runde.
+                </p>
+              ) : (
+                ownPicksThisRound.map((pick) => {
+                  const player = playerById.get(pick.playerId);
+                  const positionLabel = getDraftPlayerPositionLabel(player);
+
+                  return (
+                    <div
+                      className="rounded-md border border-[var(--club-color)] bg-zinc-900/80 p-3"
+                      key={`own-${pick.pickIndex}-${pick.playerId}`}
+                    >
+                      <p className="text-xs font-medium uppercase text-zinc-500">Pick {pick.pickIndex + 1}</p>
+                      <p className="mt-1 text-sm font-semibold text-zinc-100">{playerNames.get(pick.playerId) ?? "Spieler"}</p>
+                      {positionLabel ? <p className="mt-1 text-xs text-zinc-500">{positionLabel}</p> : null}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </Panel>
+
           <Panel className="border-[var(--club-border)] bg-zinc-950/85" id="history">
             <PanelHeader>
               <div>
                 <PanelTitle>Pick-Historie</PanelTitle>
-                <PanelDescription>Aktuelle Runde, neueste Picks unten.</PanelDescription>
+                <PanelDescription>Aktuelle Runde, neueste Picks zuerst.</PanelDescription>
               </div>
               <ListOrdered size={18} className="text-[var(--club-color)]" aria-hidden />
             </PanelHeader>
-            <div className="space-y-2">
+            <div className="max-h-[560px] space-y-2 overflow-auto pr-1">
               {draft.picks.length === 0 ? (
                 <p className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3 text-sm text-zinc-400">Noch kein Pick in dieser Runde.</p>
               ) : (
-                draft.picks.map((pick) => {
+                [...draft.picks].reverse().map((pick) => {
                   const player = playerById.get(pick.playerId);
-                  const positionLabel = player
-                    ? getDraftOverviewPositionKey(player) === "UTIL"
-                      ? "UTIL"
-                      : getPositionLabel(mapDbPlayerToPlayerCardData(player).positions)
-                    : null;
+                  const pickerClub = clubById.get(pick.clubId);
+                  const isOwnPick = Boolean(ownClub && pick.clubId === ownClub.id);
+                  const positionLabel = getDraftPlayerPositionLabel(player);
+                  const clubColor = pickerClub?.club_color && /^#[0-9a-fA-F]{6}$/.test(pickerClub.club_color)
+                    ? pickerClub.club_color
+                    : "#3f3f46";
 
                   return (
-                    <div className="rounded-md border border-zinc-800 bg-zinc-900/70 p-3" key={`${pick.clubId}-${pick.playerId}`}>
-                      <p className="text-xs font-medium uppercase text-zinc-500">Pick {pick.pickIndex + 1}</p>
+                    <div
+                      className={cn(
+                        "rounded-md border border-l-4 bg-zinc-900/70 p-3",
+                        isOwnPick ? "border-[var(--club-color)] bg-zinc-900/80" : "border-zinc-800",
+                      )}
+                      key={`${pick.clubId}-${pick.playerId}`}
+                      style={{ borderLeftColor: clubColor }}
+                    >
+                      <div className="flex items-center gap-2">
+                        <p className="text-xs font-medium uppercase text-zinc-500">Pick {pick.pickIndex + 1}</p>
+                        <span className="text-zinc-600">·</span>
+                        {pickerClub ? (
+                          <span className="flex min-w-0 items-center gap-1.5">
+                            <ClubBadge clubColor={pickerClub.club_color} clubName={pickerClub.club_name} size="sm" />
+                            <span className="truncate text-xs font-medium text-zinc-300">
+                              {isOwnPick ? "Du" : pickerClub.club_name}
+                            </span>
+                          </span>
+                        ) : (
+                          <span className="truncate text-xs text-zinc-500">{clubNames.get(pick.clubId) ?? "Club"}</span>
+                        )}
+                      </div>
                       <p className="mt-1 text-sm font-semibold text-zinc-100">{playerNames.get(pick.playerId) ?? "Spieler"}</p>
-                      <p className="mt-1 text-xs text-zinc-500">
-                        {clubNames.get(pick.clubId) ?? "Club"}
-                        {positionLabel ? ` · ${positionLabel}` : ""}
-                      </p>
+                      {positionLabel ? <p className="mt-1 text-xs text-zinc-500">{positionLabel}</p> : null}
                     </div>
                   );
                 })

@@ -2,7 +2,8 @@
 
 import { Info } from "lucide-react";
 import { Panel, PanelDescription, PanelHeader, PanelTitle } from "@/components/ui/panel";
-import { PHILOSOPHIES, PRESTIGE_EARNING_RULES } from "@/lib/lobby/prestige";
+import { PHILOSOPHIES, PRESTIGE_EARNING_RULES, prestigePointsClassNameFromLabel } from "@/lib/lobby/prestige";
+import { cn } from "@/lib/utils";
 
 export function PrestigeEarningGuide({ compact = false }: { compact?: boolean }) {
   return (
@@ -32,7 +33,9 @@ export function PrestigeEarningGuide({ compact = false }: { compact?: boolean })
                 {rule.note ? ` — ${rule.note}` : ""}
               </p>
             </div>
-            <p className="shrink-0 text-sm font-semibold text-lime-300">{rule.points}</p>
+            <p className={cn("shrink-0 text-sm font-semibold", prestigePointsClassNameFromLabel(rule.points))}>
+              {rule.points}
+            </p>
           </div>
         ))}
       </div>

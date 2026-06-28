@@ -19,10 +19,10 @@ describe("prestige deductions", () => {
     assert.equal(PRESTIGE_POINTS.manager_rank_last, -3);
   });
 
-  it("floors prestige at zero after deduction", () => {
-    assert.equal(applyPrestigeDeductionFloor(2, -3), 0);
+  it("allows negative prestige after deduction", () => {
+    assert.equal(applyPrestigeDeductionFloor(2, -3), -1);
     assert.equal(applyPrestigeDeductionFloor(10, -3), 7);
-    assert.equal(applyPrestigeDeductionFloor(0, -3), 0);
+    assert.equal(applyPrestigeDeductionFloor(0, -3), -3);
   });
 });
 

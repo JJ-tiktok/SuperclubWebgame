@@ -29,6 +29,7 @@ import {
   type EndgameFacilityAction,
 } from "@/lib/lobby/endgame-facilities";
 import { buildLineupSnapshotFromPlayers, type LineupSnapshotClubPlayerRow } from "@/lib/lobby/lineup-snapshot";
+import { getLineupLockValidation } from "@/lib/lobby/lineup-lock-validation";
 import { buildYouthPlayerSeed, isNlzOriginPlayer } from "@/lib/lobby/youth-generator";
 import { calculateLineupPower, type CaptainBoost } from "@/lib/lobby/lineup-power";
 import {
@@ -47,7 +48,7 @@ import {
 } from "@/lib/lobby/prestige-server";
 import { isPrestigeEnabled, normalizePrestigeState } from "@/lib/lobby/prestige";
 import { incrementPlayerTenureForGame } from "@/lib/lobby/player-tenure";
-import { applyClubPlayerInjury } from "@/lib/lobby/injury";
+import { applyClubPlayerInjury, getFixtureParticipantClubIds, healExpiredInjuriesForClubs } from "@/lib/lobby/injury";
 import { isMarketPoolPlayer, playerMatchesScoutingPile } from "@/lib/lobby/player-pool";
 import {
   applyLastPlaceMoneyBonus,
@@ -2940,6 +2941,7 @@ export async function lockFixtureLineupAction(formData: FormData) {
   const gameId = String(formData.get("game_id") || "");
   const roomCode = String(formData.get("room_code") || "");
   const fixtureId = String(formData.get("fixture_id") || "");
+  const forceLock = String(formData.get("force_lock") || "") === "1";
   const supabase = createSupabaseServiceClient();
 
   if (!userId || !gameId || !roomCode || !fixtureId || !supabase) {
@@ -2956,6 +2958,21 @@ export async function lockFixtureLineupAction(formData: FormData) {
 
   if (!side) {
     throw new Error("Du kannst nur deine eigenen Fixtures locken.");
+  }
+
+  const { data: lineupPlayers, error: lineupPlayersError } = await supabase
+    .from("club_players")
+    .select("current_zone, injured")
+    .eq("club_id", ownClub.id)
+    .returns<Array<{ current_zone: string; injured: boolean }>>();
+
+  if (lineupPlayersError) {
+    throw lineupPlayersError;
+  }
+
+  const lineupValidation = getLineupLockValidation(lineupPlayers ?? []);
+  if ((lineupValidation.hasIncompleteLineup || lineupValidation.hasInjuredInLineup) && !forceLock) {
+    redirect(`/games/${roomCode}?view=matchday`);
   }
 
   // Check for next_match pending effects that affect locked-power computation
@@ -4001,7 +4018,11 @@ async function resolveFixtureServer(params: {
 
   await consumePendingEffects(supabase, preMatchConsumed);
   if (!resolveOptions?.skipHealInjuries) {
-    await healExpiredInjuries(supabase, fixture.game_id, fixture.matchday);
+    await healExpiredInjuriesForClubs(
+      supabase,
+      fixture.matchday,
+      getFixtureParticipantClubIds(participants),
+    );
   }
   if (!resolveOptions?.skipStandingsRebuild) {
     await rebuildSeasonStandings(supabase, fixture.game_id, fixture.season_number);
@@ -4082,9 +4103,6 @@ async function autoSimulateCpuOnlyFixtures(
     return;
   }
 
-  const maxMatchday = Math.max(...resolvedFixtures.map((fixture) => fixture.matchday));
-  const clubIds = await listClubIds(supabase, gameId);
-  await healExpiredInjuries(supabase, gameId, maxMatchday, clubIds);
   await rebuildSeasonStandings(supabase, gameId, seasonNumber);
   await touchGameSave(supabase, gameId, userId);
 }
@@ -4490,31 +4508,6 @@ async function assignRandomGameChanger(
   }
 
   return { card, clubGameChangerId: inserted?.id ?? null };
-}
-
-/**
- * Health-check after a matchday: any player whose injury duration has expired is healed.
- * injured_until_matchday: > 0 means injured up to and including that matchday. So if
- * the just-finished matchday equals or exceeds the marker, the player heals.
- * Season-long injuries (value = -1) only heal at season end.
- */
-async function healExpiredInjuries(
-  supabase: SupabaseServiceClient,
-  gameId: string,
-  currentMatchday: number,
-  clubIds?: string[],
-): Promise<void> {
-  const ids = clubIds ?? (await listClubIds(supabase, gameId));
-  if (ids.length === 0) {
-    return;
-  }
-
-  await supabase
-    .from("club_players")
-    .update({ injured: false, injured_until_matchday: null })
-    .gt("injured_until_matchday", 0)
-    .lte("injured_until_matchday", currentMatchday)
-    .in("club_id", ids);
 }
 
 async function listClubIds(supabase: SupabaseServiceClient, gameId: string): Promise<string[]> {
@@ -5022,7 +5015,11 @@ export async function markReadyForNextThirdAction(formData: FormData) {
       awayThirdPoints: scores.away,
     });
   }
-  await healExpiredInjuries(supabase, gameId, fixture.matchday);
+  await healExpiredInjuriesForClubs(
+    supabase,
+    fixture.matchday,
+    getFixtureParticipantClubIds(participants),
+  );
   await rebuildSeasonStandings(supabase, gameId, fixture.season_number);
   await autoSimulateCpuOnlyFixtures(supabase, gameId, game, userId, {
     matchday: fixture.matchday,

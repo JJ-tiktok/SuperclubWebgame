@@ -24,6 +24,7 @@ export type LineupLockValidationOptions = {
 };
 
 export type LineupSaveSquadPlayer = LineupLockPlayer & {
+  id: string;
   player?: {
     eligible_positions?: string[] | null;
     position?: string | null;

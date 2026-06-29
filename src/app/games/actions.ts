@@ -2865,11 +2865,12 @@ export async function saveLineupAction(formData: FormData) {
   const submitted = parseLineupPayload(lineupPayload);
   const { data: ownedRows, error: ownedError } = await supabase
     .from("club_players")
-    .select("id, injured, unavailable_until_season, player:players(position, eligible_positions)")
+    .select("id, current_zone, injured, unavailable_until_season, player:players(position, eligible_positions)")
     .eq("club_id", ownClub.id)
     .returns<
       Array<{
         id: string;
+        current_zone: string;
         injured: boolean;
         unavailable_until_season?: number | null;
         player: { eligible_positions?: string[] | null; position?: string | null } | null;

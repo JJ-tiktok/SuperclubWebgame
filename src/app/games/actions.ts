@@ -30,7 +30,7 @@ import {
 } from "@/lib/lobby/endgame-facilities";
 import { buildLineupSnapshotFromPlayers, type LineupSnapshotClubPlayerRow } from "@/lib/lobby/lineup-snapshot";
 import { applyDefaultGivenKeeperToLineupPowerPlayers, shouldUseDefaultGivenKeeper } from "@/lib/lobby/lineup-assignments";
-import { getLineupLockValidation } from "@/lib/lobby/lineup-lock-validation";
+import { getLineupLockValidation, getLineupValidationAfterSave } from "@/lib/lobby/lineup-lock-validation";
 import { buildYouthPlayerSeed, isNlzOriginPlayer } from "@/lib/lobby/youth-generator";
 import { calculateLineupPower, type CaptainBoost } from "@/lib/lobby/lineup-power";
 import {
@@ -2865,9 +2865,17 @@ export async function saveLineupAction(formData: FormData) {
   const submitted = parseLineupPayload(lineupPayload);
   const { data: ownedRows, error: ownedError } = await supabase
     .from("club_players")
-    .select("id, injured, unavailable_until_season")
+    .select("id, current_zone, injured, unavailable_until_season, player:players(position, eligible_positions)")
     .eq("club_id", ownClub.id)
-    .returns<Array<{ id: string; injured: boolean; unavailable_until_season?: number | null }>>();
+    .returns<
+      Array<{
+        id: string;
+        current_zone: string;
+        injured: boolean;
+        unavailable_until_season?: number | null;
+        player: { eligible_positions?: string[] | null; position?: string | null } | null;
+      }>
+    >();
 
   if (ownedError) {
     throw ownedError;
@@ -2880,7 +2888,14 @@ export async function saveLineupAction(formData: FormData) {
       .map((row) => row.id),
   );
   if (submitted.some((item) => injuredIds.has(item.club_player_id) || unavailableIds.has(item.club_player_id))) {
-    redirect(`/games/${roomCode}?view=lineup`);
+    redirect(`/games/${roomCode}?view=lineup&lineup_error=unavailable`);
+  }
+
+  const postSaveValidation = getLineupValidationAfterSave(ownedRows ?? [], submitted, {
+    shouldUseDefaultGivenKeeper,
+  });
+  if (postSaveValidation.hasIncompleteLineup) {
+    redirect(`/games/${roomCode}?view=lineup&lineup_error=incomplete`);
   }
 
   const submittedById = new Map(submitted.map((item) => [item.club_player_id, item]));
@@ -2920,7 +2935,7 @@ export async function saveLineupAction(formData: FormData) {
     type: "LINEUP_SAVED",
   });
   revalidatePath(`/games/${roomCode}`);
-  redirect(`/games/${roomCode}?view=lineup`);
+  redirect(`/games/${roomCode}?view=lineup&saved=1`);
 }
 
 /**

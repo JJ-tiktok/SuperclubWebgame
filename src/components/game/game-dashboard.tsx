@@ -3103,7 +3103,12 @@ function DeadlineAuctionList({ deadline, snapshot }: { deadline: NonNullable<Lob
 }
 
 function LineupView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; snapshot: LobbySnapshot }) {
+  const searchParams = useSearchParams();
+  const lineupLockedFromUrl = searchParams.get("locked") === "1";
+  const lineupError = searchParams.get("lineup_error");
+  const lineupSaved = searchParams.get("saved") === "1";
   const overview = snapshot.club_overview;
+  const seasonNumber = Number(snapshot.game.settings?.seasonNumber ?? 1);
 
   if (!ownClub || !overview) {
     return (
@@ -3119,12 +3124,22 @@ function LineupView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; sna
     );
   }
 
-  const lineupCards = getSortedSquadPlayers(overview.squad).map((owned) => {
-    const seasonNumber = Number(snapshot.game.settings?.seasonNumber ?? 1);
-    return {
-      ...mapOwnedPlayerToLineupCardData(owned),
-      unavailable: isPlayerUnavailableForSeason(seasonNumber, owned.unavailable_until_season),
-    };
+  const lineupCards = getSortedSquadPlayers(overview.squad).map((owned) => ({
+    ...mapOwnedPlayerToLineupCardData(owned),
+    unavailable: isPlayerUnavailableForSeason(seasonNumber, owned.unavailable_until_season),
+  }));
+  const lineupSaveBlocked = (overview.pending_effects ?? []).some(
+    (effect) => effect.effect_type === "next_match_lineup_locked" && effect.scope === "next_match",
+  );
+  const lineupLocked = lineupSaveBlocked || lineupLockedFromUrl;
+  const lineupLockedMessage =
+    "Die Aufstellung ist durch einen Karteneffekt bis zum naechsten Spiel gesperrt und kann nicht geaendert werden.";
+  const useDefaultGivenKeeper = shouldUseDefaultGivenKeeper({
+    lineupPlayers: overview.squad,
+    squadPlayers: overview.squad,
+  });
+  const savedLineupValidation = getLineupLockValidation(overview.squad, {
+    implicitDefaultGoalkeeper: useDefaultGivenKeeper,
   });
   const hasGoalkeeper = hasFitGoalkeeper(lineupCards);
   const staffEffects = (overview.staff ?? []).flatMap(
@@ -3151,6 +3166,41 @@ function LineupView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; sna
   return (
     <div className="space-y-4">
       <ViewGuidePanel roomCode={snapshot.game.room_code} view="lineup" />
+      {lineupLocked ? (
+        <div className="rounded-md border border-amber-700 bg-amber-950/40 p-3 text-sm text-amber-100">
+          {lineupLockedMessage}
+        </div>
+      ) : null}
+      {lineupError === "unavailable" ? (
+        <div className="rounded-md border border-amber-700 bg-amber-950/40 p-3 text-sm text-amber-100">
+          Verletzte oder gesperrte Spieler koennen nicht in der Startelf stehen. Entferne sie aus der Aufstellung und
+          speichere erneut.
+        </div>
+      ) : null}
+      {lineupError === "incomplete" ? (
+        <div className="rounded-md border border-amber-700 bg-amber-950/40 p-3 text-sm text-amber-100">
+          Die Aufstellung ist unvollstaendig oder die Formation passt nicht. Pruefe alle Slots
+          {useDefaultGivenKeeper ? " (Given zaehlt als Torwart)" : ""} und speichere erneut.
+        </div>
+      ) : null}
+      {lineupSaved ? (
+        <div className="rounded-md border border-emerald-800 bg-emerald-950/40 p-3 text-sm text-emerald-100">
+          Aufstellung gespeichert.
+          {useDefaultGivenKeeper ? " Given wird beim Spielstart automatisch als Torwart eingesetzt." : ""}
+        </div>
+      ) : null}
+      {!lineupLocked && savedLineupValidation.hasInjuredInLineup ? (
+        <div className="rounded-md border border-amber-700 bg-amber-950/40 p-3 text-sm text-amber-100">
+          In der gespeicherten Aufstellung steht noch ein verletzter Spieler auf dem Feld. Speichere die aktuelle
+          Aufstellung erneut – verletzte Spieler werden automatisch auf die Bank gesetzt.
+        </div>
+      ) : null}
+      {!lineupLocked && savedLineupValidation.hasIncompleteLineup ? (
+        <div className="rounded-md border border-amber-700 bg-amber-950/40 p-3 text-sm text-amber-100">
+          Die gespeicherte Aufstellung ist noch nicht spielbereit ({savedLineupValidation.starterCount}/11 Feldspieler
+          {useDefaultGivenKeeper ? ", Given als Torwart" : ""}). Besetze alle Slots und speichere.
+        </div>
+      ) : null}
       <Panel className="border-[var(--club-border)] bg-zinc-950/85">
         <PanelHeader>
           <div>
@@ -3194,6 +3244,8 @@ function LineupView({ ownClub, snapshot }: { ownClub: LobbyClub | undefined; sna
           staffEffects={staffEffects}
           captainId={ownClub.captain_club_player_id ?? null}
           captainBoost={Math.trunc(Number(ownClub.captain_boost_rank ?? 0)) + getCaptainBoostExtra(staffEffects)}
+          saveBlocked={lineupLocked}
+          saveBlockedReason={lineupLocked ? lineupLockedMessage : undefined}
         />
       </div>
     </div>

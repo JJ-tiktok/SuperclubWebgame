@@ -104,6 +104,8 @@ export function GameLineupBoard({
   staffEffects = [],
   captainId = null,
   captainBoost = 0,
+  saveBlocked = false,
+  saveBlockedReason,
 }: {
   archetypesEnabled?: boolean;
   cards: LineupCard[];
@@ -112,6 +114,8 @@ export function GameLineupBoard({
   staffEffects?: StaffZoneEffect[];
   captainId?: string | null;
   captainBoost?: number;
+  saveBlocked?: boolean;
+  saveBlockedReason?: string;
 }) {
   const boardRef = useRef<HTMLDivElement>(null);
   const cardsWithDefaultKeeper = useMemo(() => ensureDefaultKeeper(cards), [cards]);
@@ -160,6 +164,10 @@ export function GameLineupBoard({
   const slotById = new Map(formationSlots.map((slot) => [slot.id, slot]));
 
   function changeFormation(nextFormation: FormationKey) {
+    if (saveBlocked) {
+      return;
+    }
+
     const nextSlots = formationLayouts[nextFormation];
     const pool = ensureDefaultKeeper(cards);
     const byId = new Map(pool.map((card) => [card.id, card]));
@@ -174,6 +182,10 @@ export function GameLineupBoard({
   }
 
   function startDrag(event: PointerEvent<HTMLDivElement>, fromSlotId: string, playerId: string) {
+    if (saveBlocked) {
+      return;
+    }
+
     const board = boardRef.current;
     const slot = slotById.get(fromSlotId);
     const player = cardById.get(playerId);
@@ -198,6 +210,10 @@ export function GameLineupBoard({
   }
 
   function startBenchDrag(event: PointerEvent<HTMLDivElement>, playerId: string) {
+    if (saveBlocked) {
+      return;
+    }
+
     const board = boardRef.current;
     const player = cardById.get(playerId);
     if (!board || isLineupPlayerBlocked(player)) {
@@ -310,7 +326,11 @@ export function GameLineupBoard({
         <div className="mb-4 flex items-start justify-between gap-3">
           <div>
             <h2 className="text-lg font-semibold text-zinc-50">Aufstellung</h2>
-            <p className="mt-1 text-sm text-zinc-400">Waehle eine Formation und besetze maximal elf Slots.</p>
+            <p className="mt-1 text-sm text-zinc-400">
+              {saveBlocked
+                ? "Bearbeitung gesperrt – Karteneffekt blockiert Aenderungen bis zum naechsten Spiel."
+                : "Waehle eine Formation und besetze maximal elf Slots."}
+            </p>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <Badge tone={validBase ? "green" : "amber"}>{validBase ? "spielbereit" : "unvollstaendig"}</Badge>
@@ -318,7 +338,18 @@ export function GameLineupBoard({
               <input name="game_id" type="hidden" value={gameId} />
               <input name="room_code" type="hidden" value={roomCode} />
               <input name="lineup_payload" type="hidden" value={JSON.stringify(lineupPayload)} />
-              <Button disabled={!validBase} size="sm" title={validBase ? "Aktuelle Aufstellung speichern" : "Besetze alle Slots der Formation"} type="submit">
+              <Button
+                disabled={!validBase || saveBlocked}
+                size="sm"
+                title={
+                  saveBlocked
+                    ? saveBlockedReason ?? "Aufstellung kann nicht gespeichert werden"
+                    : validBase
+                      ? "Aktuelle Aufstellung speichern"
+                      : "Besetze alle Slots der Formation"
+                }
+                type="submit"
+              >
                 Aufstellung speichern
               </Button>
             </form>
@@ -333,7 +364,9 @@ export function GameLineupBoard({
                 selectedFormation === formation.id
                   ? "border-[var(--club-color)] bg-[var(--club-color)] text-white"
                   : "border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800",
+                saveBlocked ? "cursor-not-allowed opacity-50 hover:bg-zinc-900" : "",
               )}
+              disabled={saveBlocked}
               key={formation.id}
               onClick={() => changeFormation(formation.id)}
               type="button"
@@ -343,6 +376,7 @@ export function GameLineupBoard({
           ))}
         </div>
 
+        <div className={cn(saveBlocked ? "pointer-events-none opacity-70" : "")}>
         {archetypesEnabled ? <ArchetypeMatchupGuide className="mb-4" /> : null}
 
         <div
@@ -414,9 +448,10 @@ export function GameLineupBoard({
           <Requirement label="MID" met={counts.MID === requiredCounts.MID} value={`${counts.MID}/${requiredCounts.MID}`} />
           <Requirement label="ATT" met={counts.ATT === requiredCounts.ATT} value={`${counts.ATT}/${requiredCounts.ATT}`} />
         </div>
+        </div>
       </section>
 
-      <section className="rounded-lg border border-[var(--club-border)] bg-zinc-950/85 p-4">
+      <section className={cn("rounded-lg border border-[var(--club-border)] bg-zinc-950/85 p-4", saveBlocked ? "opacity-70" : "")}>
         <div className="mb-4">
           <h2 className="text-lg font-semibold text-zinc-50">Bank</h2>
           <p className="mt-1 text-sm text-zinc-400">Nicht aufgestellte Spieler bleiben hier fuer spaetere Wechsel.</p>
@@ -429,7 +464,10 @@ export function GameLineupBoard({
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
             {benchCards.map((player) => (
               <div
-                className={cn("touch-none", isLineupPlayerBlocked(player) ? "cursor-not-allowed" : "cursor-grab active:cursor-grabbing")}
+                className={cn(
+                  "touch-none",
+                  saveBlocked || isLineupPlayerBlocked(player) ? "cursor-not-allowed" : "cursor-grab active:cursor-grabbing",
+                )}
                 key={player.id}
                 onPointerDown={(event) => startBenchDrag(event, player.id)}
               >

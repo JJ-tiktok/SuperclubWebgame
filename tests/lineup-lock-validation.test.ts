@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { getLineupLockValidation } from "@/lib/lobby/lineup-lock-validation";
+import { getLineupLockValidation, getLineupValidationAfterSave } from "@/lib/lobby/lineup-lock-validation";
+import { shouldUseDefaultGivenKeeper } from "@/lib/lobby/lineup-assignments";
 
 function player(zone: string, injured = false) {
   return { current_zone: zone, injured };
@@ -81,5 +82,25 @@ describe("getLineupLockValidation", () => {
     assert.equal(result.hasInjuredInLineup, true);
     assert.equal(result.isComplete, false);
     assert.equal(result.starterCount, 10);
+  });
+
+  it("accepts 10 outfield starters after save when Given is implicit", () => {
+    const outfieldZones = ["DEF", "DEF", "DEF", "DEF", "MID", "MID", "MID", "MID", "ATT", "ATT"] as const;
+    const squad = outfieldZones.map((zone, index) => ({
+      current_zone: zone,
+      id: `player-${index}`,
+      injured: false,
+      player: { position: zone },
+    }));
+    const submitted = squad.map((entry) => ({
+      club_player_id: entry.id,
+      zone: entry.current_zone,
+    }));
+
+    const result = getLineupValidationAfterSave(squad, submitted, { shouldUseDefaultGivenKeeper });
+
+    assert.equal(result.isComplete, true);
+    assert.equal(result.implicitDefaultGoalkeeper, true);
+    assert.equal(result.hasIncompleteLineup, false);
   });
 });

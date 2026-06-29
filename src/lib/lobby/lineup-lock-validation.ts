@@ -23,6 +23,18 @@ export type LineupLockValidationOptions = {
   implicitDefaultGoalkeeper?: boolean;
 };
 
+export type LineupSaveSquadPlayer = LineupLockPlayer & {
+  player?: {
+    eligible_positions?: string[] | null;
+    position?: string | null;
+  } | null;
+};
+
+export type SubmittedLineupZone = {
+  club_player_id: string;
+  zone: string;
+};
+
 const FORMATION_ZONE_COUNTS: Array<Pick<LineupZoneCounts, "ATT" | "DEF" | "MID"> & { GK: 1 }> = [
   { ATT: 3, DEF: 3, MID: 4, GK: 1 },
   { ATT: 2, DEF: 4, MID: 4, GK: 1 },
@@ -74,4 +86,26 @@ export function getLineupLockValidation(
     starterCount: healthyStarters.length,
     zoneCounts,
   };
+}
+
+export function getLineupValidationAfterSave(
+  squadPlayers: LineupSaveSquadPlayer[],
+  submitted: SubmittedLineupZone[],
+  options: { shouldUseDefaultGivenKeeper: (params: {
+    lineupPlayers: Array<{ current_zone: string; injured?: boolean | null }>;
+    squadPlayers: LineupSaveSquadPlayer[];
+  }) => boolean },
+): LineupLockValidation {
+  const submittedById = new Map(submitted.map((item) => [item.club_player_id, item]));
+  const postSavePlayers = squadPlayers.map((row) => ({
+    current_zone: submittedById.get(row.id)?.zone ?? "bench",
+    injured: row.injured,
+  }));
+
+  return getLineupLockValidation(postSavePlayers, {
+    implicitDefaultGoalkeeper: options.shouldUseDefaultGivenKeeper({
+      lineupPlayers: postSavePlayers,
+      squadPlayers,
+    }),
+  });
 }
